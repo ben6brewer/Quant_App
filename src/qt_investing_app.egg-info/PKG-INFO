@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: qt-investing-app
+Version: 0.1.0
+Summary: Qt-based investing, valuation, and backtesting desktop app
+Requires-Python: >=3.10
+Requires-Dist: PySide6>=6.6
+Requires-Dist: yfinance>=0.2
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: pyqtgraph>=0.13

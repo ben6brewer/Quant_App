@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+src/app/__init__.py
+src/app/main.py
+src/app/ui_main_window.py
+src/app/services/__init__.py
+src/app/services/market_data.py
+src/app/widgets/__init__.py
+src/app/widgets/price_chart.py
+src/qt_investing_app.egg-info/PKG-INFO
+src/qt_investing_app.egg-info/SOURCES.txt
+src/qt_investing_app.egg-info/dependency_links.txt
+src/qt_investing_app.egg-info/requires.txt
+src/qt_investing_app.egg-info/top_level.txt
