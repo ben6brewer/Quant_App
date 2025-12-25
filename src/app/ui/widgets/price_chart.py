@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,7 @@ from app.core.config import CANDLE_BAR_WIDTH, DEFAULT_VIEW_PERIOD_DAYS, VIEW_PAD
 
 
 # -----------------------------
-# Axes
+# Axes (keeping existing code)
 # -----------------------------
 class DraggableAxisItem(pg.AxisItem):
     """
@@ -196,7 +196,7 @@ class DraggableIndexDateAxisItem(pg.AxisItem):
 
 
 # -----------------------------
-# Candles
+# Candles (keeping existing code)
 # -----------------------------
 class CandlestickItem(pg.GraphicsObject):
     """
@@ -279,9 +279,19 @@ class CandlestickItem(pg.GraphicsObject):
 
 
 # -----------------------------
-# Chart
+# Chart (with indicator support)
 # -----------------------------
 class PriceChart(pg.PlotWidget):
+    # Indicator color palette
+    INDICATOR_COLORS = [
+        (0, 150, 255),    # Blue
+        (255, 150, 0),    # Orange
+        (150, 0, 255),    # Purple
+        (255, 200, 0),    # Yellow
+        (0, 255, 150),    # Cyan
+        (255, 0, 150),    # Magenta
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent=parent)
 
@@ -303,12 +313,16 @@ class PriceChart(pg.PlotWidget):
 
         self._candles = None
         self._line = None
+        self._indicator_lines = []
 
         self.candle_width = CANDLE_BAR_WIDTH
         self._has_initialized_view = False
 
         self._scale_mode: str = "regular"
         self._theme: str = "dark"
+
+        # Add legend
+        self.legend = self.addLegend(offset=(10, 10))
 
     # -----------------------------
     # Scale transform (plot-space only)
@@ -321,6 +335,12 @@ class PriceChart(pg.PlotWidget):
             if col in out.columns:
                 out[col] = np.log10(out[col].astype(float).clip(lower=eps))
         return out
+
+    @staticmethod
+    def _to_log10_series(series: pd.Series) -> pd.Series:
+        """Convert a series to log10 values."""
+        eps = 1e-12
+        return np.log10(series.astype(float).clip(lower=eps))
 
     # -----------------------------
     # Theme
@@ -409,6 +429,7 @@ class PriceChart(pg.PlotWidget):
         ticker: str,
         chart_type: str = "Candles",
         scale: str = "Regular",
+        indicators: Dict[str, pd.DataFrame] = None,
     ) -> None:
         if df is None or df.empty:
             self.clear()
@@ -429,6 +450,10 @@ class PriceChart(pg.PlotWidget):
         self.clear()
         self._candles = None
         self._line = None
+        self._indicator_lines = []
+        
+        # Re-add legend after clear
+        self.legend = self.addLegend(offset=(10, 10))
 
         self.bottom_axis.set_index(df_plot.index)
         x = np.arange(len(df_plot), dtype=float)
@@ -444,7 +469,7 @@ class PriceChart(pg.PlotWidget):
             # Get line color based on theme
             line_color = self.get_line_color()
             pen = pg.mkPen(color=line_color, width=2)
-            self._line = self.plot(x, y, pen=pen, name=f"{ticker} Close")
+            self._line = self.plot(x, y, pen=pen, name=f"{ticker}")
         else:
             required = {"Open", "High", "Low", "Close"}
             missing = required - set(df_plot.columns)
@@ -460,9 +485,41 @@ class PriceChart(pg.PlotWidget):
             self._candles = CandlestickItem(data, bar_width=self.candle_width)
             self.addItem(self._candles)
 
+        # Plot indicators
+        if indicators:
+            self._plot_indicators(x, df, indicators)
+
         # restore window or init view
         if prev_left_dt is not None and prev_right_dt is not None:
             self._apply_date_window(df_plot, prev_left_dt, prev_right_dt)
         elif not self._has_initialized_view:
             self._set_view_last_year(df_plot)
             self._has_initialized_view = True
+
+    def _plot_indicators(
+        self, x: np.ndarray, df: pd.DataFrame, indicators: Dict[str, pd.DataFrame]
+    ) -> None:
+        """Plot indicator overlays on the price chart."""
+        color_idx = 0
+        
+        for indicator_name, indicator_df in indicators.items():
+            if indicator_df is None or indicator_df.empty:
+                continue
+            
+            # Plot each column in the indicator dataframe
+            for col in indicator_df.columns:
+                y = indicator_df[col].to_numpy()
+                
+                # Apply log transform if in log mode
+                if self._scale_mode == "log":
+                    y = self._to_log10_series(pd.Series(y)).to_numpy()
+                
+                # Get color for this indicator line
+                color = self.INDICATOR_COLORS[color_idx % len(self.INDICATOR_COLORS)]
+                pen = pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine if "BB" in col else QtCore.Qt.SolidLine)
+                
+                # Plot the indicator
+                line = self.plot(x, y, pen=pen, name=col)
+                self._indicator_lines.append(line)
+                
+                color_idx += 1

@@ -5,14 +5,19 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtCore import Qt
 
 from app.ui.widgets.price_chart import PriceChart
+from app.ui.widgets.create_indicator_dialog import CreateIndicatorDialog
 from app.services.market_data import fetch_price_history
 from app.services.ticker_equation_parser import TickerEquationParser
+from app.services.indicator_service import IndicatorService
 from app.core.theme_manager import ThemeManager
 from app.core.config import (
     DEFAULT_TICKER,
@@ -27,14 +32,18 @@ from app.core.config import (
 
 class ChartModule(QWidget):
     """
-    Charting module - extracted from MainWindow.
-    Handles ticker data loading and chart display.
+    Charting module with indicator support.
+    Handles ticker data loading, chart display, and technical indicators.
     """
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self.equation_parser = TickerEquationParser()
+        self.indicator_service = IndicatorService()
+        
+        # Initialize indicator service to load saved indicators
+        IndicatorService.initialize()
         
         self._setup_ui()
         self._setup_state()
@@ -49,6 +58,7 @@ class ChartModule(QWidget):
     def _on_theme_changed(self, theme: str) -> None:
         """Handle theme change signal."""
         self._apply_control_bar_theme()
+        self._apply_indicator_panel_theme()
         self.chart.set_theme(theme)
 
     def _apply_control_bar_theme(self) -> None:
@@ -56,13 +66,141 @@ class ChartModule(QWidget):
         stylesheet = self.theme_manager.get_controls_stylesheet()
         self.controls_widget.setStyleSheet(stylesheet)
 
+    def _apply_indicator_panel_theme(self) -> None:
+        """Apply theme-specific styling to the indicator panel."""
+        if not hasattr(self, 'indicator_panel'):
+            return
+            
+        theme = self.theme_manager.current_theme
+        
+        if theme == "light":
+            stylesheet = self._get_light_indicator_panel_stylesheet()
+        else:
+            stylesheet = self._get_dark_indicator_panel_stylesheet()
+        
+        self.indicator_panel.setStyleSheet(stylesheet)
+
+    def _get_dark_indicator_panel_stylesheet(self) -> str:
+        """Get dark theme stylesheet for indicator panel."""
+        return """
+            #indicatorPanel {
+                background-color: #2d2d2d;
+                border-left: 2px solid #3d3d3d;
+            }
+            QLabel {
+                color: #cccccc;
+            }
+            QListWidget {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 5px;
+            }
+            QListWidget::item:selected {
+                background-color: #00d4ff;
+                color: #000000;
+            }
+            QPushButton {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                border: 1px solid #00d4ff;
+                background-color: #2d2d2d;
+            }
+            QPushButton:pressed {
+                background-color: #00d4ff;
+                color: #000000;
+            }
+            QPushButton#createButton {
+                background-color: #00d4ff;
+                color: #000000;
+                border: none;
+                border-radius: 4px;
+                padding: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton#createButton:hover {
+                background-color: #00c4ef;
+            }
+            QPushButton#createButton:pressed {
+                background-color: #00b4df;
+            }
+        """
+
+    def _get_light_indicator_panel_stylesheet(self) -> str:
+        """Get light theme stylesheet for indicator panel."""
+        return """
+            #indicatorPanel {
+                background-color: #f5f5f5;
+                border-left: 2px solid #d0d0d0;
+            }
+            QLabel {
+                color: #333333;
+            }
+            QListWidget {
+                background-color: #ffffff;
+                color: #000000;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 5px;
+            }
+            QListWidget::item:selected {
+                background-color: #0066cc;
+                color: #ffffff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #000000;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                border: 1px solid #0066cc;
+                background-color: #e8e8e8;
+            }
+            QPushButton:pressed {
+                background-color: #0066cc;
+                color: #ffffff;
+            }
+            QPushButton#createButton {
+                background-color: #0066cc;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton#createButton:hover {
+                background-color: #0052a3;
+            }
+            QPushButton#createButton:pressed {
+                background-color: #003d7a;
+            }
+        """
+
     def _setup_ui(self) -> None:
         """Create the UI layout."""
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Controls bar with better styling
+        # Controls bar
         self.controls_widget = QWidget()
         
         controls = QHBoxLayout(self.controls_widget)
@@ -104,22 +242,124 @@ class ChartModule(QWidget):
         self.scale_combo.setMaximumWidth(120)
         controls.addWidget(self.scale_combo)
 
+        # Separator
+        controls.addSpacing(20)
+
+        # Indicators button
+        self.indicators_btn = QPushButton("📊 Indicators")
+        self.indicators_btn.setCheckable(True)
+        self.indicators_btn.setMaximumWidth(120)
+        controls.addWidget(self.indicators_btn)
+
         controls.addStretch(1)
         root.addWidget(self.controls_widget)
 
         # Apply initial theme to control bar
         self._apply_control_bar_theme()
 
+        # Horizontal layout for chart + indicator panel
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
         # Chart
         self.chart = PriceChart()
-        root.addWidget(self.chart, stretch=1)
+        content_layout.addWidget(self.chart, stretch=1)
         
         # Apply initial theme to chart
         self.chart.set_theme(self.theme_manager.current_theme)
 
+        # Indicator selection panel (hidden by default)
+        self.indicator_panel = self._create_indicator_panel()
+        self.indicator_panel.setVisible(False)
+        content_layout.addWidget(self.indicator_panel)
+
+        root.addLayout(content_layout, stretch=1)
+
+    def _create_indicator_panel(self) -> QWidget:
+        """Create the indicator selection panel."""
+        panel = QWidget()
+        panel.setFixedWidth(250)
+        panel.setObjectName("indicatorPanel")
+        
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Header
+        header = QLabel("Technical Indicators")
+        header.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                font-weight: bold;
+                padding: 5px;
+            }
+        """)
+        layout.addWidget(header)
+
+        # Create New Indicator button
+        create_btn = QPushButton("➕ Create New Indicator")
+        create_btn.setObjectName("createButton")
+        create_btn.clicked.connect(self._create_custom_indicator)
+        layout.addWidget(create_btn)
+
+        # Overlay indicators section
+        overlay_label = QLabel("Overlays (plot on price):")
+        overlay_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+        layout.addWidget(overlay_label)
+
+        self.overlay_list = QListWidget()
+        self.overlay_list.setSelectionMode(QListWidget.MultiSelection)
+        self.overlay_list.addItems(IndicatorService.get_overlay_names())
+        self.overlay_list.setMaximumHeight(200)
+        layout.addWidget(self.overlay_list)
+
+        # Oscillator indicators section
+        oscillator_label = QLabel("Oscillators (plot separately):")
+        oscillator_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+        layout.addWidget(oscillator_label)
+
+        self.oscillator_list = QListWidget()
+        self.oscillator_list.setSelectionMode(QListWidget.MultiSelection)
+        self.oscillator_list.addItems(IndicatorService.get_oscillator_names())
+        self.oscillator_list.setMaximumHeight(150)
+        layout.addWidget(self.oscillator_list)
+
+        # Apply button
+        apply_btn = QPushButton("Apply Indicators")
+        apply_btn.clicked.connect(self._apply_indicators)
+        layout.addWidget(apply_btn)
+
+        # Clear button
+        clear_btn = QPushButton("Clear All")
+        clear_btn.clicked.connect(self._clear_indicators)
+        layout.addWidget(clear_btn)
+
+        # Delete selected indicator button
+        delete_btn = QPushButton("🗑 Delete Selected")
+        delete_btn.clicked.connect(self._delete_custom_indicator)
+        layout.addWidget(delete_btn)
+
+        layout.addStretch(1)
+
+        # Apply initial theme directly to panel
+        theme = self.theme_manager.current_theme
+        if theme == "light":
+            stylesheet = self._get_light_indicator_panel_stylesheet()
+        else:
+            stylesheet = self._get_dark_indicator_panel_stylesheet()
+        panel.setStyleSheet(stylesheet)
+
+        return panel
+
     def _setup_state(self) -> None:
         """Initialize state management."""
-        self.state = {"df": None, "ticker": None, "interval": None}
+        self.state = {
+            "df": None,
+            "ticker": None,
+            "interval": None,
+            "indicators": [],
+        }
 
     def _connect_signals(self) -> None:
         """Connect all signals."""
@@ -137,6 +377,182 @@ class ChartModule(QWidget):
             lambda _: self.load_ticker_max(self.ticker_input.text())
         )
 
+        # Toggle indicator panel
+        self.indicators_btn.clicked.connect(self._toggle_indicator_panel)
+
+    def _toggle_indicator_panel(self) -> None:
+        """Toggle the indicator selection panel visibility."""
+        self.indicator_panel.setVisible(self.indicators_btn.isChecked())
+
+    def _apply_indicators(self) -> None:
+        """Apply selected indicators to the chart."""
+        # Get selected indicators
+        overlay_items = self.overlay_list.selectedItems()
+        oscillator_items = self.oscillator_list.selectedItems()
+        
+        selected = [item.text() for item in overlay_items + oscillator_items]
+        
+        # Store in state
+        self.state["indicators"] = selected
+        
+        # Re-render with indicators
+        self.render_from_cache()
+
+    def _clear_indicators(self) -> None:
+        """Clear all indicators from the chart."""
+        # Deselect all items
+        self.overlay_list.clearSelection()
+        self.oscillator_list.clearSelection()
+        
+        # Clear state
+        self.state["indicators"] = []
+        
+        # Re-render without indicators
+        self.render_from_cache()
+
+    def _create_custom_indicator(self) -> None:
+        """Open dialog to create a custom indicator."""
+        dialog = CreateIndicatorDialog(self.theme_manager, self)
+        
+        if dialog.exec():
+            config = dialog.get_indicator_config()
+            if config:
+                # Build indicator name
+                indicator_type = config["type"]
+                params = config["params"]
+                
+                # Format name based on type
+                if not params:
+                    name = indicator_type
+                elif indicator_type == "SMA":
+                    name = f"SMA({params['length']})"
+                elif indicator_type == "EMA":
+                    name = f"EMA({params['length']})"
+                elif indicator_type == "Bollinger Bands":
+                    name = f"BB({params['length']},{params['std']})"
+                elif indicator_type == "RSI":
+                    name = f"RSI({params['length']})"
+                elif indicator_type == "MACD":
+                    name = f"MACD({params['fast']},{params['slow']},{params['signal']})"
+                elif indicator_type == "ATR":
+                    name = f"ATR({params['length']})"
+                elif indicator_type == "Stochastic":
+                    name = f"Stochastic({params['k']},{params['d']},{params['smooth_k']})"
+                else:
+                    name = indicator_type
+                
+                # Check if already exists
+                if name in IndicatorService.ALL_INDICATORS:
+                    QMessageBox.information(
+                        self,
+                        "Already Exists",
+                        f"The indicator '{name}' already exists in the list.",
+                    )
+                    return
+                
+                # Build config for IndicatorService
+                kind_map = {
+                    "SMA": "sma",
+                    "EMA": "ema",
+                    "Bollinger Bands": "bbands",
+                    "RSI": "rsi",
+                    "MACD": "macd",
+                    "ATR": "atr",
+                    "Stochastic": "stochastic",
+                    "OBV": "obv",
+                    "VWAP": "vwap",
+                }
+                
+                indicator_config = {"kind": kind_map[indicator_type], **params}
+                
+                # Determine if overlay or oscillator
+                is_overlay = indicator_type in ["SMA", "EMA", "Bollinger Bands", "VWAP"]
+                
+                # Add to IndicatorService
+                IndicatorService.add_custom_indicator(name, indicator_config, is_overlay)
+                
+                # Refresh the lists
+                self._refresh_indicator_lists()
+                
+                QMessageBox.information(
+                    self,
+                    "Indicator Created",
+                    f"Created custom indicator: {name}",
+                )
+
+    def _delete_custom_indicator(self) -> None:
+        """Delete indicators from the list."""
+        # Get all selected items from both lists
+        selected = []
+        for item in self.overlay_list.selectedItems():
+            selected.append(item.text())
+        for item in self.oscillator_list.selectedItems():
+            selected.append(item.text())
+        
+        if not selected:
+            QMessageBox.information(
+                self,
+                "No Indicator Selected",
+                "Please select an indicator to delete.",
+            )
+            return
+        
+        # Confirm deletion
+        indicator_list = "\n".join(selected)
+        reply = QMessageBox.question(
+            self,
+            "Delete Indicators",
+            f"Are you sure you want to delete these indicators?\n\n{indicator_list}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Remove from IndicatorService
+            for name in selected:
+                IndicatorService.remove_custom_indicator(name)
+            
+            # Refresh the lists
+            self._refresh_indicator_lists()
+            
+            # Clear from active indicators if present
+            for name in selected:
+                if name in self.state["indicators"]:
+                    self.state["indicators"].remove(name)
+            
+            # Re-render
+            self.render_from_cache()
+            
+            QMessageBox.information(
+                self,
+                "Indicators Deleted",
+                f"Deleted {len(selected)} indicator(s).",
+            )
+
+    def _refresh_indicator_lists(self) -> None:
+        """Refresh the indicator lists to show newly added custom indicators."""
+        # Store current selections
+        overlay_selected = [item.text() for item in self.overlay_list.selectedItems()]
+        oscillator_selected = [item.text() for item in self.oscillator_list.selectedItems()]
+        
+        # Clear and repopulate lists
+        self.overlay_list.clear()
+        self.overlay_list.addItems(sorted(IndicatorService.get_overlay_names()))
+        
+        self.oscillator_list.clear()
+        self.oscillator_list.addItems(sorted(IndicatorService.get_oscillator_names()))
+        
+        # Restore selections
+        for i in range(self.overlay_list.count()):
+            item = self.overlay_list.item(i)
+            if item.text() in overlay_selected:
+                item.setSelected(True)
+        
+        for i in range(self.oscillator_list.count()):
+            item = self.oscillator_list.item(i)
+            if item.text() in oscillator_selected:
+                item.setSelected(True)
+
     def current_chart_type(self) -> str:
         return self.chart_type_combo.currentText()
 
@@ -147,15 +563,25 @@ class ChartModule(QWidget):
         return self.scale_combo.currentText()
 
     def render_from_cache(self) -> None:
-        """Re-render chart from cached data."""
+        """Re-render chart from cached data with indicators."""
         if self.state["df"] is None or self.state["ticker"] is None:
             return
+        
         try:
+            # Calculate indicators if any are selected
+            indicators = {}
+            if self.state["indicators"]:
+                indicators = IndicatorService.calculate_multiple(
+                    self.state["df"], self.state["indicators"]
+                )
+            
+            # Render chart with indicators
             self.chart.set_prices(
                 self.state["df"],
                 ticker=self.state["ticker"],
                 chart_type=self.current_chart_type(),
                 scale=self.current_scale(),
+                indicators=indicators,
             )
         except Exception as e:
             QMessageBox.critical(self, "Render Error", str(e))
