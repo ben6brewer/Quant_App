@@ -67,6 +67,7 @@ class ChartModule(QWidget):
         self._apply_control_bar_theme()
         self._apply_indicator_panel_theme()
         self._apply_depth_panel_theme()
+        self._apply_depth_button_style()
         self.chart.set_theme(theme)
 
     def _apply_control_bar_theme(self) -> None:
@@ -92,6 +93,59 @@ class ChartModule(QWidget):
         """Apply theme-specific styling to the depth panel."""
         # The depth panel handles its own theming via theme_manager
         pass
+
+    def _apply_depth_button_style(self) -> None:
+        """Apply custom styling to make enabled/disabled states very obvious."""
+        theme = self.theme_manager.current_theme
+        
+        if theme == "light":
+            style = """
+                QPushButton {
+                    background-color: #e0e0e0;
+                    color: #999999;
+                    border: 1px solid #d0d0d0;
+                    border-radius: 4px;
+                    padding: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:enabled {
+                    background-color: #e8f4ff;
+                    color: #0066cc;
+                    border: 2px solid #0066cc;
+                }
+                QPushButton:enabled:hover {
+                    background-color: #d0e8ff;
+                }
+                QPushButton:enabled:checked {
+                    background-color: #0066cc;
+                    color: #ffffff;
+                }
+            """
+        else:
+            style = """
+                QPushButton {
+                    background-color: #1a1a1a;
+                    color: #555555;
+                    border: 1px solid #2d2d2d;
+                    border-radius: 4px;
+                    padding: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:enabled {
+                    background-color: #1e3a4a;
+                    color: #00d4ff;
+                    border: 2px solid #00d4ff;
+                }
+                QPushButton:enabled:hover {
+                    background-color: #2d4d5f;
+                }
+                QPushButton:enabled:checked {
+                    background-color: #00d4ff;
+                    color: #000000;
+                }
+            """
+        
+        self.depth_btn.setStyleSheet(style)
 
     def _get_dark_indicator_panel_stylesheet(self) -> str:
         """Get dark theme stylesheet for indicator panel."""
@@ -263,25 +317,33 @@ class ChartModule(QWidget):
         self.indicators_btn.setCheckable(True)
         self.indicators_btn.setMaximumWidth(120)
         controls.addWidget(self.indicators_btn)
+        self.indicators_btn.show()  # Ensure button is visible
 
         # Depth button (only enabled for Binance tickers)
         self.depth_btn = QPushButton("📈 Depth")
         self.depth_btn.setCheckable(True)
         self.depth_btn.setMaximumWidth(120)
         self.depth_btn.setEnabled(False)  # Disabled by default
+        self.depth_btn.setToolTip("Load a Binance crypto pair (BTC-USD, ETH-USD, etc.) to enable")
         controls.addWidget(self.depth_btn)
+        self.depth_btn.show()  # Ensure button is visible
 
         # Chart settings button
         self.chart_settings_btn = QPushButton("⚙️ Settings")
         self.chart_settings_btn.setMaximumWidth(120)
         self.chart_settings_btn.clicked.connect(self._open_chart_settings)
         controls.addWidget(self.chart_settings_btn)
+        self.chart_settings_btn.show()  # Ensure button is visible
 
         controls.addStretch(1)
         root.addWidget(self.controls_widget)
+        self.controls_widget.show()  # Ensure controls are visible
 
         # Apply initial theme to control bar
         self._apply_control_bar_theme()
+        
+        # Apply custom depth button styling
+        self._apply_depth_button_style()
 
         # Horizontal layout for chart + panels
         content_layout = QHBoxLayout()
@@ -449,9 +511,11 @@ class ChartModule(QWidget):
             # Update depth with current ticker
             if self.state["ticker"]:
                 self.depth_panel.set_ticker(self.state["ticker"])
+                print(f"[INFO] Order book depth panel opened for {self.state['ticker']}")
         else:
             # Stop updates when hiding
             self.depth_panel.stop_updates()
+            print("[INFO] Order book depth panel closed")
 
     def _apply_indicators(self) -> None:
         """Apply selected indicators to the chart."""
@@ -853,23 +917,69 @@ class ChartModule(QWidget):
             self.state["ticker"] = display_name
             self.state["interval"] = interval
 
+            # ===== IMPROVED BINANCE DEPTH BUTTON HANDLING =====
             # Check if this ticker is supported on Binance
             is_binance = BinanceOrderBook.is_binance_ticker(display_name)
+            
+            # Debug output to terminal
+            print("=" * 70)
+            print(f"TICKER LOADED: {display_name}")
+            print(f"Binance order book support: {'✓ YES' if is_binance else '✗ NO'}")
+            print("=" * 70)
+            
+            # Enable/disable and style the depth button
             self.depth_btn.setEnabled(is_binance)
             
-            # Update depth button tooltip
             if is_binance:
-                self.depth_btn.setToolTip("Show order book depth from Binance")
+                # Visual indication that depth is available
+                self.depth_btn.setText("📈 Depth ✓")
+                self.depth_btn.setToolTip(
+                    f"✓ Order book depth available for {display_name}\n\n"
+                    f"Click to show live Binance order book with:\n"
+                    f"• Real-time bid/ask levels\n"
+                    f"• Cumulative volume visualization\n"
+                    f"• Spread analysis"
+                )
+                
+                print(f"✓ DEPTH BUTTON ENABLED")
+                print(f"  → The '📈 Depth ✓' button is now clickable!")
+                print(f"  → Click it to show the order book panel")
+                
+                # If depth panel is already visible, update it
+                if self.depth_panel.isVisible():
+                    self.depth_panel.set_ticker(display_name)
             else:
-                self.depth_btn.setToolTip("Order book depth only available for Binance crypto pairs")
+                # Dim appearance when disabled
+                self.depth_btn.setText("📈 Depth")
+                self.depth_btn.setToolTip(
+                    f"✗ {display_name} is not available on Binance\n\n"
+                    f"Order book depth is only available for crypto pairs.\n\n"
+                    f"Supported tickers include:\n"
+                    f"BTC-USD, ETH-USD, SOL-USD, DOGE-USD, ADA-USD,\n"
+                    f"MATIC-USD, AVAX-USD, DOT-USD, LINK-USD, and more."
+                )
+                
+                print(f"✗ Depth button disabled")
+                print(f"  → {display_name} is not a Binance-supported crypto pair")
+                print(f"  → Try BTC-USD, ETH-USD, or SOL-USD for depth data")
+                
+                # Hide depth panel if it was visible
+                if self.depth_panel.isVisible():
+                    self.depth_btn.setChecked(False)
+                    self.depth_panel.setVisible(False)
+                    self.depth_panel.stop_updates()
+
+            # Apply custom styling to make enabled state obvious
+            self._apply_depth_button_style()
             
-            # If depth panel is visible, update it
-            if self.depth_panel.isVisible():
-                self.depth_panel.set_ticker(display_name)
+            # ===== END IMPROVED SECTION =====
 
             self.render_from_cache()
 
         except Exception as e:
+            print(f"ERROR loading ticker: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Load Error", str(e))
             # Clear the equation parser cache on error
             self.equation_parser.clear_cache()
