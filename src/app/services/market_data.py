@@ -12,6 +12,12 @@ from app.core.config import (
     ERROR_NO_DATA,
 )
 
+# Import the cache manager
+from app.services.market_data_cache import MarketDataCache
+
+# Create a global cache instance
+_cache = MarketDataCache()
+
 
 def fetch_price_history(
     ticker: str,
@@ -19,7 +25,14 @@ def fetch_price_history(
     interval: str = "1d",
 ) -> pd.DataFrame:
     """
-    Fetch historical price data for a ticker.
+    Fetch historical price data for a ticker with caching support.
+    
+    Caching strategy:
+    - Always cache daily data
+    - Check cache first, return if current
+    - If cache outdated or missing, fetch from Yahoo Finance
+    - If fetch fails (offline), return cached data if available
+    - Resample cached daily data as needed for other intervals
     
     Args:
         ticker: Ticker symbol (e.g., "BTC-USD", "AAPL")
@@ -30,51 +43,150 @@ def fetch_price_history(
         DataFrame with OHLCV data
         
     Raises:
-        ValueError: If ticker is empty or no data is returned
+        ValueError: If ticker is empty or no data is available
     """
     ticker = ticker.strip().upper()
     if not ticker:
         raise ValueError(ERROR_EMPTY_TICKER)
 
     interval_key = (interval or "1d").strip().lower()
-    yf_interval = INTERVAL_MAP.get(interval_key)
-    resample_yearly = False
+    yf_interval = INTERVAL_MAP.get(interval_key, "1d")
     
+    # Special handling for yearly interval
+    resample_yearly = False
     if yf_interval == "1y":
         resample_yearly = True
-        yf_interval = "1mo"  # fetch monthly and roll up to yearly
+        yf_interval = "1d"  # We'll resample from daily data
+    
+    # Check if we need daily data (for caching) or can use cache
+    needs_daily = yf_interval == "1d"
+    
+    # Try to get from cache first (daily data only)
+    if needs_daily:
+        if _cache.is_cache_current(ticker):
+            df = _cache.get_cached_data(ticker)
+            if df is not None and not df.empty:
+                last_date = df.index.max().strftime("%Y-%m-%d")
+                print(f"Using cached data for {ticker} (last date: {last_date})")
+                return df
+    else:
+        # For non-daily intervals, check if we have cached daily data to resample
+        if _cache.has_cache(ticker):
+            df = _cache.get_cached_data(ticker)
+            if df is not None and not df.empty:
+                last_date = df.index.max().strftime("%Y-%m-%d")
+                is_current = _cache.is_cache_current(ticker)
+                status = "current" if is_current else "outdated"
+                print(f"Using cached daily data for {ticker} ({status}, last date: {last_date})")
+                
+                # Resample to requested interval
+                return _resample_data(df, interval_key)
+    
+    # Try to fetch fresh data from Yahoo Finance
+    try:
+        print(f"Fetching fresh data for {ticker} from Yahoo Finance...")
+        
+        # Always fetch daily data for max period (for caching)
+        df = yf.download(
+            tickers=ticker,
+            period="max",
+            interval="1d",
+            auto_adjust=False,
+            progress=SHOW_DOWNLOAD_PROGRESS,
+            threads=DATA_FETCH_THREADS,
+        )
 
-    df = yf.download(
-        tickers=ticker,
-        period=period,
-        interval=yf_interval,
-        auto_adjust=False,
-        progress=SHOW_DOWNLOAD_PROGRESS,
-        threads=DATA_FETCH_THREADS,
-    )
+        if df is None or df.empty:
+            raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
 
-    if df is None or df.empty:
+        # Sometimes yfinance returns MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+        
+        # Cache the daily data
+        _cache.save_to_cache(ticker, df)
+        
+        # If user needs non-daily interval, resample
+        if not needs_daily:
+            return _resample_data(df, interval_key)
+        
+        return df
+        
+    except Exception as e:
+        # Fetch failed - try to use cached data as fallback (even if outdated)
+        print(f"Failed to fetch {ticker} from Yahoo Finance: {e}")
+        
+        if _cache.has_cache(ticker):
+            df = _cache.get_cached_data(ticker)
+            if df is not None and not df.empty:
+                last_date = df.index.max().strftime("%Y-%m-%d")
+                print(f"Using outdated cached data for {ticker} (last date: {last_date})")
+                
+                # Resample if needed
+                if not needs_daily:
+                    return _resample_data(df, interval_key)
+                
+                return df
+        
+        # No cache available, re-raise the error
         raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
 
-    # Sometimes yfinance returns MultiIndex columns
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
 
-    df = df.copy()
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
+def _resample_data(df: pd.DataFrame, interval_key: str) -> pd.DataFrame:
+    """
+    Resample daily data to the requested interval.
+    
+    Args:
+        df: DataFrame with daily OHLCV data
+        interval_key: Interval key (e.g., "weekly", "monthly", "yearly")
+    
+    Returns:
+        Resampled DataFrame
+    """
+    if interval_key in ["1d", "daily"]:
+        return df
+    
+    # Define resampling rules
+    resample_rules = {
+        "weekly": "W",
+        "1wk": "W",
+        "monthly": "ME",
+        "1mo": "ME",
+        "yearly": "YE",
+        "1y": "YE",
+    }
+    
+    resample_freq = resample_rules.get(interval_key)
+    
+    if resample_freq is None:
+        # Unknown interval, return daily data
+        return df
+    
+    # OHLCV aggregation
+    ohlc = {
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+    }
+    if "Volume" in df.columns:
+        ohlc["Volume"] = "sum"
+    
+    # Resample
+    df_resampled = df.resample(resample_freq).agg(ohlc).dropna(how="any")
+    
+    return df_resampled
 
-    # If user asked for annually, resample to year bars (OHLCV)
-    if resample_yearly:
-        ohlc = {
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-        }
-        if "Volume" in df.columns:
-            ohlc["Volume"] = "sum"
 
-        df = df.resample("YE").agg(ohlc).dropna(how="any")
-
-    return df
+def clear_cache(ticker: str | None = None) -> None:
+    """
+    Clear cache for a specific ticker or all tickers.
+    
+    Args:
+        ticker: Ticker symbol to clear, or None to clear all
+    """
+    _cache.clear_cache(ticker)
