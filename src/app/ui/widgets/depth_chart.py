@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import List, Tuple, Optional
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
 from app.services.binance_data import BinanceOrderBook
-
+from app.ui.widgets.order_book_ladder import OrderBookLadderWidget
 
 class DepthChartWidget(pg.PlotWidget):
     """
@@ -164,7 +164,7 @@ class DepthChartWidget(pg.PlotWidget):
 
 class OrderBookPanel(QWidget):
     """
-    Panel showing order book depth chart and statistics.
+    Panel showing order book in ladder format (default) with optional depth chart.
     """
     
     def __init__(self, theme_manager, parent=None):
@@ -187,17 +187,17 @@ class OrderBookPanel(QWidget):
         """Setup the UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(0)
         
-        # Header with stats
+        # Header with view toggle
         self.header = QWidget()
         self.header.setObjectName("depthHeader")
-        header_layout = QVBoxLayout(self.header)
+        header_layout = QHBoxLayout(self.header)
         header_layout.setContentsMargins(10, 5, 10, 5)
-        header_layout.setSpacing(3)
+        header_layout.setSpacing(10)
         
         # Title
-        title = QLabel("Order Book Depth")
+        title = QLabel("Order Book")
         title.setObjectName("depthTitle")
         title_font = QFont()
         title_font.setBold(True)
@@ -205,30 +205,36 @@ class OrderBookPanel(QWidget):
         title.setFont(title_font)
         header_layout.addWidget(title)
         
-        # Stats row
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(15)
+        header_layout.addStretch()
         
-        self.spread_label = QLabel("Spread: --")
-        self.spread_label.setObjectName("statLabel")
-        stats_layout.addWidget(self.spread_label)
+        # View toggle buttons
+        self.ladder_btn = QPushButton("Ladder")
+        self.ladder_btn.setCheckable(True)
+        self.ladder_btn.setChecked(True)
+        self.ladder_btn.setMaximumWidth(80)
+        self.ladder_btn.clicked.connect(lambda: self._switch_view("ladder"))
+        header_layout.addWidget(self.ladder_btn)
         
-        self.bid_volume_label = QLabel("Bid Vol: --")
-        self.bid_volume_label.setObjectName("statLabel")
-        stats_layout.addWidget(self.bid_volume_label)
-        
-        self.ask_volume_label = QLabel("Ask Vol: --")
-        self.ask_volume_label.setObjectName("statLabel")
-        stats_layout.addWidget(self.ask_volume_label)
-        
-        stats_layout.addStretch()
-        header_layout.addLayout(stats_layout)
+        self.chart_btn = QPushButton("Chart")
+        self.chart_btn.setCheckable(True)
+        self.chart_btn.setMaximumWidth(80)
+        self.chart_btn.clicked.connect(lambda: self._switch_view("chart"))
+        header_layout.addWidget(self.chart_btn)
         
         layout.addWidget(self.header)
         
+        # Stacked widget for views
+        self.view_stack = QStackedWidget()
+        
+        # Order book ladder (default view)
+        self.ladder_widget = OrderBookLadderWidget(theme=self.theme_manager.current_theme)
+        self.view_stack.addWidget(self.ladder_widget)
+        
         # Depth chart
         self.depth_chart = DepthChartWidget()
-        layout.addWidget(self.depth_chart, stretch=1)
+        self.view_stack.addWidget(self.depth_chart)
+        
+        layout.addWidget(self.view_stack, stretch=1)
         
         # Status label
         self.status_label = QLabel("")
@@ -236,10 +242,22 @@ class OrderBookPanel(QWidget):
         self.status_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.status_label)
     
+    def _switch_view(self, view: str):
+        """Switch between ladder and chart views."""
+        if view == "ladder":
+            self.view_stack.setCurrentIndex(0)
+            self.ladder_btn.setChecked(True)
+            self.chart_btn.setChecked(False)
+        else:
+            self.view_stack.setCurrentIndex(1)
+            self.ladder_btn.setChecked(False)
+            self.chart_btn.setChecked(True)
+    
     def _on_theme_changed(self, theme: str):
         """Handle theme change."""
         self._apply_theme()
         self.depth_chart.set_theme(theme)
+        self.ladder_widget.set_theme(theme)
     
     def _apply_theme(self):
         """Apply theme styling."""
@@ -256,25 +274,39 @@ class OrderBookPanel(QWidget):
         """Get dark theme stylesheet."""
         return """
             QWidget {
-                background-color: #1e1e1e;
+                background-color: #1a1d2e;
                 color: #ffffff;
             }
             #depthHeader {
-                background-color: #2d2d2d;
-                border-bottom: 2px solid #00d4ff;
+                background-color: #232739;
+                border-bottom: 1px solid #2a2f45;
             }
             #depthTitle {
-                color: #00d4ff;
-            }
-            #statLabel {
-                color: #cccccc;
-                font-size: 11px;
+                color: #ffffff;
             }
             #statusLabel {
-                color: #888888;
+                color: #8b92ab;
                 font-size: 10px;
                 font-style: italic;
                 padding: 5px;
+                background-color: #232739;
+            }
+            QPushButton {
+                background-color: #2a2f45;
+                color: #8b92ab;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #343a52;
+                color: #ffffff;
+            }
+            QPushButton:checked {
+                background-color: #00d4ff;
+                color: #1a1d2e;
             }
         """
     
@@ -292,15 +324,28 @@ class OrderBookPanel(QWidget):
             #depthTitle {
                 color: #0066cc;
             }
-            #statLabel {
-                color: #333333;
-                font-size: 11px;
-            }
             #statusLabel {
                 color: #666666;
                 font-size: 10px;
                 font-style: italic;
                 padding: 5px;
+            }
+            QPushButton {
+                background-color: #e8e8e8;
+                color: #333333;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #d8d8d8;
+                color: #000000;
+            }
+            QPushButton:checked {
+                background-color: #0066cc;
+                color: #ffffff;
             }
         """
     
@@ -326,28 +371,31 @@ class OrderBookPanel(QWidget):
         if not BinanceOrderBook.is_binance_ticker(self.current_ticker):
             return
         
-        # Fetch order book
-        summary = self.binance_api.get_depth_summary(self.current_ticker, levels=50)
+        # Fetch order book with more levels for ladder view
+        summary = self.binance_api.get_depth_summary(self.current_ticker, levels=500)
         
         if not summary:
             self.status_label.setText("Failed to fetch depth data")
             return
         
-        # Update stats
-        spread_pct = summary["spread_pct"]
-        self.spread_label.setText(f"Spread: ${summary['spread']:.2f} ({spread_pct:.3f}%)")
-        self.bid_volume_label.setText(f"Bid Vol: {summary['bid_volume']:.4f}")
-        self.ask_volume_label.setText(f"Ask Vol: {summary['ask_volume']:.4f}")
+        # Update ladder widget
+        self.ladder_widget.update_order_book(
+            summary["bids"],
+            summary["asks"],
+            summary["spread"],
+            summary["spread_pct"],
+        )
         
-        # Update chart
+        # Update depth chart
         self.depth_chart.plot_depth(summary["bids"], summary["asks"])
         
         # Update status
         timestamp = summary["timestamp"].strftime("%H:%M:%S")
-        self.status_label.setText(f"Updated: {timestamp}")
+        source = "Binance.US" if "binance.us" in summary.get("source", "") else "Binance"
+        self.status_label.setText(f"Updated: {timestamp} • {source}")
     
-    def start_updates(self, interval_ms: int = 5000):
-        """Start automatic updates."""
+    def start_updates(self, interval_ms: int = 2000):
+        """Start automatic updates (2 seconds for ladder view)."""
         self.update_timer.start(interval_ms)
     
     def stop_updates(self):
@@ -355,11 +403,9 @@ class OrderBookPanel(QWidget):
         self.update_timer.stop()
     
     def clear_depth(self):
-        """Clear the depth chart and stats."""
+        """Clear the depth chart and ladder."""
         self.depth_chart.clear_depth()
-        self.spread_label.setText("Spread: --")
-        self.bid_volume_label.setText("Bid Vol: --")
-        self.ask_volume_label.setText("Ask Vol: --")
+        self.ladder_widget.clear_order_book()
         self.status_label.setText("")
     
     def closeEvent(self, event):

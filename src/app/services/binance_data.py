@@ -11,9 +11,13 @@ class BinanceOrderBook:
     
     Free API with no authentication required.
     Rate limit: 1200 requests per minute (20/second)
+    
+    Supports both Binance.com (international) and Binance.US (US users).
+    Will automatically try Binance.US if Binance.com is blocked (451 error).
     """
     
-    BASE_URL = "https://api.binance.com"
+    BASE_URL_INTL = "https://api.binance.com"
+    BASE_URL_US = "https://api.binance.us"
     
     # Mapping from yfinance ticker format to Binance symbol format
     TICKER_MAP = {
@@ -39,9 +43,35 @@ class BinanceOrderBook:
         "TRX-USD": "TRXUSDT",
     }
     
-    def __init__(self):
+    def __init__(self, prefer_us_api: bool = True):
+        """
+        Initialize the Binance order book service.
+        
+        Args:
+            prefer_us_api: If True (default), try Binance.US first, then fallback to Binance.com.
+                          If False, try Binance.com first, then fallback to Binance.US.
+        """
         self._cache = {}
         self._cache_duration = timedelta(seconds=5)  # Cache for 5 seconds
+        self.prefer_us_api = prefer_us_api
+        
+        # Track which API is currently working
+        self._working_base_url = None
+    
+    def _get_base_url(self) -> str:
+        """Get the base URL to use, with automatic fallback."""
+        if self._working_base_url:
+            return self._working_base_url
+        
+        # Default based on preference
+        return self.BASE_URL_US if self.prefer_us_api else self.BASE_URL_INTL
+    
+    def _try_fallback_url(self, primary_url: str) -> str:
+        """Get the fallback URL if primary fails."""
+        if primary_url == self.BASE_URL_US:
+            return self.BASE_URL_INTL
+        else:
+            return self.BASE_URL_US
     
     @classmethod
     def is_binance_ticker(cls, ticker: str) -> bool:
@@ -60,6 +90,8 @@ class BinanceOrderBook:
     ) -> Optional[Dict[str, List[Tuple[float, float]]]]:
         """
         Fetch order book depth data from Binance.
+        
+        Automatically handles geo-blocking by trying both Binance.com and Binance.US.
         
         Args:
             ticker: yfinance format ticker (e.g., "BTC-USD")
@@ -86,11 +118,57 @@ class BinanceOrderBook:
         if limit not in valid_limits:
             limit = 100  # Default
         
+        # Try primary URL first
+        primary_url = self._get_base_url()
+        result = self._fetch_from_url(primary_url, symbol, limit)
+        
+        if result is not None:
+            # Success! Remember this URL works
+            self._working_base_url = primary_url
+            
+            # Cache the result
+            self._cache[cache_key] = (result, datetime.now())
+            return result
+        
+        # Primary failed - try fallback if we haven't locked to a working URL
+        if self._working_base_url is None:
+            fallback_url = self._try_fallback_url(primary_url)
+            print(f"Primary Binance API failed, trying fallback: {fallback_url}")
+            
+            result = self._fetch_from_url(fallback_url, symbol, limit)
+            
+            if result is not None:
+                # Fallback worked! Remember it
+                self._working_base_url = fallback_url
+                print(f"Successfully connected using {fallback_url}")
+                
+                # Cache the result
+                self._cache[cache_key] = (result, datetime.now())
+                return result
+        
+        # Both failed
+        return None
+    
+    def _fetch_from_url(
+        self, base_url: str, symbol: str, limit: int
+    ) -> Optional[Dict[str, List[Tuple[float, float]]]]:
+        """
+        Fetch order book from a specific Binance API URL.
+        
+        Returns None if fetch fails (including geo-blocking).
+        """
         try:
-            url = f"{self.BASE_URL}/api/v3/depth"
+            url = f"{base_url}/api/v3/depth"
             params = {"symbol": symbol, "limit": limit}
             
             response = requests.get(url, params=params, timeout=5)
+            
+            # Check for geo-blocking (451 error)
+            if response.status_code == 451:
+                api_name = "Binance.US" if "binance.us" in base_url else "Binance.com"
+                print(f"{api_name} is geo-blocked in your region (HTTP 451)")
+                return None
+            
             response.raise_for_status()
             
             data = response.json()
@@ -100,19 +178,15 @@ class BinanceOrderBook:
             bids = [(float(price), float(qty)) for price, qty in data.get("bids", [])]
             asks = [(float(price), float(qty)) for price, qty in data.get("asks", [])]
             
-            result = {
+            return {
                 "bids": bids,  # Sorted descending by price
                 "asks": asks,  # Sorted ascending by price
                 "timestamp": datetime.now(),
+                "source": base_url,  # Track which API we used
             }
             
-            # Cache the result
-            self._cache[cache_key] = (result, datetime.now())
-            
-            return result
-            
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching Binance order book for {ticker}: {e}")
+            # Don't print error here - let caller handle fallback
             return None
         except (KeyError, ValueError) as e:
             print(f"Error parsing Binance order book data: {e}")
@@ -170,8 +244,27 @@ class BinanceOrderBook:
             "bids": bids,
             "asks": asks,
             "timestamp": data["timestamp"],
+            "source": data.get("source", "unknown"),  # Which API was used
+        }
+    
+    def get_api_status(self) -> Dict[str, any]:
+        """
+        Get information about which Binance API is currently working.
+        
+        Returns:
+            Dict with API status information
+        """
+        return {
+            "working_url": self._working_base_url,
+            "prefer_us": self.prefer_us_api,
+            "is_us_api": self._working_base_url == self.BASE_URL_US if self._working_base_url else None,
         }
     
     def clear_cache(self):
         """Clear the order book cache."""
         self._cache.clear()
+    
+    def reset_api_selection(self):
+        """Reset the API selection to allow re-trying both endpoints."""
+        self._working_base_url = None
+        print("Reset Binance API selection - will try both endpoints again")
