@@ -8,6 +8,9 @@ from app.ui.modules.chart.chart_module import ChartModule
 from app.ui.modules.settings_module import SettingsModule
 from app.ui.modules.placeholder_modules import (
     AnalysisModule,
+    CryptoDashboardModule,
+    DeFiModule,
+    NFTModule,
     NewsModule,
     PortfolioModule,
     ScreenerModule,
@@ -33,6 +36,9 @@ def main() -> int:
 
     # Add modules (pass theme_manager to modules that need it)
     hub.add_module("charts", ChartModule(theme_manager))
+    hub.add_module("crypto_dashboard", CryptoDashboardModule())
+    hub.add_module("defi", DeFiModule())
+    hub.add_module("nft", NFTModule())
     hub.add_module("portfolio", PortfolioModule())
     hub.add_module("watchlist", WatchlistModule())
     hub.add_module("news", NewsModule())
@@ -43,7 +49,7 @@ def main() -> int:
     # Show home screen on startup
     hub.show_initial_screen()
 
-    hub.show()
+    hub.showMaximized()  # Launch in maximized window
     return app.exec()
 
 

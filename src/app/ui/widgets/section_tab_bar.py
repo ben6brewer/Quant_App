@@ -21,6 +21,7 @@ class SectionTabBar(QWidget):
         self.theme_manager = theme_manager
         self.buttons: Dict[str, QPushButton] = {}
         self.button_group: Optional[QButtonGroup] = None
+        self.home_button: Optional[QPushButton] = None
 
         self._setup_ui()
         self._apply_theme()
@@ -45,6 +46,18 @@ class SectionTabBar(QWidget):
         # Add stretch before tabs to center them
         layout.addStretch(1)
 
+        # Create "Home" tab (shows all modules)
+        self.home_button = QPushButton("Home")
+        self.home_button.setObjectName("sectionTab")
+        self.home_button.setCheckable(True)
+        self.home_button.setCursor(Qt.PointingHandCursor)
+        self.home_button.setMinimumWidth(120)
+        self.home_button.setFixedHeight(40)
+        self.home_button.setChecked(True)  # Default selected
+        self.home_button.clicked.connect(self._on_home_clicked)
+        layout.addWidget(self.home_button)
+        self.button_group.addButton(self.home_button)
+
         # Create tab for each section
         for section_name in MODULE_SECTIONS.keys():
             btn = QPushButton(section_name)
@@ -64,10 +77,23 @@ class SectionTabBar(QWidget):
         # Add stretch after tabs to center them
         layout.addStretch(1)
 
-    def _on_tab_clicked(self, section_name: str, checked: bool) -> None:
-        """Handle tab button click."""
+    def _on_home_clicked(self, checked: bool) -> None:
+        """Handle Home tab click."""
         if checked:
-            # Tab was selected - deselect other tabs
+            # Home selected - deselect all section tabs
+            for btn in self.buttons.values():
+                btn.setChecked(False)
+            # Show all modules
+            self.section_changed.emit("")
+        else:
+            # Don't allow deselecting Home without selecting another tab
+            self.home_button.setChecked(True)
+
+    def _on_tab_clicked(self, section_name: str, checked: bool) -> None:
+        """Handle section tab button click."""
+        if checked:
+            # Tab was selected - deselect other tabs and Home
+            self.home_button.setChecked(False)
             for name, btn in self.buttons.items():
                 if name != section_name:
                     btn.setChecked(False)
@@ -75,16 +101,24 @@ class SectionTabBar(QWidget):
             # Emit section name
             self.section_changed.emit(section_name)
         else:
-            # Tab was deselected - show all modules
+            # Tab was deselected - activate Home
+            self.home_button.setChecked(True)
             self.section_changed.emit("")
 
     def set_active_section(self, section: str) -> None:
         """Set active section programmatically."""
-        for name, btn in self.buttons.items():
-            btn.setChecked(name == section)
+        if section == "" or section == "Home":
+            self.home_button.setChecked(True)
+            for btn in self.buttons.values():
+                btn.setChecked(False)
+        else:
+            self.home_button.setChecked(False)
+            for name, btn in self.buttons.items():
+                btn.setChecked(name == section)
 
     def clear_selection(self) -> None:
-        """Clear all tab selections (show all modules)."""
+        """Clear all tab selections and activate Home."""
+        self.home_button.setChecked(True)
         for btn in self.buttons.values():
             btn.setChecked(False)
 

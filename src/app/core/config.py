@@ -79,6 +79,11 @@ MODULE_SECTIONS = {
     "Charting": [
         {"id": "charts", "label": "Charts", "emoji": "📊"}
     ],
+    "Crypto": [
+        {"id": "crypto_dashboard", "label": "Crypto Dashboard", "emoji": "₿"},
+        {"id": "defi", "label": "DeFi", "emoji": "🏦"},
+        {"id": "nft", "label": "NFT Tracker", "emoji": "🖼️"}
+    ],
     "Portfolio": [
         {"id": "portfolio", "label": "Portfolio", "emoji": "💼"},
         {"id": "watchlist", "label": "Watchlist", "emoji": "👁"}
@@ -97,9 +102,9 @@ ALL_MODULES = [module for section_modules in MODULE_SECTIONS.values() for module
 
 # Tile settings
 TILE_SCREENSHOT_DIR = Path.home() / ".quant_terminal" / "screenshots"
-TILE_WIDTH = 360           # Increased from 280 for 3-column layout
-TILE_HEIGHT = 308          # Decreased from 344 for 4:3 preview (320×240)
-TILE_COLS = 3              # 3-column grid (wider tiles)
+TILE_WIDTH = 453           # 3-column layout (16:9 aspect ratio, ~70% of original)
+TILE_HEIGHT = 285          # 16:9 preview (453×255) + 30px label
+TILE_COLS = 3              # 3-column grid
 TILE_SPACING = 20
 
 # Chart view settings

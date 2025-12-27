@@ -46,13 +46,13 @@ class ModuleTile(QFrame):
     def _setup_ui(self) -> None:
         """Setup the tile UI."""
         # Set fixed size
-        self.setFixedSize(360, 308)  # Accommodate 320×240 screenshot (4:3 ratio) + margins
+        self.setFixedSize(453, 285)  # Accommodate 453×255 screenshot (16:9 ratio) + label
         self.setCursor(Qt.PointingHandCursor)
 
         # Main layout
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         # Top row: Screenshot area + star button
         top_widget = QWidget()
@@ -62,7 +62,7 @@ class ModuleTile(QFrame):
 
         # Screenshot
         self.screenshot_label = QLabel()
-        self.screenshot_label.setFixedSize(320, 240)  # 4:3 aspect ratio
+        self.screenshot_label.setFixedSize(453, 255)  # 16:9 aspect ratio
         self.screenshot_label.setScaledContents(True)
         self._load_screenshot()
 
@@ -151,7 +151,7 @@ class ModuleTile(QFrame):
                     color: #ffffff;
                     font-size: 14px;
                     font-weight: bold;
-                    padding: 0px;
+                    padding: 8px 0px;
                 }
                 #starButton {
                     background-color: transparent;
@@ -180,7 +180,7 @@ class ModuleTile(QFrame):
                     color: #000000;
                     font-size: 14px;
                     font-weight: bold;
-                    padding: 0px;
+                    padding: 8px 0px;
                 }
                 #starButton {
                     background-color: transparent;
@@ -209,7 +209,7 @@ class ModuleTile(QFrame):
                 color: #e8e8e8;
                 font-size: 14px;
                 font-weight: bold;
-                padding: 0px;
+                padding: 8px 0px;
             }
             #starButton {
                 background-color: transparent;

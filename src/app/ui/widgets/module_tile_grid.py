@@ -24,6 +24,7 @@ class ModuleTileGrid(QScrollArea):
         self.theme_manager = theme_manager
         self.tiles: Dict[str, ModuleTile] = {}
         self.current_section_filter = ""  # "" means show all
+        self.current_search_filter = ""   # "" means no search filtering
 
         self._setup_ui()
         self._create_all_tiles()
@@ -45,7 +46,7 @@ class ModuleTileGrid(QScrollArea):
 
         # Main layout
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(30, 30, 30, 30)
+        container_layout.setContentsMargins(20, 20, 20, 0)  # 20px padding on left, top, right
         container_layout.setSpacing(0)
 
         # Grid layout
@@ -99,26 +100,36 @@ class ModuleTileGrid(QScrollArea):
         self.current_section_filter = section
         self.refresh_tiles()
 
+    def set_search_filter(self, query: str) -> None:
+        """
+        Set search filter to show only modules matching the query.
+        Pass "" to clear search filter.
+        Search is case-insensitive and matches against module labels.
+        """
+        self.current_search_filter = query.strip()
+        self.refresh_tiles()
+
     def refresh_tiles(self) -> None:
         """Refresh tile layout (re-sort and re-layout)."""
         self._layout_tiles()
 
     def _get_filtered_tiles(self) -> List[ModuleTile]:
-        """Get tiles filtered by current section filter."""
-        if not self.current_section_filter:
-            # Show all tiles
-            return list(self.tiles.values())
+        """Get tiles filtered by current section filter AND search filter."""
+        # Start with all tiles
+        tiles = list(self.tiles.values())
 
-        # Filter by section
-        filtered_tiles = []
-        modules_in_section = MODULE_SECTIONS.get(self.current_section_filter, [])
-        module_ids_in_section = [m["id"] for m in modules_in_section]
+        # Apply section filter first
+        if self.current_section_filter:
+            modules_in_section = MODULE_SECTIONS.get(self.current_section_filter, [])
+            module_ids_in_section = [m["id"] for m in modules_in_section]
+            tiles = [t for t in tiles if t.module_id in module_ids_in_section]
 
-        for module_id in module_ids_in_section:
-            if module_id in self.tiles:
-                filtered_tiles.append(self.tiles[module_id])
+        # Apply search filter on top of section filter
+        if self.current_search_filter:
+            search_lower = self.current_search_filter.lower()
+            tiles = [t for t in tiles if search_lower in t.label.lower()]
 
-        return filtered_tiles
+        return tiles
 
     def _sort_tiles(self, tiles: List[ModuleTile]) -> List[ModuleTile]:
         """Sort tiles: favorites first, then alphabetical by label."""
@@ -146,7 +157,7 @@ class ModuleTileGrid(QScrollArea):
         for tile in self.tiles.values():
             tile.hide()
 
-        # Layout visible tiles in 4-column grid
+        # Layout visible tiles in 3-column grid
         for idx, tile in enumerate(sorted_tiles):
             row = idx // TILE_COLS
             col = idx % TILE_COLS

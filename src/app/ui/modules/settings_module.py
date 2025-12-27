@@ -43,7 +43,7 @@ class SettingsModule(QWidget):
         header = QLabel("Settings")
         header.setStyleSheet("""
             QLabel {
-                font-size: 32px;
+                font-size: 24px;
                 font-weight: bold;
                 margin-bottom: 10px;
             }

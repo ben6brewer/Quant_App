@@ -102,3 +102,36 @@ class AnalysisModule(PlaceholderModule):
             "Perform in-depth technical analysis, backtesting, and quantitative research.",
             parent,
         )
+
+
+class CryptoDashboardModule(PlaceholderModule):
+    """Crypto portfolio and market overview."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            "Crypto Dashboard",
+            "Track your crypto portfolio, view market data, and monitor blockchain metrics.",
+            parent,
+        )
+
+
+class DeFiModule(PlaceholderModule):
+    """DeFi protocols and yield tracking."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            "DeFi Tools",
+            "Explore DeFi protocols, track staking positions, and analyze yield opportunities.",
+            parent,
+        )
+
+
+class NFTModule(PlaceholderModule):
+    """NFT portfolio tracker."""
+
+    def __init__(self, parent=None):
+        super().__init__(
+            "NFT Tracker",
+            "Monitor your NFT collection, track floor prices, and discover trending collections.",
+            parent,
+        )

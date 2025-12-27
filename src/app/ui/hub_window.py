@@ -7,9 +7,11 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStackedLayout,
     QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
     QWidget,
 )
-from PySide6.QtCore import Qt, QCoreApplication
+from PySide6.QtCore import Qt, QCoreApplication, QPoint
 from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor
 
 from app.core.theme_manager import ThemeManager
@@ -197,6 +199,9 @@ class HubWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 
+        # Remove native title bar
+        self.setWindowFlags(Qt.FramelessWindowHint)
+
         # Theme manager
         self.theme_manager = theme_manager
         self.theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -205,17 +210,105 @@ class HubWindow(QMainWindow):
         self.modules = {}
         self.module_containers = {}
 
-        # Setup navigation
-        self._setup_navigation()
+        # For window dragging
+        self._drag_pos = QPoint()
+
+        # Setup UI
+        self._setup_ui()
 
         # Apply initial theme
         self._apply_theme()
+
+    def _setup_ui(self) -> None:
+        """Setup the main UI with custom title bar."""
+        # Main container
+        container = QWidget()
+        main_layout = QVBoxLayout(container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Custom title bar
+        self.title_bar = self._create_title_bar()
+        main_layout.addWidget(self.title_bar)
+
+        # Navigation area
+        self._setup_navigation()
+        main_layout.addWidget(self.main_stack)
+
+        self.setCentralWidget(container)
+
+    def _create_title_bar(self) -> QWidget:
+        """Create custom title bar with window controls."""
+        title_bar = QWidget()
+        title_bar.setObjectName("titleBar")
+        title_bar.setFixedHeight(32)
+
+        layout = QHBoxLayout(title_bar)
+        layout.setContentsMargins(10, 0, 5, 0)
+        layout.setSpacing(5)
+
+        # App title
+        self.title_label = QLabel(f"{APP_NAME} v{APP_VERSION}")
+        self.title_label.setObjectName("titleLabel")
+        layout.addWidget(self.title_label)
+
+        layout.addStretch()
+
+        # Minimize button
+        min_btn = QPushButton("−")
+        min_btn.setObjectName("titleBarButton")
+        min_btn.setFixedSize(40, 32)
+        min_btn.setCursor(Qt.PointingHandCursor)
+        min_btn.clicked.connect(self.showMinimized)
+        layout.addWidget(min_btn)
+
+        # Maximize/Restore button
+        self.max_btn = QPushButton("□")
+        self.max_btn.setObjectName("titleBarButton")
+        self.max_btn.setFixedSize(40, 32)
+        self.max_btn.setCursor(Qt.PointingHandCursor)
+        self.max_btn.clicked.connect(self._toggle_maximize)
+        layout.addWidget(self.max_btn)
+
+        # Close button
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("titleBarCloseButton")
+        close_btn.setFixedSize(40, 32)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+
+        # Enable dragging from title bar
+        title_bar.mousePressEvent = self._title_bar_mouse_press
+        title_bar.mouseMoveEvent = self._title_bar_mouse_move
+
+        return title_bar
+
+    def _toggle_maximize(self) -> None:
+        """Toggle between maximized and normal state."""
+        if self.isMaximized():
+            self.showNormal()
+            self.max_btn.setText("□")
+        else:
+            self.showMaximized()
+            self.max_btn.setText("❐")
+
+    def _title_bar_mouse_press(self, event: QMouseEvent) -> None:
+        """Handle mouse press on title bar for dragging."""
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def _title_bar_mouse_move(self, event: QMouseEvent) -> None:
+        """Handle mouse move on title bar for dragging."""
+        if event.buttons() == Qt.LeftButton and not self.isMaximized():
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
 
     def _setup_navigation(self) -> None:
         """Setup dual-mode navigation (home screen + module views)."""
         # Main stack: home screen + module containers
         self.main_stack = QStackedWidget()
-        self.setCentralWidget(self.main_stack)
 
         # Home screen (index 0)
         self.home_screen = HomeScreen(self.theme_manager)
@@ -337,19 +430,129 @@ class HubWindow(QMainWindow):
         """Get complete dark theme stylesheet."""
         return (
             self.theme_manager.get_dark_content_style() +
-            self.theme_manager.get_dark_home_button_style()
+            self.theme_manager.get_dark_home_button_style() +
+            self._get_dark_title_bar_style()
         )
 
     def _get_light_stylesheet(self) -> str:
         """Get complete light theme stylesheet."""
         return (
             self.theme_manager.get_light_content_style() +
-            self.theme_manager.get_light_home_button_style()
+            self.theme_manager.get_light_home_button_style() +
+            self._get_light_title_bar_style()
         )
 
     def _get_bloomberg_stylesheet(self) -> str:
         """Get complete Bloomberg theme stylesheet."""
         return (
             self.theme_manager.get_bloomberg_content_style() +
-            self.theme_manager.get_bloomberg_home_button_style()
+            self.theme_manager.get_bloomberg_home_button_style() +
+            self._get_bloomberg_title_bar_style()
         )
+
+    def _get_dark_title_bar_style(self) -> str:
+        """Get dark theme title bar stylesheet."""
+        return """
+            #titleBar {
+                background-color: #2d2d2d;
+                border-bottom: 1px solid #3d3d3d;
+            }
+            #titleLabel {
+                background-color: transparent;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            #titleBarButton {
+                background-color: transparent;
+                color: #ffffff;
+                border: none;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            #titleBarButton:hover {
+                background-color: #3d3d3d;
+            }
+            #titleBarCloseButton {
+                background-color: transparent;
+                color: #ffffff;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            #titleBarCloseButton:hover {
+                background-color: #d32f2f;
+            }
+        """
+
+    def _get_light_title_bar_style(self) -> str:
+        """Get light theme title bar stylesheet."""
+        return """
+            #titleBar {
+                background-color: #f5f5f5;
+                border-bottom: 1px solid #cccccc;
+            }
+            #titleLabel {
+                background-color: transparent;
+                color: #000000;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            #titleBarButton {
+                background-color: transparent;
+                color: #000000;
+                border: none;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            #titleBarButton:hover {
+                background-color: #e0e0e0;
+            }
+            #titleBarCloseButton {
+                background-color: transparent;
+                color: #000000;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            #titleBarCloseButton:hover {
+                background-color: #d32f2f;
+                color: #ffffff;
+            }
+        """
+
+    def _get_bloomberg_title_bar_style(self) -> str:
+        """Get Bloomberg theme title bar stylesheet."""
+        return """
+            #titleBar {
+                background-color: #0d1420;
+                border-bottom: 1px solid #1a2332;
+            }
+            #titleLabel {
+                background-color: transparent;
+                color: #e8e8e8;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            #titleBarButton {
+                background-color: transparent;
+                color: #e8e8e8;
+                border: none;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            #titleBarButton:hover {
+                background-color: #162030;
+            }
+            #titleBarCloseButton {
+                background-color: transparent;
+                color: #e8e8e8;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            #titleBarCloseButton:hover {
+                background-color: #d32f2f;
+                color: #ffffff;
+            }
+        """
