@@ -51,7 +51,7 @@ class ModuleTileGrid(QScrollArea):
         # Grid layout
         self.grid_layout = QGridLayout()
         self.grid_layout.setSpacing(TILE_SPACING)
-        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)  # Center horizontally
         container_layout.addLayout(self.grid_layout)
 
         # Add stretch to push grid to top

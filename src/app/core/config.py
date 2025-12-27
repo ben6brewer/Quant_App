@@ -83,7 +83,7 @@ ALL_MODULES = [module for section_modules in MODULE_SECTIONS.values() for module
 # Tile settings
 TILE_SCREENSHOT_DIR = Path.home() / ".quant_terminal" / "screenshots"
 TILE_WIDTH = 280
-TILE_HEIGHT = 200
+TILE_HEIGHT = 344  # Updated for 264×264 screenshot + margins
 TILE_COLS = 4
 TILE_SPACING = 20
 

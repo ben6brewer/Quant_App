@@ -46,7 +46,7 @@ class ModuleTile(QFrame):
     def _setup_ui(self) -> None:
         """Setup the tile UI."""
         # Set fixed size
-        self.setFixedSize(280, 240)
+        self.setFixedSize(280, 344)  # Accommodate 264×264 screenshot + margins
         self.setCursor(Qt.PointingHandCursor)
 
         # Main layout
@@ -62,7 +62,7 @@ class ModuleTile(QFrame):
 
         # Screenshot
         self.screenshot_label = QLabel()
-        self.screenshot_label.setFixedSize(264, 160)
+        self.screenshot_label.setFixedSize(264, 264)  # Square aspect ratio
         self.screenshot_label.setScaledContents(True)
         self._load_screenshot()
 
@@ -81,7 +81,7 @@ class ModuleTile(QFrame):
         layout.addWidget(top_widget)
 
         # Label
-        self.label_widget = QLabel(f"{self.emoji} {self.label}")
+        self.label_widget = QLabel(self.label)  # Text only, no emoji
         self.label_widget.setObjectName("tileLabel")
         self.label_widget.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.label_widget)
