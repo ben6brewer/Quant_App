@@ -74,9 +74,6 @@ MODULE_SECTIONS = {
     ],
     "Analysis": [
         {"id": "analysis", "label": "Analysis", "emoji": "📈"}
-    ],
-    "Settings": [
-        {"id": "settings", "label": "Settings", "emoji": "⚙️"}
     ]
 }
 

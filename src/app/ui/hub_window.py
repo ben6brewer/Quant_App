@@ -57,6 +57,7 @@ class HubWindow(QMainWindow):
 
         # Connect home screen signals
         self.home_screen.module_selected.connect(self.open_module)
+        self.home_screen.settings_requested.connect(self._open_settings)
 
     def add_module(self, module_id: str, widget: QWidget) -> None:
         """Add a module widget wrapped in container with home button."""
@@ -89,7 +90,8 @@ class HubWindow(QMainWindow):
     def _create_home_button_overlay(self) -> QWidget:
         """Create transparent overlay with home button in top-left corner."""
         overlay = QWidget()
-        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        # Make overlay pass-through for mouse events EXCEPT for children
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         overlay.setStyleSheet("background: transparent;")
 
         # Layout for home button
@@ -103,6 +105,9 @@ class HubWindow(QMainWindow):
         home_btn.setFixedSize(100, 40)
         home_btn.setCursor(Qt.PointingHandCursor)
         home_btn.clicked.connect(self.show_home)
+
+        # CRITICAL: Button must not inherit parent's mouse transparency
+        home_btn.setAttribute(Qt.WA_TransparentForMouseEvents, False)
 
         layout.addWidget(home_btn)
         layout.addStretch(1)
@@ -126,6 +131,10 @@ class HubWindow(QMainWindow):
     def show_initial_screen(self) -> None:
         """Show home screen on startup."""
         self.show_home()
+
+    def _open_settings(self) -> None:
+        """Open Settings module from home screen button."""
+        self.open_module("settings")
 
     def _on_theme_changed(self, theme: str) -> None:
         """Handle theme change signal."""

@@ -251,6 +251,20 @@ class ChartModule(QWidget):
         self.indicators_btn.setMaximumWidth(120)
         controls.addWidget(self.indicators_btn)
 
+        # Depth button (placeholder - disabled for now)
+        self.depth_btn = QPushButton("📈 Depth")
+        self.depth_btn.setCheckable(True)
+        self.depth_btn.setMaximumWidth(120)
+        self.depth_btn.setEnabled(False)
+        self.depth_btn.setToolTip("Order book depth (coming soon)")
+        controls.addWidget(self.depth_btn)
+
+        # Chart settings button
+        self.chart_settings_btn = QPushButton("⚙️ Settings")
+        self.chart_settings_btn.setMaximumWidth(120)
+        self.chart_settings_btn.clicked.connect(self._open_settings)
+        controls.addWidget(self.chart_settings_btn)
+
         controls.addStretch(1)
         root.addWidget(self.controls_widget)
 
@@ -383,6 +397,14 @@ class ChartModule(QWidget):
     def _toggle_indicator_panel(self) -> None:
         """Toggle the indicator selection panel visibility."""
         self.indicator_panel.setVisible(self.indicators_btn.isChecked())
+
+    def _open_settings(self) -> None:
+        """Open chart settings dialog."""
+        QMessageBox.information(
+            self,
+            "Settings",
+            "Chart-specific settings coming soon.\n\nUse the Settings button on the home screen for app settings."
+        )
 
     def _apply_indicators(self) -> None:
         """Apply selected indicators to the chart."""

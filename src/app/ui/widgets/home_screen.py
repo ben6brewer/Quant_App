@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from typing import Optional
-from PySide6.QtWidgets import QWidget, QVBoxLayout
-from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton
+from PySide6.QtCore import Signal, Qt
 
 from app.core.theme_manager import ThemeManager
 from app.core.config import MODULE_SECTIONS
@@ -16,6 +16,7 @@ class HomeScreen(QWidget):
     """
 
     module_selected = Signal(str)  # Emitted when user selects a module
+    settings_requested = Signal()  # Emitted when Settings button is clicked
 
     def __init__(self, theme_manager: ThemeManager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -31,9 +32,25 @@ class HomeScreen(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Section tab bar at top
+        # Top bar: Section tabs + Settings button
+        top_bar = QWidget()
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(0, 0, 0, 0)
+        top_bar_layout.setSpacing(0)
+
+        # Section tab bar (left)
         self.tab_bar = SectionTabBar(self.theme_manager)
-        layout.addWidget(self.tab_bar)
+        top_bar_layout.addWidget(self.tab_bar)
+
+        # Settings button (right)
+        self.settings_btn = QPushButton("⚙️ Settings")
+        self.settings_btn.setObjectName("settingsButton")
+        self.settings_btn.setFixedSize(120, 40)
+        self.settings_btn.setCursor(Qt.PointingHandCursor)
+        self.settings_btn.clicked.connect(self._on_settings_clicked)
+        top_bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignRight)
+
+        layout.addWidget(top_bar)
 
         # Module tile grid below
         self.tile_grid = ModuleTileGrid(self.theme_manager)
@@ -78,6 +95,10 @@ class HomeScreen(QWidget):
     def _on_favorite_toggled(self, module_id: str, is_favorite: bool) -> None:
         """Handle favorite toggle - grid already refreshes itself."""
         pass  # Grid handles refresh internally
+
+    def _on_settings_clicked(self) -> None:
+        """Handle Settings button click."""
+        self.settings_requested.emit()
 
     def refresh(self) -> None:
         """Refresh the home screen (reload favorites and refresh grid)."""

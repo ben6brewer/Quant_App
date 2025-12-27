@@ -30,7 +30,7 @@ class SectionTabBar(QWidget):
 
     def _setup_ui(self) -> None:
         """Setup the tab bar UI."""
-        self.setFixedHeight(60)
+        self.setFixedHeight(50)
         self.setObjectName("sectionTabBar")
 
         # Horizontal layout

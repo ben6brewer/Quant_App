@@ -359,6 +359,21 @@ class ThemeManager(QObject):
             #homeButton:pressed {
                 background-color: #00b4df;
             }
+            #settingsButton {
+                background-color: #00d4ff;
+                color: #000000;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: bold;
+                margin: 5px 10px;
+            }
+            #settingsButton:hover {
+                background-color: #00c4ef;
+            }
+            #settingsButton:pressed {
+                background-color: #00b4df;
+            }
         """
 
     @staticmethod
@@ -377,6 +392,21 @@ class ThemeManager(QObject):
                 background-color: #0056b3;
             }
             #homeButton:pressed {
+                background-color: #004999;
+            }
+            #settingsButton {
+                background-color: #0066cc;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: bold;
+                margin: 5px 10px;
+            }
+            #settingsButton:hover {
+                background-color: #0056b3;
+            }
+            #settingsButton:pressed {
                 background-color: #004999;
             }
         """
