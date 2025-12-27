@@ -24,6 +24,7 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
