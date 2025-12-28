@@ -953,7 +953,7 @@ class ChartModule(QWidget):
             self.depth_btn.setVisible(is_binance)
 
             if is_binance:
-                self.depth_btn.setText("Depth ✓")
+                self.depth_btn.setText("Depth")
                 self.depth_btn.setToolTip(
                     f"✓ Order book depth available for {display_name}\n\n"
                     f"Click to show live Binance order book with:\n"
