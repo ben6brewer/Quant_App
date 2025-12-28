@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui
+from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import Qt, QTimer
 
 from app.utils.formatters import format_price_usd, format_date
 from app.core.config import CANDLE_BAR_WIDTH, DEFAULT_VIEW_PERIOD_DAYS, VIEW_PADDING_PERCENT
@@ -340,6 +342,9 @@ class PriceChart(pg.PlotWidget):
         self.showAxis("right")
         self.hideAxis("left")
 
+        # Add 10px padding to the right of the right axis
+        self.plotItem.layout.setColumnSpacing(2, 10)  # Column 2 is right axis
+
         self.price_vb = self.getViewBox()
         self.price_vb.setMouseEnabled(x=True, y=True)
 
@@ -371,10 +376,19 @@ class PriceChart(pg.PlotWidget):
         self._line = None
         self._price_indicator_lines = []  # Overlay indicators on price chart
         self._oscillator_indicator_lines = []  # Oscillator indicators on separate axis
-        
+
         # Track if we're dragging the oscillator
         self._oscillator_drag_active = False
         self._cursor_over_oscillator = False
+
+        # Price label
+        self._price_label = None  # Will be created when enabled
+        self.data = None  # Store original DataFrame for price lookup
+        self._price_label_positioned = False  # Track if initial positioning is done
+
+        # Date label (crosshair)
+        self._date_label = None  # Will be created when enabled
+        self._date_label_positioned = False  # Track if initial positioning is done
 
         self.candle_width = CANDLE_BAR_WIDTH
         self._has_initialized_view = False
@@ -393,10 +407,13 @@ class PriceChart(pg.PlotWidget):
         
         # Update oscillator ViewBox geometry when price ViewBox changes
         self.price_vb.sigRangeChanged.connect(self._update_oscillator_geometry)
-        
+
+        # Update price label when view range changes
+        self.price_vb.sigRangeChanged.connect(self._update_price_label)
+
         # Initialize oscillator geometry
         self._update_oscillator_geometry()
-        
+
         # Enable mouse tracking for cursor changes
         self.setMouseTracking(True)
 
@@ -492,7 +509,11 @@ class PriceChart(pg.PlotWidget):
                 # Restore default cursor
                 self.setCursor(QtCore.Qt.ArrowCursor)
                 self._cursor_over_oscillator = False
-        
+
+        # Update date label position based on mouse x-coordinate
+        if self._date_label and self.chart_settings.get('show_date_label', True):
+            self._update_date_label(ev.pos().x())
+
         # Otherwise use default behavior
         super().mouseMoveEvent(ev)
 
@@ -502,18 +523,49 @@ class PriceChart(pg.PlotWidget):
             self._oscillator_drag_active = False
             if hasattr(self, '_drag_start_pos'):
                 delattr(self, '_drag_start_pos')
-            
+
             # Reset cursor if not still over oscillator
             scene_pos = self.plotItem.vb.mapToScene(ev.pos())
             if not self._is_mouse_over_oscillator(scene_pos):
                 self.setCursor(QtCore.Qt.ArrowCursor)
                 self._cursor_over_oscillator = False
-            
+
             ev.accept()
             return
-        
+
         # Otherwise use default behavior
         super().mouseReleaseEvent(ev)
+
+    def leaveEvent(self, ev):
+        """Override to hide date label when mouse leaves the chart."""
+        # Hide date label when mouse leaves
+        if self._date_label:
+            self._date_label.hide()
+
+        super().leaveEvent(ev)
+
+    def resizeEvent(self, ev):
+        """Override to update price label position on resize."""
+        super().resizeEvent(ev)
+        # Update price label position after resize (if it exists)
+        if hasattr(self, '_price_label') and self._price_label and self._price_label.isVisible():
+            self._update_price_label()
+
+    def showEvent(self, ev):
+        """Override to update price label position when widget is shown."""
+        super().showEvent(ev)
+        # Trigger initial label positioning after widget is fully shown
+        if (hasattr(self, '_price_label') and self._price_label and
+            not self._price_label_positioned and
+            self.chart_settings.get('show_price_label', True)):
+            # Use a small delay to ensure layout is complete
+            QTimer.singleShot(100, self._initial_price_label_position)
+
+    def _initial_price_label_position(self):
+        """Perform initial price label positioning (called once after first show)."""
+        if not self._price_label_positioned:
+            self._update_price_label()
+            self._price_label_positioned = True
 
     def _clear_chart(self):
         """Custom clear method to properly clean up both price and oscillator ViewBoxes."""
@@ -524,7 +576,7 @@ class PriceChart(pg.PlotWidget):
             except:
                 pass
             self.legend = None
-        
+
         # Remove oscillator indicators - use slice copy to avoid modification during iteration
         for item in self._oscillator_indicator_lines[:]:
             try:
@@ -534,7 +586,7 @@ class PriceChart(pg.PlotWidget):
             except:
                 pass
         self._oscillator_indicator_lines.clear()
-        
+
         # Remove price indicators - use slice copy
         for item in self._price_indicator_lines[:]:
             try:
@@ -544,7 +596,7 @@ class PriceChart(pg.PlotWidget):
             except:
                 pass
         self._price_indicator_lines.clear()
-        
+
         # Remove candles manually
         if self._candles is not None:
             try:
@@ -554,7 +606,7 @@ class PriceChart(pg.PlotWidget):
             except:
                 pass
             self._candles = None
-        
+
         # Remove line manually
         if self._line is not None:
             try:
@@ -564,17 +616,25 @@ class PriceChart(pg.PlotWidget):
             except:
                 pass
             self._line = None
-        
+
+        # Hide price label if it exists
+        if self._price_label is not None:
+            self._price_label.hide()
+
+        # Hide date label if it exists
+        if self._date_label is not None:
+            self._date_label.hide()
+
         # Hide oscillator axis when cleared
         self.oscillator_axis.hide()
-        
+
         # Reset oscillator position
         self.oscillator_vb.set_vertical_offset(0)
-        
+
         # Reset cursor state
         self._cursor_over_oscillator = False
         self.setCursor(QtCore.Qt.ArrowCursor)
-        
+
         # Re-add legend after clear
         self.legend = self.addLegend(offset=(10, 10))
 
@@ -603,6 +663,207 @@ class PriceChart(pg.PlotWidget):
             self.setBackground(bg_color)
 
     # -----------------------------
+    # Price Label
+    # -----------------------------
+    def _get_theme_accent_color(self) -> tuple[int, int, int]:
+        """Get accent color based on current theme."""
+        if self._theme == "light":
+            return (0, 102, 204)  # Blue
+        elif self._theme == "bloomberg":
+            return (255, 128, 0)  # Orange
+        else:
+            return (0, 212, 255)  # Cyan
+
+    def _get_label_text_color(self) -> tuple[int, int, int]:
+        """Get text color for optimal contrast on accent background."""
+        if self._theme == "light":
+            return (255, 255, 255)  # White on blue
+        else:
+            return (0, 0, 0)  # Black on cyan/orange
+
+    def _get_rightmost_visible_price(self) -> float | None:
+        """
+        Get the price of the rightmost visible candlestick in the current view.
+
+        Returns:
+            Rightmost visible close price or None if no data
+        """
+        if self.data is None or self.data.empty:
+            return None
+
+        # Get visible X range
+        (x0, x1), _ = self.price_vb.viewRange()
+
+        # Clamp to data bounds
+        max_idx = len(self.data) - 1
+        rightmost_idx = int(min(x1, max_idx))
+
+        if rightmost_idx < 0 or rightmost_idx > max_idx:
+            return None
+
+        # Get close price at rightmost visible index
+        close_price = self.data.iloc[rightmost_idx]['Close']
+
+        return close_price
+
+    def _create_price_label(self):
+        """Create the price label as a QLabel widget overlay."""
+        if self._price_label is not None:
+            return  # Already exists
+
+        self._price_label = QLabel(self)
+        self._price_label.setAlignment(Qt.AlignCenter)
+        self._price_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Don't block mouse events
+        self._update_price_label_style()
+        self._price_label.show()
+
+    def _update_price_label_style(self):
+        """Update price label stylesheet based on theme."""
+        if not self._price_label:
+            return
+
+        accent_color = self._get_theme_accent_color()
+        text_color = self._get_label_text_color()
+
+        bg_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
+        fg_color = f"rgb({text_color[0]}, {text_color[1]}, {text_color[2]})"
+
+        self._price_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: {fg_color};
+                border: none;
+                padding: 2px 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }}
+        """)
+
+    def _update_price_label(self):
+        """Update price label position and text."""
+        if not self._price_label or not self.chart_settings.get('show_price_label', True):
+            if self._price_label:
+                self._price_label.hide()
+            return
+
+        rightmost_price = self._get_rightmost_visible_price()
+        if rightmost_price is None:
+            self._price_label.hide()
+            return
+
+        # Format and set text
+        label_text = format_price_usd(rightmost_price)
+        self._price_label.setText(label_text)
+
+        # Adjust size to fit content
+        self._price_label.adjustSize()
+
+        # Calculate y-position in view coordinates
+        if self._scale_mode == "log":
+            y_view = np.log10(rightmost_price)
+        else:
+            y_view = rightmost_price
+
+        # Map view coordinates to widget pixel coordinates
+        view_point = self.price_vb.mapViewToScene(pg.Point(0, y_view))
+        widget_point = self.mapFromScene(view_point)
+
+        # Get axis geometry to position label on the axis
+        axis_rect = self.getAxis('right').geometry()
+
+        # Position label on the y-axis at the price level
+        label_height = self._price_label.height()
+        x_pos = int(axis_rect.left())
+        y_pos = int(widget_point.y() - label_height / 2)
+
+        self._price_label.move(x_pos, y_pos)
+        self._price_label.show()
+
+    # -----------------------------
+    # Date label (crosshair)
+    # -----------------------------
+    def _create_date_label(self):
+        """Create the date label as a QLabel widget overlay."""
+        if self._date_label is not None:
+            return
+
+        self._date_label = QLabel(self)
+        self._date_label.setAlignment(Qt.AlignCenter)
+        self._date_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._update_date_label_style()
+        self._date_label.hide()  # Start hidden, show on mouse move
+
+    def _update_date_label_style(self):
+        """Update date label stylesheet based on theme."""
+        if not self._date_label:
+            return
+
+        accent_color = self._get_theme_accent_color()
+        text_color = self._get_label_text_color()
+
+        bg_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
+        fg_color = f"rgb({text_color[0]}, {text_color[1]}, {text_color[2]})"
+
+        self._date_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: {fg_color};
+                border: none;
+                padding: 2px 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }}
+        """)
+
+    def _update_date_label(self, mouse_x: int):
+        """Update date label position and text based on mouse x-coordinate.
+
+        Args:
+            mouse_x: Mouse x-coordinate in widget pixels
+        """
+        if not self._date_label or not self.chart_settings.get('show_date_label', True):
+            if self._date_label:
+                self._date_label.hide()
+            return
+
+        if self.data is None or self.data.empty:
+            self._date_label.hide()
+            return
+
+        # Map mouse widget coordinates to view coordinates
+        view_pos = self.price_vb.mapSceneToView(self.mapToScene(mouse_x, 0))
+        x_view = view_pos.x()
+
+        # Clamp to data bounds
+        x_index = int(round(x_view))
+        if x_index < 0 or x_index >= len(self.data):
+            self._date_label.hide()
+            return
+
+        # Get the date at this index
+        date_value = self.data.index[x_index]
+
+        # Format the date
+        if isinstance(date_value, pd.Timestamp):
+            label_text = date_value.strftime("%Y-%m-%d")
+        else:
+            label_text = str(date_value)
+
+        self._date_label.setText(label_text)
+        self._date_label.adjustSize()
+
+        # Get bottom axis geometry to position label on the axis
+        axis_rect = self.getAxis('bottom').geometry()
+
+        # Position label on the bottom axis at the mouse x-position
+        label_width = self._date_label.width()
+        x_pos = int(mouse_x - label_width / 2)
+        y_pos = int(axis_rect.top())
+
+        self._date_label.move(x_pos, y_pos)
+        self._date_label.show()
+
+    # -----------------------------
     # Scale transform (plot-space only)
     # -----------------------------
     @staticmethod
@@ -629,6 +890,14 @@ class PriceChart(pg.PlotWidget):
         # Apply background (respects custom settings)
         self._apply_background()
 
+        # Update price label style if it exists
+        if self._price_label:
+            self._update_price_label_style()
+
+        # Update date label style if it exists
+        if self._date_label:
+            self._update_date_label_style()
+
     def get_line_color(self) -> tuple[int, int, int]:
         """Get line color from settings or theme."""
         custom_color = self.chart_settings.get('line_color')
@@ -654,21 +923,39 @@ class PriceChart(pg.PlotWidget):
     def update_chart_settings(self, settings):
         """Update chart settings and refresh display."""
         self.chart_settings = settings or {}
-        
+
         # Update background
         self._apply_background()
-        
+
         # Update candle colors if candles exist
         if self._candles:
             up_color = settings.get('candle_up_color', (76, 153, 0))
             down_color = settings.get('candle_down_color', (200, 50, 50))
             self._candles.setColors(up_color, down_color)
-        
+
         # Update line if exists
         if self._line:
             line_settings = self.get_line_settings()
             pen = pg.mkPen(color=line_settings['color'], width=line_settings['width'], style=line_settings['style'])
             self._line.setPen(pen)
+
+        # Handle price label toggle
+        show_label = settings.get('show_price_label', True)
+        if show_label:
+            if not self._price_label:
+                self._create_price_label()
+            self._update_price_label()
+        elif self._price_label:
+            self._price_label.hide()
+
+        # Handle date label toggle
+        show_date_label = settings.get('show_date_label', True)
+        if show_date_label:
+            if not self._date_label:
+                self._create_date_label()
+            # Date label will show on next mouse move
+        elif self._date_label:
+            self._date_label.hide()
 
     # -----------------------------
     # View helpers
@@ -747,6 +1034,9 @@ class PriceChart(pg.PlotWidget):
             self._clear_chart()
             return
 
+        # Store original data for price label
+        self.data = df.copy() if df is not None else None
+
         prev_left_dt, prev_right_dt = self._get_visible_date_window()
 
         scale_key = (scale or "Regular").strip().lower()
@@ -810,6 +1100,20 @@ class PriceChart(pg.PlotWidget):
         elif not self._has_initialized_view:
             self._set_view_last_year(df_plot)
             self._has_initialized_view = True
+
+        # Create price label if enabled (positioning handled by showEvent and sigRangeChanged)
+        if self.chart_settings.get('show_price_label', True):
+            if not self._price_label:
+                self._create_price_label()
+            # Reset positioning flag so showEvent will trigger initial positioning
+            self._price_label_positioned = False
+
+        # Create date label if enabled (positioning handled by mouseMoveEvent)
+        if self.chart_settings.get('show_date_label', True):
+            if not self._date_label:
+                self._create_date_label()
+            # Reset positioning flag
+            self._date_label_positioned = False
 
     def _plot_indicators(
         self, x: np.ndarray, df: pd.DataFrame, indicators: Dict[str, Dict[str, Any]]

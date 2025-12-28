@@ -17,17 +17,23 @@ class ChartSettingsManager:
         # Candle colors (RGB tuples)
         "candle_up_color": (76, 153, 0),
         "candle_down_color": (200, 50, 50),
-        
+
         # Chart background (None means use theme default)
         "chart_background": None,
-        
+
         # Candle width
         "candle_width": 0.6,
-        
+
         # Line chart settings
         "line_color": None,  # None means use theme default
         "line_width": 2,
         "line_style": Qt.SolidLine,
+
+        # Price label
+        "show_price_label": True,  # ON by default
+
+        # Date label (crosshair)
+        "show_date_label": True,  # ON by default
     }
 
     # Path to save/load settings

@@ -310,6 +310,20 @@ class ChartSettingsDialog(QDialog):
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
+        # Price label toggle
+        self.show_price_label_check = QCheckBox("Show price label on right axis")
+        self.show_price_label_check.setChecked(
+            self.current_settings.get("show_price_label", True)
+        )
+        layout.addWidget(self.show_price_label_check)
+
+        # Date label toggle
+        self.show_date_label_check = QCheckBox("Show date label on bottom axis (follows mouse)")
+        self.show_date_label_check.setChecked(
+            self.current_settings.get("show_date_label", True)
+        )
+        layout.addWidget(self.show_date_label_check)
+
         info_label = QLabel(
             "Custom settings will override theme defaults.\n"
             "Changing themes will not affect your custom colors."
@@ -457,6 +471,8 @@ class ChartSettingsDialog(QDialog):
             "line_width": self.line_width_spin.value(),
             "line_style": self.LINE_STYLES[self.line_style_combo.currentText()],
             "chart_background": self.chart_background,
+            "show_price_label": self.show_price_label_check.isChecked(),
+            "show_date_label": self.show_date_label_check.isChecked(),
         }
         self.accept()
 
