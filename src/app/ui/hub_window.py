@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QWidget,
+    QApplication,
 )
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QRect
 from PySide6.QtGui import QMouseEvent, QRegion
 
 from app.core.theme_manager import ThemeManager
@@ -102,6 +103,10 @@ class HubWindow(QMainWindow):
         # For window dragging
         self._drag_pos = QPoint()
 
+        # For tracking window geometry before maximize
+        self._normal_geometry = None
+        self._is_maximized = False  # Manual state tracking for frameless windows
+
         # Setup UI
         self._setup_ui()
 
@@ -170,17 +175,45 @@ class HubWindow(QMainWindow):
         # Enable dragging from title bar
         title_bar.mousePressEvent = self._title_bar_mouse_press
         title_bar.mouseMoveEvent = self._title_bar_mouse_move
+        title_bar.mouseDoubleClickEvent = self._title_bar_mouse_double_click
 
         return title_bar
 
     def _toggle_maximize(self) -> None:
         """Toggle between maximized and normal state."""
-        if self.isMaximized():
-            self.showNormal()
+        if self._is_maximized:
+            # Restore to normal size
+            if self._normal_geometry:
+                # Restore saved geometry
+                self.setGeometry(self._normal_geometry)
+            else:
+                # No saved geometry (started maximized), use default size centered on screen
+                screen = QApplication.primaryScreen().availableGeometry()
+                width = DEFAULT_WINDOW_WIDTH
+                height = DEFAULT_WINDOW_HEIGHT
+                x = screen.x() + (screen.width() - width) // 2
+                y = screen.y() + (screen.height() - height) // 2
+                self.setGeometry(x, y, width, height)
+            self._is_maximized = False
             self.max_btn.setText("□")
         else:
-            self.showMaximized()
+            # Save current geometry before maximizing
+            self._normal_geometry = self.geometry()
+            # Manually maximize by setting geometry to screen bounds
+            # DO NOT use showMaximized() - it causes Windows to lock geometry on frameless windows
+            screen = QApplication.primaryScreen().availableGeometry()
+            self.setGeometry(screen)
+            self._is_maximized = True
             self.max_btn.setText("❐")
+
+    def showEvent(self, event):
+        """Handle show event to update maximize button state."""
+        super().showEvent(event)
+        # Update button state based on current maximized flag
+        if self._is_maximized:
+            self.max_btn.setText("❐")
+        else:
+            self.max_btn.setText("□")
 
     def _title_bar_mouse_press(self, event: QMouseEvent) -> None:
         """Handle mouse press on title bar for dragging."""
@@ -190,8 +223,42 @@ class HubWindow(QMainWindow):
 
     def _title_bar_mouse_move(self, event: QMouseEvent) -> None:
         """Handle mouse move on title bar for dragging."""
-        if event.buttons() == Qt.LeftButton and not self.isMaximized():
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        if event.buttons() == Qt.LeftButton:
+            if self._is_maximized:
+                # Auto-restore when dragging from maximized state
+                # Calculate where to position the window so cursor stays on title bar
+                mouse_global = event.globalPosition().toPoint()
+
+                # Restore to normal size
+                if self._normal_geometry:
+                    width = self._normal_geometry.width()
+                    height = self._normal_geometry.height()
+                else:
+                    width = DEFAULT_WINDOW_WIDTH
+                    height = DEFAULT_WINDOW_HEIGHT
+
+                # Position window so cursor is at proportional position on title bar
+                # Cursor should be at same percentage across title bar width
+                title_bar_click_ratio = self._drag_pos.x() / self.width()
+                new_x = mouse_global.x() - int(width * title_bar_click_ratio)
+                new_y = mouse_global.y() - self._drag_pos.y()
+
+                # Set new geometry
+                self.setGeometry(new_x, new_y, width, height)
+                self._is_maximized = False
+                self.max_btn.setText("□")
+
+                # Update drag position for continued dragging
+                self._drag_pos = QPoint(int(width * title_bar_click_ratio), self._drag_pos.y())
+            else:
+                # Normal dragging when not maximized
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def _title_bar_mouse_double_click(self, event: QMouseEvent) -> None:
+        """Handle double-click on title bar to toggle maximize."""
+        if event.button() == Qt.LeftButton:
+            self._toggle_maximize()
             event.accept()
 
     def _setup_navigation(self) -> None:
@@ -289,6 +356,19 @@ class HubWindow(QMainWindow):
     def show_initial_screen(self) -> None:
         """Show home screen on startup."""
         self.show_home()
+
+    def maximize_on_startup(self) -> None:
+        """
+        Maximize window on startup without using showMaximized().
+
+        Critical for frameless windows on Windows: showMaximized() causes Qt/Windows
+        to set internal geometry constraints that prevent manual resizing later.
+        Instead, we manually set geometry to fill the screen.
+        """
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.setGeometry(screen)
+        self._is_maximized = True
+        self.max_btn.setText("❐")
 
     def _open_settings(self) -> None:
         """Open Settings module from home screen button."""

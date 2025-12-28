@@ -52,7 +52,10 @@ def main() -> int:
     # Show home screen on startup
     hub.show_initial_screen()
 
-    hub.showMaximized()  # Launch in maximized window
+    # Show window and manually maximize (critical for frameless windows on Windows)
+    # DO NOT use showMaximized() - it locks geometry and prevents restore button from working
+    hub.show()
+    hub.maximize_on_startup()
     return app.exec()
 
 
