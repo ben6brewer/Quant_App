@@ -311,11 +311,18 @@ class ChartSettingsDialog(QDialog):
         layout.setSpacing(10)
 
         # Price label toggle
-        self.show_price_label_check = QCheckBox("Show price label on right axis")
+        self.show_price_label_check = QCheckBox("Show price label on right axis (rightmost candle)")
         self.show_price_label_check.setChecked(
             self.current_settings.get("show_price_label", True)
         )
         layout.addWidget(self.show_price_label_check)
+
+        # Mouse price label toggle
+        self.show_mouse_price_label_check = QCheckBox("Show price label at mouse position")
+        self.show_mouse_price_label_check.setChecked(
+            self.current_settings.get("show_mouse_price_label", True)
+        )
+        layout.addWidget(self.show_mouse_price_label_check)
 
         # Date label toggle
         self.show_date_label_check = QCheckBox("Show date label on bottom axis (follows mouse)")
@@ -323,6 +330,20 @@ class ChartSettingsDialog(QDialog):
             self.current_settings.get("show_date_label", True)
         )
         layout.addWidget(self.show_date_label_check)
+
+        # Gridlines toggle
+        self.show_gridlines_check = QCheckBox("Show gridlines (contrasts with background)")
+        self.show_gridlines_check.setChecked(
+            self.current_settings.get("show_gridlines", False)
+        )
+        layout.addWidget(self.show_gridlines_check)
+
+        # Crosshair toggle
+        self.show_crosshair_check = QCheckBox("Show crosshair lines (follows mouse)")
+        self.show_crosshair_check.setChecked(
+            self.current_settings.get("show_crosshair", True)
+        )
+        layout.addWidget(self.show_crosshair_check)
 
         info_label = QLabel(
             "Custom settings will override theme defaults.\n"
@@ -443,7 +464,7 @@ class ChartSettingsDialog(QDialog):
             self.candle_down_color = (200, 50, 50)
             self.line_color = None
             self.chart_background = None
-            
+
             # Update UI
             self.up_color_preview.setStyleSheet(
                 f"font-size: 24px; color: rgb({self.candle_up_color[0]}, "
@@ -453,13 +474,20 @@ class ChartSettingsDialog(QDialog):
                 f"font-size: 24px; color: rgb({self.candle_down_color[0]}, "
                 f"{self.candle_down_color[1]}, {self.candle_down_color[2]});"
             )
-            
+
             self.line_use_theme_check.setChecked(True)
             self.bg_use_theme_check.setChecked(True)
-            
+
             self.candle_width_spin.setValue(0.6)
             self.line_width_spin.setValue(2)
             self.line_style_combo.setCurrentIndex(0)  # Solid
+
+            # Reset General settings checkboxes to defaults
+            self.show_price_label_check.setChecked(True)
+            self.show_mouse_price_label_check.setChecked(True)
+            self.show_date_label_check.setChecked(True)
+            self.show_gridlines_check.setChecked(False)
+            self.show_crosshair_check.setChecked(True)
 
     def _save_settings(self):
         """Save the settings and close."""
@@ -472,7 +500,10 @@ class ChartSettingsDialog(QDialog):
             "line_style": self.LINE_STYLES[self.line_style_combo.currentText()],
             "chart_background": self.chart_background,
             "show_price_label": self.show_price_label_check.isChecked(),
+            "show_mouse_price_label": self.show_mouse_price_label_check.isChecked(),
             "show_date_label": self.show_date_label_check.isChecked(),
+            "show_gridlines": self.show_gridlines_check.isChecked(),
+            "show_crosshair": self.show_crosshair_check.isChecked(),
         }
         self.accept()
 

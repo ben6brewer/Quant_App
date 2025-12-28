@@ -331,7 +331,6 @@ class PriceChart(pg.PlotWidget):
     def __init__(self, parent=None, chart_settings=None):
         super().__init__(parent=parent)
 
-        self.showGrid(x=True, y=True)
         self.setLabel("bottom", "Time")
 
         # Main price ViewBox and axes
@@ -381,14 +380,21 @@ class PriceChart(pg.PlotWidget):
         self._oscillator_drag_active = False
         self._cursor_over_oscillator = False
 
-        # Price label
+        # Price label (rightmost visible price)
         self._price_label = None  # Will be created when enabled
         self.data = None  # Store original DataFrame for price lookup
         self._price_label_positioned = False  # Track if initial positioning is done
 
+        # Mouse price label (follows mouse Y position)
+        self._mouse_price_label = None  # Will be created when enabled
+
         # Date label (crosshair)
         self._date_label = None  # Will be created when enabled
         self._date_label_positioned = False  # Track if initial positioning is done
+
+        # Crosshair lines
+        self._crosshair_v = None  # Vertical line
+        self._crosshair_h = None  # Horizontal line
 
         self.candle_width = CANDLE_BAR_WIDTH
         self._has_initialized_view = False
@@ -402,9 +408,12 @@ class PriceChart(pg.PlotWidget):
         # Add legend
         self.legend = self.addLegend(offset=(10, 10))
 
-        # Apply initial background
+        # Apply initial background (which also applies gridlines)
         self._apply_background()
-        
+
+        # Apply initial crosshair
+        self._apply_crosshair()
+
         # Update oscillator ViewBox geometry when price ViewBox changes
         self.price_vb.sigRangeChanged.connect(self._update_oscillator_geometry)
 
@@ -514,6 +523,23 @@ class PriceChart(pg.PlotWidget):
         if self._date_label and self.chart_settings.get('show_date_label', True):
             self._update_date_label(ev.pos().x())
 
+        # Update mouse price label position based on mouse y-coordinate
+        self._update_mouse_price_label(ev.pos().y())
+
+        # Update crosshair position if enabled
+        if self._crosshair_v is not None and self._crosshair_h is not None:
+            if self.chart_settings.get('show_crosshair', True):
+                # Map mouse position to view coordinates
+                mouse_point = self.price_vb.mapSceneToView(self.mapToScene(ev.pos()))
+
+                # Update crosshair positions
+                self._crosshair_v.setPos(mouse_point.x())
+                self._crosshair_h.setPos(mouse_point.y())
+
+                # Show crosshair
+                self._crosshair_v.show()
+                self._crosshair_h.show()
+
         # Otherwise use default behavior
         super().mouseMoveEvent(ev)
 
@@ -537,10 +563,20 @@ class PriceChart(pg.PlotWidget):
         super().mouseReleaseEvent(ev)
 
     def leaveEvent(self, ev):
-        """Override to hide date label when mouse leaves the chart."""
+        """Override to hide labels and crosshair when mouse leaves the chart."""
         # Hide date label when mouse leaves
         if self._date_label:
             self._date_label.hide()
+
+        # Hide mouse price label when mouse leaves
+        if self._mouse_price_label:
+            self._mouse_price_label.hide()
+
+        # Hide crosshair when mouse leaves
+        if self._crosshair_v is not None:
+            self._crosshair_v.hide()
+        if self._crosshair_h is not None:
+            self._crosshair_h.hide()
 
         super().leaveEvent(ev)
 
@@ -621,9 +657,19 @@ class PriceChart(pg.PlotWidget):
         if self._price_label is not None:
             self._price_label.hide()
 
+        # Hide mouse price label if it exists
+        if self._mouse_price_label is not None:
+            self._mouse_price_label.hide()
+
         # Hide date label if it exists
         if self._date_label is not None:
             self._date_label.hide()
+
+        # Hide crosshair if it exists
+        if self._crosshair_v is not None:
+            self._crosshair_v.hide()
+        if self._crosshair_h is not None:
+            self._crosshair_h.hide()
 
         # Hide oscillator axis when cleared
         self.oscillator_axis.hide()
@@ -661,6 +707,190 @@ class PriceChart(pg.PlotWidget):
             # Use theme default
             bg_color = 'w' if self._theme == "light" else '#1e1e1e'
             self.setBackground(bg_color)
+
+        # Update gridlines after background changes
+        self._apply_gridlines()
+
+        # Update crosshair color after background changes
+        self._update_crosshair_color()
+
+    def _get_background_rgb(self) -> tuple[int, int, int]:
+        """Get the current background color as RGB tuple."""
+        custom_bg = self.chart_settings.get('chart_background')
+        if custom_bg:
+            return custom_bg
+        else:
+            # Return theme default colors
+            if self._theme == "light":
+                return (255, 255, 255)  # White
+            elif self._theme == "bloomberg":
+                return (13, 20, 32)  # Bloomberg dark blue
+            else:
+                return (30, 30, 30)  # Dark grey
+
+    def _calculate_relative_luminance(self, rgb: tuple[int, int, int]) -> float:
+        """
+        Calculate relative luminance of an RGB color.
+
+        Args:
+            rgb: RGB color tuple (0-255 range)
+
+        Returns:
+            Relative luminance (0.0 to 1.0)
+        """
+        # Normalize to 0-1 range
+        r, g, b = rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0
+
+        # Apply gamma correction
+        def gamma_correct(channel):
+            if channel <= 0.03928:
+                return channel / 12.92
+            else:
+                return ((channel + 0.055) / 1.055) ** 2.4
+
+        r = gamma_correct(r)
+        g = gamma_correct(g)
+        b = gamma_correct(b)
+
+        # Calculate relative luminance
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def _get_contrasting_grid_color(self) -> tuple[int, int, int]:
+        """
+        Calculate a subtle contrasting grid color based on the current background.
+
+        Returns:
+            RGB tuple for grid color
+        """
+        bg_rgb = self._get_background_rgb()
+        luminance = self._calculate_relative_luminance(bg_rgb)
+
+        # Create very subtle gridlines by slightly adjusting the background color
+        # Only 8-10 units difference for minimal distraction
+        if luminance > 0.5:
+            # Light background - make gridlines slightly darker
+            # Subtract a small amount from each channel
+            r = max(0, bg_rgb[0] - 8)
+            g = max(0, bg_rgb[1] - 8)
+            b = max(0, bg_rgb[2] - 8)
+        else:
+            # Dark background - make gridlines slightly lighter
+            # Add a small amount to each channel
+            r = min(255, bg_rgb[0] + 8)
+            g = min(255, bg_rgb[1] + 8)
+            b = min(255, bg_rgb[2] + 8)
+
+        return (r, g, b)
+
+    def _apply_gridlines(self):
+        """Apply gridlines with contrasting color based on background."""
+        show_gridlines = self.chart_settings.get('show_gridlines', False)
+
+        if show_gridlines:
+            # Get contrasting color
+            grid_color = self._get_contrasting_grid_color()
+
+            # Show gridlines with extremely low alpha for barely visible appearance
+            self.showGrid(x=True, y=True, alpha=0.08)
+
+            # Create grid pen with contrasting color
+            # Using solid line with extremely low alpha for minimal distraction
+            grid_pen = pg.mkPen(color=grid_color, width=1, alpha=0.08)
+
+            # Set grid pen for each axis
+            # The grid is drawn by the axes, so we need to set it on each axis
+            plot_item = self.getPlotItem()
+            for axis_name in ['bottom', 'left', 'right']:
+                axis = plot_item.getAxis(axis_name)
+                if axis is not None:
+                    axis.setGrid(255)  # Enable grid with full opacity (alpha is in pen)
+        else:
+            # Hide gridlines
+            self.showGrid(x=False, y=False)
+
+            # Disable grid on all axes
+            plot_item = self.getPlotItem()
+            for axis_name in ['bottom', 'left', 'right']:
+                axis = plot_item.getAxis(axis_name)
+                if axis is not None:
+                    axis.setGrid(False)
+
+    # -----------------------------
+    # Crosshair
+    # -----------------------------
+    def _create_crosshair(self):
+        """Create crosshair lines."""
+        if self._crosshair_v is not None or self._crosshair_h is not None:
+            return  # Already exists
+
+        # Get crosshair color
+        crosshair_color = self._get_crosshair_color()
+
+        # Create vertical line (follows X/time)
+        self._crosshair_v = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(color=crosshair_color, width=1, style=QtCore.Qt.DashLine)
+        )
+        self.price_vb.addItem(self._crosshair_v)
+        self._crosshair_v.hide()
+
+        # Create horizontal line (follows Y/price)
+        self._crosshair_h = pg.InfiniteLine(
+            angle=0,
+            movable=False,
+            pen=pg.mkPen(color=crosshair_color, width=1, style=QtCore.Qt.DashLine)
+        )
+        self.price_vb.addItem(self._crosshair_h)
+        self._crosshair_h.hide()
+
+    def _get_crosshair_color(self) -> tuple[int, int, int]:
+        """
+        Get crosshair color based on background.
+
+        Returns:
+            RGB tuple for crosshair color
+        """
+        bg_rgb = self._get_background_rgb()
+        luminance = self._calculate_relative_luminance(bg_rgb)
+
+        # Use a more visible color than gridlines
+        if luminance > 0.5:
+            # Light background - use medium grey
+            return (100, 100, 100)
+        else:
+            # Dark background - use light grey
+            return (150, 150, 150)
+
+    def _update_crosshair_color(self):
+        """Update crosshair line colors when background changes."""
+        if self._crosshair_v is None or self._crosshair_h is None:
+            return
+
+        crosshair_color = self._get_crosshair_color()
+        pen = pg.mkPen(color=crosshair_color, width=1, style=QtCore.Qt.DashLine)
+
+        self._crosshair_v.setPen(pen)
+        self._crosshair_h.setPen(pen)
+
+    def _apply_crosshair(self):
+        """Apply crosshair settings."""
+        show_crosshair = self.chart_settings.get('show_crosshair', True)
+
+        if show_crosshair:
+            if self._crosshair_v is None or self._crosshair_h is None:
+                self._create_crosshair()
+            # Crosshair visibility is handled by mouseMoveEvent/leaveEvent
+        else:
+            # Hide and remove crosshair
+            if self._crosshair_v is not None:
+                self._crosshair_v.hide()
+                self.price_vb.removeItem(self._crosshair_v)
+                self._crosshair_v = None
+            if self._crosshair_h is not None:
+                self._crosshair_h.hide()
+                self.price_vb.removeItem(self._crosshair_h)
+                self._crosshair_h = None
 
     # -----------------------------
     # Price Label
@@ -780,6 +1010,87 @@ class PriceChart(pg.PlotWidget):
         self._price_label.show()
 
     # -----------------------------
+    # Mouse Price Label (follows mouse Y)
+    # -----------------------------
+    def _create_mouse_price_label(self):
+        """Create the mouse price label as a QLabel widget overlay."""
+        if self._mouse_price_label is not None:
+            return  # Already exists
+
+        self._mouse_price_label = QLabel(self)
+        self._mouse_price_label.setAlignment(Qt.AlignCenter)
+        self._mouse_price_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Don't block mouse events
+        self._update_mouse_price_label_style()
+        self._mouse_price_label.hide()  # Start hidden, show on mouse move
+
+    def _update_mouse_price_label_style(self):
+        """Update mouse price label stylesheet based on theme."""
+        if not self._mouse_price_label:
+            return
+
+        accent_color = self._get_theme_accent_color()
+        text_color = self._get_label_text_color()
+
+        bg_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
+        fg_color = f"rgb({text_color[0]}, {text_color[1]}, {text_color[2]})"
+
+        self._mouse_price_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: {fg_color};
+                border: none;
+                padding: 2px 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }}
+        """)
+
+    def _update_mouse_price_label(self, mouse_y: int):
+        """Update mouse price label position and text based on mouse y-coordinate.
+
+        Args:
+            mouse_y: Mouse y-coordinate in widget pixels
+        """
+        # Check if mouse price label is enabled
+        if not self.chart_settings.get('show_mouse_price_label', True):
+            if self._mouse_price_label:
+                self._mouse_price_label.hide()
+            return
+
+        if not self._mouse_price_label:
+            self._create_mouse_price_label()
+
+        # Map mouse widget coordinates to view coordinates
+        view_pos = self.price_vb.mapSceneToView(self.mapToScene(0, mouse_y))
+        y_view = view_pos.y()
+
+        # Convert from view coordinates to actual price
+        if self._scale_mode == "log":
+            try:
+                price = 10 ** float(y_view)
+            except (OverflowError, ValueError):
+                self._mouse_price_label.hide()
+                return
+        else:
+            price = float(y_view)
+
+        # Format and set text
+        label_text = format_price_usd(price)
+        self._mouse_price_label.setText(label_text)
+        self._mouse_price_label.adjustSize()
+
+        # Get axis geometry to position label on the axis
+        axis_rect = self.getAxis('right').geometry()
+
+        # Position label on the y-axis at the mouse y-position
+        label_height = self._mouse_price_label.height()
+        x_pos = int(axis_rect.left())
+        y_pos = int(mouse_y - label_height / 2)
+
+        self._mouse_price_label.move(x_pos, y_pos)
+        self._mouse_price_label.show()
+
+    # -----------------------------
     # Date label (crosshair)
     # -----------------------------
     def _create_date_label(self):
@@ -894,6 +1205,10 @@ class PriceChart(pg.PlotWidget):
         if self._price_label:
             self._update_price_label_style()
 
+        # Update mouse price label style if it exists
+        if self._mouse_price_label:
+            self._update_mouse_price_label_style()
+
         # Update date label style if it exists
         if self._date_label:
             self._update_date_label_style()
@@ -924,7 +1239,7 @@ class PriceChart(pg.PlotWidget):
         """Update chart settings and refresh display."""
         self.chart_settings = settings or {}
 
-        # Update background
+        # Update background (which also updates gridlines)
         self._apply_background()
 
         # Update candle colors if candles exist
@@ -956,6 +1271,9 @@ class PriceChart(pg.PlotWidget):
             # Date label will show on next mouse move
         elif self._date_label:
             self._date_label.hide()
+
+        # Handle crosshair toggle
+        self._apply_crosshair()
 
     # -----------------------------
     # View helpers
