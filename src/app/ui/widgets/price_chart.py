@@ -324,8 +324,11 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self.price_vb = self.price_plot.getViewBox()
         self.price_vb.setMouseEnabled(x=True, y=True)
 
+        # Set fixed width for price axis to ensure alignment with oscillator axis
+        self.right_axis.setWidth(92)
+
         # Add padding to right of price axis
-        self.price_plot.layout.setColumnSpacing(2, 10)
+        self.price_plot.layout.setColumnSpacing(2, 5)
 
         # Create oscillator plot (row 1, column 0) - initially hidden
         self.oscillator_plot = self.addPlot(
@@ -335,8 +338,8 @@ class PriceChart(pg.GraphicsLayoutWidget):
                 'right': DraggableAxisItem(orientation='right')
             }
         )
-        self.oscillator_plot.setLabel("right", "Oscillator")
-        self.oscillator_plot.showAxis("right")
+        # No label on oscillator axis (leave blank)
+        self.oscillator_plot.hideAxis("right")  # Start hidden, show only when oscillators are applied
         self.oscillator_plot.hideAxis("left")
         self.oscillator_plot.hideAxis('bottom')  # Share X-axis with price
 
@@ -345,6 +348,12 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self.oscillator_bottom_axis = self.oscillator_plot.getAxis('bottom')
         self.oscillator_vb = self.oscillator_plot.getViewBox()
         self.oscillator_vb.setMouseEnabled(x=True, y=True)
+
+        # Set fixed width for oscillator axis to match price axis (ensures vertical alignment)
+        self.oscillator_axis.setWidth(95)
+
+        # Add padding to right of oscillator axis (match price plot spacing)
+        self.oscillator_plot.layout.setColumnSpacing(2, 5)
 
         # Link X-axes for synchronized pan/zoom
         self.oscillator_plot.setXLink(self.price_plot)
@@ -355,8 +364,8 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self.ci.layout.setRowStretchFactor(0, 3)      # Price 3x stretch
         self.ci.layout.setRowStretchFactor(1, 1)      # Oscillator 1x stretch
 
-        # Track visibility
-        self._oscillator_visible = False
+        # Track visibility (start as True so first call to _set_oscillator_visibility(False) actually executes)
+        self._oscillator_visible = True
 
         self._candles = None
         self._line = None
@@ -408,6 +417,9 @@ class PriceChart(pg.GraphicsLayoutWidget):
 
         # Enable mouse tracking for cursor changes
         self.setMouseTracking(True)
+
+        # Ensure oscillator is properly hidden from the start (using setRowFixedHeight, not just setRowPreferredHeight)
+        self._set_oscillator_visibility(False)
 
     def mousePressEvent(self, ev):
         """Handle mouse press events."""
@@ -564,10 +576,16 @@ class PriceChart(pg.GraphicsLayoutWidget):
             # Expand oscillator row to 150px
             self.ci.layout.setRowFixedHeight(1, 150)
             self.oscillator_plot.showAxis('right')
+            # Move date axis to bottom: hide price bottom axis, show oscillator bottom axis
+            self.price_plot.hideAxis('bottom')
+            self.oscillator_plot.showAxis('bottom')
         else:
             # Collapse oscillator row to 0
             self.ci.layout.setRowFixedHeight(1, 0)
             self.oscillator_plot.hideAxis('right')
+            # Move date axis back to price chart: show price bottom axis, hide oscillator bottom axis
+            self.price_plot.showAxis('bottom')
+            self.oscillator_plot.hideAxis('bottom')
 
     def _apply_background(self):
         """Apply background color from settings or theme."""
@@ -808,7 +826,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
             return  # Already exists
 
         self._price_label = QLabel(self)
-        self._price_label.setAlignment(Qt.AlignCenter)
+        self._price_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._price_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Don't block mouse events
         self._update_price_label_style()
         self._price_label.show()
@@ -829,7 +847,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
                 background-color: {bg_color};
                 color: {fg_color};
                 border: none;
-                padding: 2px 4px;
+                padding: 2px 0px 2px 0px;
                 font-size: 11px;
                 font-weight: bold;
             }}
@@ -867,9 +885,19 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Get axis geometry to position label on the axis
         axis_rect = self.price_plot.getAxis('right').geometry()
 
-        # Position label on the y-axis at the price level
+        # Position label on the y-axis at the price level (fixed-width, left-aligned)
+        # Use fixed width spanning entire axis for consistent positioning
+        # Account for column spacing + tick marks extending into plot area
+        left_offset = 11  # Column spacing + tick mark length
+        right_padding = 0  # No extra padding needed with left alignment
+        axis_width = axis_rect.width() - left_offset + right_padding
         label_height = self._price_label.height()
-        x_pos = int(axis_rect.left())
+
+        # Set fixed width (axis width plus extra right padding to shift center left)
+        self._price_label.setFixedWidth(axis_width)
+
+        # Position left edge flush with axis background (after ticks)
+        x_pos = int(axis_rect.left() + left_offset)
         y_pos = int(widget_point.y() - label_height / 2)
 
         self._price_label.move(x_pos, y_pos)
@@ -884,7 +912,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
             return  # Already exists
 
         self._mouse_price_label = QLabel(self)
-        self._mouse_price_label.setAlignment(Qt.AlignCenter)
+        self._mouse_price_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._mouse_price_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Don't block mouse events
         self._update_mouse_price_label_style()
         self._mouse_price_label.hide()  # Start hidden, show on mouse move
@@ -895,17 +923,24 @@ class PriceChart(pg.GraphicsLayoutWidget):
             return
 
         accent_color = self._get_theme_accent_color()
-        text_color = self._get_label_text_color()
+        bg_rgb = self._get_background_rgb()
 
-        bg_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
-        fg_color = f"rgb({text_color[0]}, {text_color[1]}, {text_color[2]})"
+        # Use dark background with colored border for mouse-following label
+        bg_color = f"rgb({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})"
+        border_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
+
+        # Text color based on theme
+        if self._theme == "light":
+            text_color = "rgb(0, 0, 0)"  # Black text on light background
+        else:
+            text_color = "rgb(255, 255, 255)"  # White text on dark background
 
         self._mouse_price_label.setStyleSheet(f"""
             QLabel {{
                 background-color: {bg_color};
-                color: {fg_color};
-                border: none;
-                padding: 2px 4px;
+                color: {text_color};
+                border: 1px solid {border_color};
+                padding: 2px 0px 2px 0px;
                 font-size: 11px;
                 font-weight: bold;
             }}
@@ -937,6 +972,16 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Extract y-coordinate for rest of the method
         mouse_y = mouse_pos.y()
 
+        # Check if mouse is within the price ViewBox area (not below in axis/oscillator area)
+        price_vb_scene_rect = self.price_vb.sceneBoundingRect()
+        price_vb_widget_top_left = self.mapFromScene(price_vb_scene_rect.topLeft())
+        price_vb_widget_bottom = price_vb_widget_top_left.y() + price_vb_scene_rect.height()
+
+        # If mouse is below the price chart ViewBox (in X-axis or oscillator area), hide the label
+        if mouse_y > price_vb_widget_bottom:
+            self._mouse_price_label.hide()
+            return
+
         # Map mouse widget coordinates to view coordinates
         view_pos = self.price_vb.mapSceneToView(self.mapToScene(0, mouse_y))
         y_view = view_pos.y()
@@ -954,14 +999,24 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Format and set text
         label_text = format_price_usd(price)
         self._mouse_price_label.setText(label_text)
-        self._mouse_price_label.adjustSize()
 
         # Get axis geometry to position label on the axis
         axis_rect = self.price_plot.getAxis('right').geometry()
 
-        # Position label on the y-axis at the mouse y-position
-        label_height = self._mouse_price_label.height()
-        x_pos = int(axis_rect.left())
+        # Position label on the y-axis at the mouse y-position (fixed-width, left-aligned)
+        # Use fixed width spanning entire axis for consistent positioning
+        # Account for column spacing + tick marks extending into plot area
+        left_offset = 11  # Column spacing + tick mark length
+        right_padding = 0  # No extra padding needed with left alignment
+        axis_width = axis_rect.width() - left_offset + right_padding
+        label_size = self._mouse_price_label.sizeHint()
+        label_height = label_size.height()
+
+        # Set fixed width (axis width plus extra right padding to shift center left)
+        self._mouse_price_label.setFixedWidth(axis_width)
+
+        # Position left edge flush with axis background (after ticks)
+        x_pos = int(axis_rect.left() + left_offset)
         y_pos = int(mouse_y - label_height / 2)
 
         self._mouse_price_label.move(x_pos, y_pos)
@@ -987,16 +1042,23 @@ class PriceChart(pg.GraphicsLayoutWidget):
             return
 
         accent_color = self._get_theme_accent_color()
-        text_color = self._get_label_text_color()
+        bg_rgb = self._get_background_rgb()
 
-        bg_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
-        fg_color = f"rgb({text_color[0]}, {text_color[1]}, {text_color[2]})"
+        # Use dark background with colored border for mouse-following label
+        bg_color = f"rgb({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})"
+        border_color = f"rgb({accent_color[0]}, {accent_color[1]}, {accent_color[2]})"
+
+        # Text color based on theme
+        if self._theme == "light":
+            text_color = "rgb(0, 0, 0)"  # Black text on light background
+        else:
+            text_color = "rgb(255, 255, 255)"  # White text on dark background
 
         self._date_label.setStyleSheet(f"""
             QLabel {{
                 background-color: {bg_color};
-                color: {fg_color};
-                border: none;
+                color: {text_color};
+                border: 1px solid {border_color};
                 padding: 2px 4px;
                 font-size: 11px;
                 font-weight: bold;
@@ -1015,6 +1077,13 @@ class PriceChart(pg.GraphicsLayoutWidget):
             return
 
         if self.data is None or self.data.empty:
+            self._date_label.hide()
+            return
+
+        # Check if mouse is over the Y-axis area (too far right)
+        # Use price plot's right axis as the reference
+        right_axis_rect = self.price_plot.getAxis('right').geometry()
+        if mouse_x >= right_axis_rect.left():
             self._date_label.hide()
             return
 
@@ -1041,12 +1110,30 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self._date_label.adjustSize()
 
         # Get bottom axis geometry to position label on the axis
-        axis_rect = self.price_plot.getAxis('bottom').geometry()
+        # Use oscillator axis if visible, otherwise use price axis
+        if self._oscillator_visible:
+            target_plot = self.oscillator_plot
+            axis_item = self.oscillator_plot.getAxis('bottom')
+        else:
+            target_plot = self.price_plot
+            axis_item = self.price_plot.getAxis('bottom')
 
-        # Position label on the bottom axis at the mouse x-position
+        # Get axis geometry and map to widget coordinates
+        axis_rect = axis_item.geometry()
+
+        # Get the plot's scene bounding rect and map to widget
+        plot_scene_rect = target_plot.sceneBoundingRect()
+        plot_widget_top_left = self.mapFromScene(plot_scene_rect.topLeft())
+
+        # Position label on the bottom axis at the mouse x-position (centered on axis)
         label_width = self._date_label.width()
+        label_height = self._date_label.height()
         x_pos = int(mouse_x - label_width / 2)
-        y_pos = int(axis_rect.top())
+
+        # Map axis position to widget coordinates and center label vertically on axis
+        # The axis rect is in the plot's coordinate system, so add the plot's widget position
+        axis_center_y = axis_rect.top() + (axis_rect.height() - label_height) / 2
+        y_pos = int(plot_widget_top_left.y() + axis_center_y) + 2  # Add 2px offset to move down
 
         self._date_label.move(x_pos, y_pos)
         self._date_label.show()
@@ -1287,9 +1374,8 @@ class PriceChart(pg.GraphicsLayoutWidget):
             self._candles = CandlestickItem(data, bar_width=candle_width, up_color=up_color, down_color=down_color)
             self.price_vb.addItem(self._candles)
 
-        # Plot indicators
-        if indicators:
-            self._plot_indicators(x, df, indicators)
+        # Plot indicators (always call to ensure oscillator visibility is updated)
+        self._plot_indicators(x, df, indicators or {})
 
         # restore window or init view
         if prev_left_dt is not None and prev_right_dt is not None:
@@ -1408,6 +1494,11 @@ class PriceChart(pg.GraphicsLayoutWidget):
                 - "per_line_appearance": Per-line appearance settings (or None)
         """
         from app.services.indicator_service import IndicatorService
+
+        # Early exit for empty indicators - ensure oscillator is hidden
+        if not indicators:
+            self._set_oscillator_visibility(False)
+            return
 
         # Clear legend before plotting (if it exists)
         if hasattr(self, 'legend') and self.legend is not None:
@@ -1567,6 +1658,9 @@ class PriceChart(pg.GraphicsLayoutWidget):
         if has_oscillators:
             # Auto-fit oscillator range
             self._auto_fit_oscillator_range()
+
+        # Update price label after oscillator visibility changes (with small delay to let layout settle)
+        QTimer.singleShot(50, self._update_price_label)
 
     def _auto_fit_oscillator_range(self):
         """Auto-fit the oscillator Y-range to show all oscillator data."""
