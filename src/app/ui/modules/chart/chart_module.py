@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from app.ui.widgets.price_chart import PriceChart
+from app.ui.widgets.chart_controls import ChartControls
 from app.ui.widgets.create_indicator_dialog import CreateIndicatorDialog
 from app.ui.widgets.edit_plugin_appearance_dialog import EditPluginAppearanceDialog
 from app.ui.widgets.chart_settings_dialog import ChartSettingsDialog
@@ -62,19 +63,13 @@ class ChartModule(QWidget):
         self.theme_manager.theme_changed.connect(self._on_theme_changed)
 
         # Auto-load initial ticker
-        self.load_ticker_max(self.ticker_input.text())
+        self.load_ticker_max(self.controls.get_ticker())
 
     def _on_theme_changed(self, theme: str) -> None:
         """Handle theme change signal."""
-        self._apply_control_bar_theme()
         self._apply_indicator_panel_theme()
         self._apply_depth_panel_theme()
         self.chart.set_theme(theme)
-
-    def _apply_control_bar_theme(self) -> None:
-        """Apply theme-specific styling to the control bar."""
-        stylesheet = self.theme_manager.get_controls_stylesheet()
-        self.controls_widget.setStyleSheet(stylesheet)
 
     def _apply_indicator_panel_theme(self) -> None:
         """Apply theme-specific styling to the indicator panel."""
@@ -97,74 +92,8 @@ class ChartModule(QWidget):
         root.setSpacing(0)
 
         # Controls bar
-        self.controls_widget = QWidget()
-        
-        controls = QHBoxLayout(self.controls_widget)
-        controls.setContentsMargins(125, 12, 15, 12)  # Space for home button
-        controls.setSpacing(20)
-
-        # Ticker input
-        controls.addWidget(QLabel("TICKER"))
-        self.ticker_input = QLineEdit()
-        self.ticker_input.setText(DEFAULT_TICKER)
-        self.ticker_input.setMaximumWidth(200)
-        self.ticker_input.setPlaceholderText("Ticker or =equation...")
-        controls.addWidget(self.ticker_input)
-
-        # Separator
-        controls.addSpacing(10)
-
-        # Interval selector
-        controls.addWidget(QLabel("INTERVAL"))
-        self.interval_combo = QComboBox()
-        self.interval_combo.addItems(CHART_INTERVALS)
-        self.interval_combo.setCurrentText(DEFAULT_INTERVAL)
-        self.interval_combo.setMaximumWidth(100)
-        controls.addWidget(self.interval_combo)
-
-        # Chart type selector
-        controls.addWidget(QLabel("CHART"))
-        self.chart_type_combo = QComboBox()
-        self.chart_type_combo.addItems(CHART_TYPES)
-        self.chart_type_combo.setCurrentText(DEFAULT_CHART_TYPE)
-        self.chart_type_combo.setMaximumWidth(100)
-        controls.addWidget(self.chart_type_combo)
-
-        # Scale selector
-        controls.addWidget(QLabel("SCALE"))
-        self.scale_combo = QComboBox()
-        self.scale_combo.addItems(CHART_SCALES)
-        self.scale_combo.setCurrentText(DEFAULT_SCALE)
-        self.scale_combo.setMaximumWidth(120)
-        controls.addWidget(self.scale_combo)
-
-        # Separator
-        controls.addSpacing(20)
-
-        # Indicators button
-        self.indicators_btn = self.theme_manager.create_styled_button("Indicators", checkable=True)
-        self.indicators_btn.setMaximumWidth(120)
-        controls.addWidget(self.indicators_btn)
-
-        # Depth button
-        self.depth_btn = self.theme_manager.create_styled_button("Depth", checkable=True)
-        self.depth_btn.setMaximumWidth(120)
-        self.depth_btn.setEnabled(False)  # Disabled by default, enabled for Binance tickers
-        controls.addWidget(self.depth_btn)
-
-        # Push settings button to the right
-        controls.addStretch(1)
-
-        # Chart settings button (right-aligned)
-        self.chart_settings_btn = self.theme_manager.create_styled_button("Settings")
-        self.chart_settings_btn.setMaximumWidth(120)
-        self.chart_settings_btn.clicked.connect(self._open_chart_settings)
-        controls.addWidget(self.chart_settings_btn)
-        
-        root.addWidget(self.controls_widget)
-
-        # Apply initial theme to control bar
-        self._apply_control_bar_theme()
+        self.controls = ChartControls(self.theme_manager)
+        root.addWidget(self.controls)
 
         # Horizontal layout for chart + panels
         content_layout = QHBoxLayout()
@@ -290,48 +219,35 @@ class ChartModule(QWidget):
 
     def _connect_signals(self) -> None:
         """Connect all signals."""
-        # Enter in ticker box -> download and render
-        self.ticker_input.returnPressed.connect(
-            lambda: self.load_ticker_max(self.ticker_input.text())
-        )
+        # Control bar signals
+        self.controls.ticker_changed.connect(self.load_ticker_max)
+        self.controls.interval_changed.connect(lambda _: self.load_ticker_max(self.controls.get_ticker()))
+        self.controls.chart_type_changed.connect(lambda _: self.render_from_cache())
+        self.controls.scale_changed.connect(lambda _: self.render_from_cache())
+        self.controls.settings_clicked.connect(self._open_chart_settings)
+        self.controls.indicators_toggled.connect(self._on_indicators_toggled)
+        self.controls.depth_toggled.connect(self._on_depth_toggled)
 
-        # Change chart type / scale -> re-render only (no refetch)
-        self.chart_type_combo.currentTextChanged.connect(lambda _: self.render_from_cache())
-        self.scale_combo.currentTextChanged.connect(lambda _: self.render_from_cache())
+    def _on_indicators_toggled(self, is_checked: bool) -> None:
+        """Handle indicators button toggle."""
+        self.indicator_panel.setVisible(is_checked)
 
-        # Change interval -> MUST refetch because bars change
-        self.interval_combo.currentTextChanged.connect(
-            lambda _: self.load_ticker_max(self.ticker_input.text())
-        )
-
-        # Toggle indicator panel
-        self.indicators_btn.clicked.connect(self._toggle_indicator_panel)
-
-        # Toggle depth panel
-        self.depth_btn.clicked.connect(self._toggle_depth_panel)
-
-    def _toggle_indicator_panel(self) -> None:
-        """Toggle the indicator selection panel visibility."""
-        is_visible = self.indicators_btn.isChecked()
-        self.indicator_panel.setVisible(is_visible)
-        
         # If showing indicators, hide depth
-        if is_visible and self.depth_panel.isVisible():
-            self.depth_btn.setChecked(False)
+        if is_checked and self.depth_panel.isVisible():
+            self.controls.set_depth_checked(False)
             self.depth_panel.setVisible(False)
             self.depth_panel.stop_updates()
 
-    def _toggle_depth_panel(self) -> None:
-        """Toggle the depth panel visibility."""
-        is_visible = self.depth_btn.isChecked()
-        self.depth_panel.setVisible(is_visible)
-        
+    def _on_depth_toggled(self, is_checked: bool) -> None:
+        """Handle depth button toggle."""
+        self.depth_panel.setVisible(is_checked)
+
         # If showing depth, hide indicators
-        if is_visible:
+        if is_checked:
             if self.indicator_panel.isVisible():
-                self.indicators_btn.setChecked(False)
+                self.controls.set_indicators_checked(False)
                 self.indicator_panel.setVisible(False)
-            
+
             # Update depth with current ticker
             if self.state["ticker"]:
                 self.depth_panel.set_ticker(self.state["ticker"])
@@ -697,13 +613,13 @@ class ChartModule(QWidget):
                 self.render_from_cache()
 
     def current_chart_type(self) -> str:
-        return self.chart_type_combo.currentText()
+        return self.controls.get_chart_type()
 
     def current_interval(self) -> str:
-        return self.interval_combo.currentText()
+        return self.controls.get_interval()
 
     def current_scale(self) -> str:
-        return self.scale_combo.currentText()
+        return self.controls.get_scale()
 
     def render_from_cache(self) -> None:
         """Re-render chart from cached data with indicators."""
@@ -757,23 +673,23 @@ class ChartModule(QWidget):
 
             # Check if this ticker is supported on Binance
             is_binance = BinanceOrderBook.is_binance_ticker(display_name)
-            
+
             # Enable/disable the depth button
-            self.depth_btn.setEnabled(is_binance)
-            self.depth_btn.setVisible(is_binance)
+            self.controls.set_depth_enabled(is_binance)
+            self.controls.set_depth_visible(is_binance)
 
             if is_binance:
-                self.depth_btn.setText("Depth")
-                
+                self.controls.set_depth_text("Depth")
+
                 # If depth panel is already visible, update it
                 if self.depth_panel.isVisible():
                     self.depth_panel.set_ticker(display_name)
             else:
-                self.depth_btn.setText("Depth")
-                
+                self.controls.set_depth_text("Depth")
+
                 # Hide depth panel if it was visible
                 if self.depth_panel.isVisible():
-                    self.depth_btn.setChecked(False)
+                    self.controls.set_depth_checked(False)
                     self.depth_panel.setVisible(False)
                     self.depth_panel.stop_updates()
 
