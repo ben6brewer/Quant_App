@@ -1733,7 +1733,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
             # Get line settings (color, width, style)
             line_settings = self.get_line_settings()
             pen = pg.mkPen(color=line_settings['color'], width=line_settings['width'], style=line_settings['style'])
-            self._line = self.plot(x, y, pen=pen, name=f"{ticker}")
+            self._line = self.price_plot.plot(x, y, pen=pen, name=f"{ticker}")
         else:
             required = {"Open", "High", "Low", "Close"}
             missing = required - set(df_plot.columns)
