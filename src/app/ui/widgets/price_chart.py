@@ -7,8 +7,9 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui
-from PySide6.QtWidgets import QLabel
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QPainter, QColor
 
 from app.utils.formatters import format_price_usd, format_date
 from app.core.config import CANDLE_BAR_WIDTH, DEFAULT_VIEW_PERIOD_DAYS, VIEW_PADDING_PERCENT
@@ -291,6 +292,108 @@ class CandlestickItem(pg.GraphicsObject):
 
 
 # -----------------------------
+# Resize Handle
+# -----------------------------
+class _ResizeHandle(QWidget):
+    """
+    Resize handle for adjusting oscillator height.
+
+    An 8px tall invisible hotspot that shows a colored bar on hover.
+    Allows dragging to resize the oscillator subplot.
+    """
+
+    height_changed = Signal(int)  # Emits delta_y during drag
+    drag_started = Signal()  # Emitted when drag begins
+    drag_ended = Signal()    # Emitted when drag ends
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.ArrowCursor)
+
+        self._theme = "bloomberg"
+        self._show_bar = False
+        self._is_dragging = False
+        self._drag_start_y = 0
+        self._last_y = 0
+
+        # Transparent background
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAutoFillBackground(False)
+
+    def set_theme(self, theme: str):
+        """No-op: Bar color is now theme-independent."""
+        pass
+
+    def _get_bar_color(self) -> Tuple[int, int, int]:
+        """Get subtle grey color for resize bar (theme-independent)."""
+        return (150, 150, 150)  # Subtle grey
+
+    def enterEvent(self, event):
+        """Show hover bar and change cursor."""
+        if not self._is_dragging:
+            self._show_bar = True
+            self.setCursor(Qt.SizeVerCursor)
+            self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Hide bar and restore cursor (unless dragging)."""
+        if not self._is_dragging:
+            self._show_bar = False
+            self.setCursor(Qt.ArrowCursor)
+            self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        """Start drag operation."""
+        if event.button() == Qt.LeftButton:
+            self._is_dragging = True
+            self._drag_start_y = event.pos().y()
+            self._last_y = event.pos().y()
+            self._show_bar = True
+            self.setCursor(Qt.SizeVerCursor)
+            self.update()
+            self.drag_started.emit()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Emit height change during drag."""
+        if self._is_dragging:
+            current_y = event.pos().y()
+            delta_y = current_y - self._last_y
+            self._last_y = current_y
+
+            # Emit delta for parent to handle
+            self.height_changed.emit(delta_y)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """End drag operation."""
+        if event.button() == Qt.LeftButton and self._is_dragging:
+            self._is_dragging = False
+
+            # Check if still hovering to keep bar visible
+            if not self.underMouse():
+                self._show_bar = False
+                self.setCursor(Qt.ArrowCursor)
+
+            self.update()
+            self.drag_ended.emit()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        """Resize bar is completely invisible (no visual feedback)."""
+        return  # Always invisible - resize handle is purely functional
+
+
+# -----------------------------
 # Chart (with oscillator support)
 # -----------------------------
 class PriceChart(pg.GraphicsLayoutWidget):
@@ -325,7 +428,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self.price_vb.setMouseEnabled(x=True, y=True)
 
         # Set fixed width for price axis to ensure alignment with oscillator axis
-        self.right_axis.setWidth(92)
+        self.right_axis.setWidth(95)
 
         # Add padding to right of price axis
         self.price_plot.layout.setColumnSpacing(2, 5)
@@ -421,6 +524,16 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Ensure oscillator is properly hidden from the start (using setRowFixedHeight, not just setRowPreferredHeight)
         self._set_oscillator_visibility(False)
 
+        # Create resize handle (initially hidden)
+        self.resize_handle = _ResizeHandle(self)
+        self.resize_handle.height_changed.connect(self._on_resize_handle_drag)
+        self.resize_handle.drag_started.connect(self._on_resize_drag_started)
+        self.resize_handle.drag_ended.connect(self._on_resize_drag_ended)
+        self.resize_handle.hide()
+
+        # Track resize handle drag state
+        self._resize_handle_dragging = False
+
     def mousePressEvent(self, ev):
         """Handle mouse press events."""
         # Use default behavior (no oscillator dragging)
@@ -481,6 +594,10 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Update price label position after resize (if it exists)
         if hasattr(self, '_price_label') and self._price_label and self._price_label.isVisible():
             self._update_price_label()
+
+        # Update resize handle position
+        if hasattr(self, 'resize_handle') and self.resize_handle:
+            QTimer.singleShot(0, self._position_resize_handle)
 
     def showEvent(self, ev):
         """Override to update price label position when widget is shown."""
@@ -586,6 +703,80 @@ class PriceChart(pg.GraphicsLayoutWidget):
             # Move date axis back to price chart: show price bottom axis, hide oscillator bottom axis
             self.price_plot.showAxis('bottom')
             self.oscillator_plot.hideAxis('bottom')
+
+        # Update resize handle visibility
+        if hasattr(self, 'resize_handle') and self.resize_handle:
+            QTimer.singleShot(50, self._position_resize_handle)
+
+    def _on_resize_handle_drag(self, delta_y: int):
+        """
+        Handle resize handle drag events.
+
+        Args:
+            delta_y: Vertical mouse delta (negative = drag up, positive = drag down)
+        """
+        if not self._oscillator_visible:
+            return
+
+        # Get current oscillator height
+        current_height = self.oscillator_plot.sceneBoundingRect().height()
+
+        # Calculate new height (inverted: drag up increases height)
+        new_height = current_height - delta_y
+
+        # Clamp to reasonable bounds
+        total_height = self.height()
+        max_height = int(total_height * 0.8)  # Max 80% of total
+        min_height = 50  # Min 50px
+        new_height = max(min_height, min(new_height, max_height))
+
+        # Apply new height
+        self.ci.layout.setRowFixedHeight(1, int(new_height))
+
+        # Labels are hidden during drag and redrawn on drag end
+
+    def _position_resize_handle(self):
+        """Position the resize handle at the boundary between price and oscillator."""
+        # Skip if actively dragging - user controls position
+        if self._resize_handle_dragging:
+            return
+
+        if not self._oscillator_visible or not self.resize_handle:
+            self.resize_handle.hide()
+            return
+
+        # Get oscillator plot top edge in widget coordinates
+        osc_scene_rect = self.oscillator_plot.sceneBoundingRect()
+        osc_top_left_widget = self.mapFromScene(osc_scene_rect.topLeft())
+
+        # Position handle centered on boundary (4px above, 4px below)
+        handle_y = int(osc_top_left_widget.y() - 4)
+
+        # Handle spans full width
+        self.resize_handle.setGeometry(0, handle_y, self.width(), 8)
+        self.resize_handle.show()
+
+    def _on_resize_drag_started(self):
+        """Mark drag as active and hide custom overlay labels during drag."""
+        self._resize_handle_dragging = True
+
+        # Hide only custom overlay labels (not axis tick labels)
+        if self._price_label:
+            self._price_label.hide()
+        if self._mouse_price_label:
+            self._mouse_price_label.hide()
+        if self._date_label:
+            self._date_label.hide()
+
+    def _on_resize_drag_ended(self):
+        """Mark drag as ended, show custom labels, and reposition handle."""
+        self._resize_handle_dragging = False
+
+        # Reposition handle once after drag ends to sync with final position
+        QTimer.singleShot(0, self._position_resize_handle)
+
+        # Update custom labels (they will show if enabled in settings)
+        QTimer.singleShot(10, self._update_price_label)
 
     def _apply_background(self):
         """Apply background color from settings or theme."""
@@ -1176,6 +1367,10 @@ class PriceChart(pg.GraphicsLayoutWidget):
         # Update date label style if it exists
         if self._date_label:
             self._update_date_label_style()
+
+        # Update resize handle theme
+        if hasattr(self, 'resize_handle') and self.resize_handle:
+            self.resize_handle.set_theme(theme)
 
     def get_line_color(self) -> tuple[int, int, int]:
         """Get line color from settings or theme."""
