@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 from app.ui.hub_window import HubWindow
 from app.ui.modules.chart.chart_module import ChartModule
 from app.ui.modules.settings_module import SettingsModule
+from app.ui.modules.portfolio_construction.portfolio_construction_module import PortfolioConstructionModule
 from app.ui.modules.placeholder_modules import (
     AnalysisModule,
     CryptoDashboardModule,
@@ -43,6 +44,7 @@ def main() -> int:
     hub.add_module("defi", DeFiModule())
     hub.add_module("nft", NFTModule())
     hub.add_module("portfolio", PortfolioModule())
+    hub.add_module("portfolio_construction", PortfolioConstructionModule(theme_manager))
     hub.add_module("watchlist", WatchlistModule())
     hub.add_module("news", NewsModule())
     hub.add_module("screener", ScreenerModule())

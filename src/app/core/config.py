@@ -86,6 +86,7 @@ MODULE_SECTIONS = {
     ],
     "Portfolio": [
         {"id": "portfolio", "label": "Portfolio", "emoji": "💼"},
+        {"id": "portfolio_construction", "label": "Portfolio Builder", "emoji": "🏗️"},
         {"id": "watchlist", "label": "Watchlist", "emoji": "👁"}
     ],
     "Market Data": [
