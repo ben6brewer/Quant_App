@@ -13,6 +13,9 @@ class PortfolioService:
     All methods are static and operate on data passed in.
     """
 
+    # Special ticker for cash holdings (bypasses Yahoo Finance validation)
+    FREE_CASH_TICKER = "FREE CASH"
+
     @staticmethod
     def create_transaction(
         date: str,
@@ -140,10 +143,13 @@ class PortfolioService:
         if not transactions:
             return []
 
-        # Group transactions by ticker
+        # Group transactions by ticker (excluding FREE CASH - handled separately)
         ticker_transactions = defaultdict(list)
         for tx in transactions:
-            ticker_transactions[tx["ticker"]].append(tx)
+            ticker = tx["ticker"]
+            if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
+                continue  # Skip FREE CASH - handled separately in calculate_free_cash_summary
+            ticker_transactions[ticker].append(tx)
 
         holdings = []
         total_market_value = 0.0
@@ -262,6 +268,7 @@ class PortfolioService:
 
         Uses period="max" to leverage parquet caching for efficiency.
         Cache stored at ~/.quant_terminal/cache/{TICKER}.parquet
+        FREE CASH ticker always returns $1.00 (no Yahoo fetch).
 
         Args:
             tickers: List of ticker symbols
@@ -273,6 +280,11 @@ class PortfolioService:
 
         for ticker in tickers:
             if not ticker:
+                continue
+
+            # FREE CASH is always $1.00 per unit
+            if ticker == PortfolioService.FREE_CASH_TICKER:
+                prices[ticker] = 1.0
                 continue
 
             try:
@@ -294,6 +306,7 @@ class PortfolioService:
     def is_valid_ticker(ticker: str) -> Tuple[bool, Optional[str]]:
         """
         Check if a ticker is valid by attempting to fetch data from Yahoo Finance.
+        FREE CASH ticker is always valid (bypasses Yahoo Finance).
 
         Args:
             ticker: Ticker symbol to validate
@@ -305,6 +318,10 @@ class PortfolioService:
             return False, "Ticker cannot be empty"
 
         ticker = ticker.strip().upper()
+
+        # FREE CASH is always valid (special cash ticker)
+        if ticker == PortfolioService.FREE_CASH_TICKER:
+            return True, None
 
         try:
             df = fetch_price_history(ticker, period="max", interval="1d")
@@ -321,7 +338,7 @@ class PortfolioService:
     def is_valid_trading_day(ticker: str, date_str: str) -> Tuple[bool, Optional[str]]:
         """
         Check if a date is a valid trading day for a stock ticker.
-        Crypto tickers (ending in -USD) are exempt from this check.
+        Crypto tickers (ending in -USD) and FREE CASH are exempt from this check.
 
         Args:
             ticker: Ticker symbol
@@ -337,6 +354,10 @@ class PortfolioService:
             return True, None  # Skip validation if missing data
 
         ticker = ticker.strip().upper()
+
+        # FREE CASH can be transacted any day
+        if ticker == PortfolioService.FREE_CASH_TICKER:
+            return True, None
 
         # Crypto tickers (ending in -USD) trade 24/7, skip validation
         if ticker.endswith("-USD"):
@@ -392,6 +413,7 @@ class PortfolioService:
     def fetch_historical_close_price(ticker: str, date_str: str) -> Optional[float]:
         """
         Fetch the closing price for a ticker on a specific date.
+        FREE CASH ticker always returns $1.00.
 
         Args:
             ticker: Ticker symbol
@@ -404,6 +426,10 @@ class PortfolioService:
 
         if not ticker or not date_str:
             return None
+
+        # FREE CASH is always $1.00 per unit
+        if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
+            return 1.0
 
         try:
             # Fetch full history (uses cache if current)
@@ -437,6 +463,7 @@ class PortfolioService:
     ) -> Dict[str, Dict[str, Optional[float]]]:
         """
         Batch fetch historical closing prices for multiple ticker/date pairs.
+        FREE CASH ticker always returns $1.00 for any date.
 
         Args:
             ticker_dates: List of (ticker, date_str) tuples
@@ -460,6 +487,12 @@ class PortfolioService:
         for ticker, dates in ticker_groups.items():
             if ticker not in results:
                 results[ticker] = {}
+
+            # FREE CASH is always $1.00 per unit
+            if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
+                for date_str in dates:
+                    results[ticker][date_str] = 1.0
+                continue
 
             try:
                 df = fetch_price_history(ticker, period="max", interval="1d")
@@ -695,3 +728,43 @@ class PortfolioService:
 
         totals = PortfolioService.calculate_portfolio_totals(holdings)
         return totals.get("total_market_value", 0.0)
+
+    @staticmethod
+    def calculate_free_cash_summary(transactions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Calculate FREE CASH summary values for the summary row.
+
+        Only tracks FREE CASH transaction money flow:
+        - Buy (deposit): adds (qty - fees) to cash position
+        - Sell (withdrawal): removes (qty + fees) from cash position
+
+        Principal = Market Value = Quantity (all same for cash at $1/unit)
+
+        Args:
+            transactions: List of all transactions
+
+        Returns:
+            Dict with ticker, quantity, principal, market_value
+        """
+        free_cash_balance = 0.0  # Net FREE CASH position
+
+        for tx in transactions:
+            ticker = tx.get("ticker", "").upper()
+            tx_type = tx.get("transaction_type", "")
+            qty = float(tx.get("quantity", 0))
+            fees = float(tx.get("fees", 0))
+
+            if ticker == PortfolioService.FREE_CASH_TICKER:
+                if tx_type == "Buy":  # Deposit
+                    # Deposit: add qty, subtract fees paid
+                    free_cash_balance += qty - fees
+                else:  # Sell = Withdrawal
+                    # Withdrawal: subtract qty, subtract fees paid
+                    free_cash_balance -= (qty + fees)
+
+        return {
+            "ticker": PortfolioService.FREE_CASH_TICKER,
+            "quantity": free_cash_balance,  # Cash = $1 per unit
+            "principal": free_cash_balance,
+            "market_value": free_cash_balance
+        }

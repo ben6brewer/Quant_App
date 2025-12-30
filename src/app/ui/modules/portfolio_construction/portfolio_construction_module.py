@@ -178,33 +178,33 @@ class PortfolioConstructionModule(QWidget):
             self.aggregate_table.setRowCount(0)
             return
 
-        # Get unique tickers
-        tickers = set(t["ticker"] for t in transactions if t["ticker"])
-
-        if not tickers:
-            self.aggregate_table.setRowCount(0)
-            return
+        # Get unique tickers (excluding FREE CASH - it doesn't need price fetching)
+        tickers = set(
+            t["ticker"] for t in transactions
+            if t["ticker"] and t["ticker"].upper() != PortfolioService.FREE_CASH_TICKER
+        )
 
         # Determine which tickers need price fetching
-        if force_fetch:
-            # Full refresh - fetch all tickers
-            tickers_to_fetch = list(tickers)
-        else:
-            # Only fetch prices for NEW tickers (not already cached)
-            tickers_to_fetch = [t for t in tickers if t not in self._cached_tickers]
+        if tickers:
+            if force_fetch:
+                # Full refresh - fetch all tickers
+                tickers_to_fetch = list(tickers)
+            else:
+                # Only fetch prices for NEW tickers (not already cached)
+                tickers_to_fetch = [t for t in tickers if t not in self._cached_tickers]
 
-        # Fetch prices only for tickers that need it
-        if tickers_to_fetch:
-            new_prices = PortfolioService.fetch_current_prices(tickers_to_fetch)
-            # Update cache
-            self._cached_prices.update(new_prices)
-            self._cached_tickers.update(tickers_to_fetch)
+            # Fetch prices only for tickers that need it
+            if tickers_to_fetch:
+                new_prices = PortfolioService.fetch_current_prices(tickers_to_fetch)
+                # Update cache
+                self._cached_prices.update(new_prices)
+                self._cached_tickers.update(tickers_to_fetch)
 
-        # Remove cached tickers that are no longer in use
-        removed_tickers = self._cached_tickers - tickers
-        for ticker in removed_tickers:
-            self._cached_tickers.discard(ticker)
-            self._cached_prices.pop(ticker, None)
+            # Remove cached tickers that are no longer in use
+            removed_tickers = self._cached_tickers - tickers
+            for ticker in removed_tickers:
+                self._cached_tickers.discard(ticker)
+                self._cached_prices.pop(ticker, None)
 
         # Use cached prices for calculations
         current_prices = {t: self._cached_prices.get(t) for t in tickers}
@@ -216,11 +216,14 @@ class PortfolioConstructionModule(QWidget):
         # (batch fetch handles caching internally)
         self.transaction_table.fetch_historical_prices_batch()
 
-        # Calculate holdings
+        # Calculate holdings (excludes FREE CASH)
         holdings = PortfolioService.calculate_aggregate_holdings(transactions, current_prices)
 
-        # Update aggregate table
-        self.aggregate_table.update_holdings(holdings)
+        # Calculate FREE CASH summary
+        free_cash_summary = PortfolioService.calculate_free_cash_summary(transactions)
+
+        # Update aggregate table with holdings AND FREE CASH
+        self.aggregate_table.update_holdings(holdings, free_cash_summary)
 
     def _refresh_prices(self):
         """Manually refresh current prices."""

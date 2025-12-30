@@ -529,6 +529,9 @@ class TransactionLogTable(QTableWidget):
         self._current_sort_column: int = -1
         self._current_sort_order: Qt.SortOrder = Qt.AscendingOrder
 
+        # FREE CASH summary row tracking (pinned at row 1, below blank row)
+        self._free_cash_row_id = "FREE_CASH_SUMMARY"
+
         self._setup_table()
         self._apply_theme()
 
@@ -781,6 +784,209 @@ class TransactionLogTable(QTableWidget):
 
         self.setSortingEnabled(False)  # Keep sorting disabled for manual control
 
+        # Ensure FREE CASH summary row exists after blank row
+        self._ensure_free_cash_summary_row()
+
+    def _ensure_free_cash_summary_row(self):
+        """
+        Ensure FREE CASH summary row exists at index 1 (below blank row).
+        Creates if missing, updates values if exists.
+        """
+        # Check if FREE CASH summary already exists anywhere in the table
+        if self._free_cash_row_id in self._transactions_by_id:
+            # Summary row exists - find its actual row position by scanning the table
+            # (row mappings may be stale after row insert/remove operations)
+            actual_row = None
+            for row in range(self.rowCount()):
+                # Check if this row has "FREE CASH" as ticker in column 1
+                ticker_item = self.item(row, 1)
+                if ticker_item and ticker_item.text() == "FREE CASH":
+                    # Also verify it's the summary row by checking if column 0 has no widget
+                    if self.cellWidget(row, 0) is None:
+                        actual_row = row
+                        break
+
+            if actual_row is not None:
+                # Update the mapping to the correct row
+                # First remove any old mapping to this row ID
+                for r in list(self._row_to_id.keys()):
+                    if self._row_to_id[r] == self._free_cash_row_id:
+                        del self._row_to_id[r]
+                        if r in self._transactions:
+                            del self._transactions[r]
+                        break
+                # Set correct mapping
+                self._row_to_id[actual_row] = self._free_cash_row_id
+                self._transactions[actual_row] = self._transactions_by_id[self._free_cash_row_id]
+
+            # Now update values
+            self._update_free_cash_summary_row()
+            return
+
+        # Need to insert FREE CASH summary row at index 1
+        # First shift all existing rows down (except blank row at 0)
+        new_row_to_id = {0: self._row_to_id.get(0)}  # Keep blank row mapping
+        new_transactions = {0: self._transactions.get(0)}  # Keep blank row data
+        new_row_widgets_map = {0: self._row_widgets_map.get(0)} if 0 in self._row_widgets_map else {}
+
+        for old_row in range(1, self.rowCount()):
+            new_row = old_row + 1  # Shift down by 1
+            if old_row in self._row_to_id:
+                new_row_to_id[new_row] = self._row_to_id[old_row]
+            if old_row in self._transactions:
+                new_transactions[new_row] = self._transactions[old_row]
+            if old_row in self._row_widgets_map:
+                new_row_widgets_map[new_row] = self._row_widgets_map[old_row]
+
+        # Insert row at index 1
+        self.insertRow(1)
+        self.setRowHeight(1, 48)
+
+        # Set blank vertical header (no row number)
+        blank_header = QTableWidgetItem("")
+        self.setVerticalHeaderItem(1, blank_header)
+
+        # Apply shifted mappings
+        self._row_to_id = new_row_to_id
+        self._transactions = new_transactions
+        self._row_widgets_map = new_row_widgets_map
+
+        # Create FREE CASH summary transaction entry
+        free_cash_summary = {
+            "id": self._free_cash_row_id,
+            "is_free_cash_summary": True,
+            "date": "",
+            "ticker": "FREE CASH",
+            "transaction_type": "",
+            "quantity": 0.0,
+            "entry_price": 0.0,
+            "fees": 0.0
+        }
+
+        # Store FREE CASH summary
+        self._transactions_by_id[self._free_cash_row_id] = free_cash_summary
+        self._row_to_id[1] = self._free_cash_row_id
+        self._transactions[1] = free_cash_summary
+
+        # Create read-only cells (no editable widgets, no highlight)
+        # Date cell (empty)
+        date_item = QTableWidgetItem("")
+        date_item.setFlags(date_item.flags() & ~Qt.ItemIsEditable)
+        date_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 0, date_item)
+
+        # Ticker cell ("FREE CASH")
+        ticker_item = QTableWidgetItem("FREE CASH")
+        ticker_item.setFlags(ticker_item.flags() & ~Qt.ItemIsEditable)
+        ticker_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 1, ticker_item)
+
+        # Quantity cell (calculated)
+        qty_item = QTableWidgetItem("--")
+        qty_item.setFlags(qty_item.flags() & ~Qt.ItemIsEditable)
+        qty_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 2, qty_item)
+
+        # Execution Price cell (empty)
+        price_item = QTableWidgetItem("")
+        price_item.setFlags(price_item.flags() & ~Qt.ItemIsEditable)
+        price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 3, price_item)
+
+        # Fees cell (empty)
+        fees_item = QTableWidgetItem("")
+        fees_item.setFlags(fees_item.flags() & ~Qt.ItemIsEditable)
+        fees_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 4, fees_item)
+
+        # Type cell (empty)
+        type_item = QTableWidgetItem("")
+        type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
+        type_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 5, type_item)
+
+        # Daily Closing Price cell (empty)
+        daily_item = QTableWidgetItem("")
+        daily_item.setFlags(daily_item.flags() & ~Qt.ItemIsEditable)
+        daily_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 6, daily_item)
+
+        # Live Price cell (empty)
+        live_item = QTableWidgetItem("")
+        live_item.setFlags(live_item.flags() & ~Qt.ItemIsEditable)
+        live_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 7, live_item)
+
+        # Principal cell (calculated)
+        principal_item = QTableWidgetItem("--")
+        principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
+        principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 8, principal_item)
+
+        # Market Value cell (calculated)
+        mv_item = QTableWidgetItem("--")
+        mv_item.setFlags(mv_item.flags() & ~Qt.ItemIsEditable)
+        mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 9, mv_item)
+
+        # Update row positions for shifted rows (rows 2+)
+        self._update_row_positions(2)
+
+        # Update calculated values
+        self._update_free_cash_summary_row()
+
+    def _update_free_cash_summary_row(self):
+        """Update FREE CASH summary row with calculated values."""
+        # Find the FREE CASH summary row by scanning the table
+        # (don't rely on _row_to_id which can be stale after row operations)
+        row = None
+        for r in range(self.rowCount()):
+            # Check if this row has "FREE CASH" as ticker in column 1 (QTableWidgetItem, not widget)
+            ticker_item = self.item(r, 1)
+            if ticker_item and ticker_item.text() == "FREE CASH":
+                # Verify it's the summary row by checking if column 0 has no widget (date widget)
+                if self.cellWidget(r, 0) is None:
+                    row = r
+                    break
+
+        if row is None:
+            return  # Summary row doesn't exist yet
+
+        # Get all real transactions (excluding blank and summary rows)
+        transactions = self.get_all_transactions()
+
+        # Calculate summary values
+        summary = PortfolioService.calculate_free_cash_summary(transactions)
+
+        # Update Quantity (col 2)
+        qty_item = self.item(row, 2)
+        if qty_item:
+            qty = summary["quantity"]
+            if qty != 0:
+                qty_item.setText(f"${qty:,.2f}")
+            else:
+                qty_item.setText("--")
+
+        # Update Principal (col 8)
+        principal_item = self.item(row, 8)
+        if principal_item:
+            principal = summary["principal"]
+            if principal < 0:
+                principal_item.setText(f"-${abs(principal):,.2f}")
+            elif principal > 0:
+                principal_item.setText(f"${principal:,.2f}")
+            else:
+                principal_item.setText("--")
+
+        # Update Market Value (col 9)
+        mv_item = self.item(row, 9)
+        if mv_item:
+            mv = summary["market_value"]
+            if mv != 0:
+                mv_item.setText(f"${mv:,.2f}")
+            else:
+                mv_item.setText("--")
+
     def _is_transaction_complete(self, transaction: Dict[str, Any]) -> bool:
         """
         Check if transaction has all required fields filled.
@@ -817,27 +1023,37 @@ class TransactionLogTable(QTableWidget):
         transaction["is_blank"] = False
         transaction["ticker"] = transaction["ticker"].upper().strip()
 
-        # Update UUID-based storage
-        # Remove old blank entry
+        # For FREE CASH ticker, auto-set execution price to $1.00
+        if transaction["ticker"] == PortfolioService.FREE_CASH_TICKER:
+            transaction["entry_price"] = 1.0
+
+        # Remove old blank entry from storage
         if "BLANK_ROW" in self._transactions_by_id:
             del self._transactions_by_id["BLANK_ROW"]
+        if row in self._row_to_id:
+            del self._row_to_id[row]
+        if row in self._transactions:
+            del self._transactions[row]
+        if row in self._row_widgets_map:
+            del self._row_widgets_map[row]
 
-        # Add new real transaction
-        self._transactions_by_id[new_id] = transaction
-        self._row_to_id[row] = new_id
-        self._transactions[row] = transaction
+        # Remove the blank row from the table
+        self.removeRow(row)
 
-        # Update calculated cells
-        self._update_calculated_cells(row)
+        # Rebuild mappings after row removal
+        self._rebuild_transaction_map()
+
+        # Create new blank row at top (also ensures FREE CASH summary at row 1)
+        self._ensure_blank_row()
+
+        # Add the new transaction at the end (after blank and FREE CASH summary)
+        self.add_transaction_row(transaction)
 
         # Emit signal
         self.transaction_added.emit(transaction)
 
-        # Create new blank row at top
-        self._ensure_blank_row()
-
-        # Note: Don't sort here - blank is already at top (row 0)
-        # Sorting happens on portfolio load to order by date
+        # Update FREE CASH summary row
+        self._update_free_cash_summary_row()
 
     def add_transaction_row(self, transaction: Dict[str, Any]) -> int:
         """
@@ -856,8 +1072,9 @@ class TransactionLogTable(QTableWidget):
         self.insertRow(row)
         self.setRowHeight(row, 48)  # Ensure consistent row height
 
-        # Set row label (row number excludes blank row at index 0)
-        row_header = QTableWidgetItem(str(row))
+        # Set row label (row number excludes blank row at 0 and FREE CASH summary at 1)
+        # Row 2 = label "1", Row 3 = label "2", etc.
+        row_header = QTableWidgetItem(str(row - 1))
         self.setVerticalHeaderItem(row, row_header)
 
         # Store transaction in UUID-based storage
@@ -960,6 +1177,10 @@ class TransactionLogTable(QTableWidget):
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(row)
 
+        # Update FREE CASH summary if this is a FREE CASH transaction
+        if transaction.get("ticker", "").upper() == PortfolioService.FREE_CASH_TICKER:
+            self._update_free_cash_summary_row()
+
         return row
 
     def _on_cell_changed(self, row: int, col: int):
@@ -1052,37 +1273,59 @@ class TransactionLogTable(QTableWidget):
         if not transaction:
             return
 
+        # Skip FREE CASH summary row (it's handled separately)
+        if transaction.get("is_free_cash_summary"):
+            return
+
         ticker = transaction.get("ticker", "")
         tx_date = transaction.get("date", "")
         quantity = transaction.get("quantity", 0.0)
 
-        # --- Daily Closing Price (col 6) ---
-        daily_close = None
-        if ticker and tx_date:
-            # Check cache first
-            if ticker in self._historical_prices:
-                daily_close = self._historical_prices[ticker].get(tx_date)
+        # Check if this is a FREE CASH transaction
+        is_free_cash = ticker.upper() == PortfolioService.FREE_CASH_TICKER
 
+        # --- Daily Closing Price (col 6) ---
         item_6 = self.item(row, 6)
         if item_6:
-            if daily_close is not None:
-                item_6.setText(f"${daily_close:,.2f}")
+            if is_free_cash:
+                # FREE CASH: show blank (price is always $1, redundant to display)
+                item_6.setText("")
+            elif ticker and tx_date and ticker in self._historical_prices:
+                daily_close = self._historical_prices[ticker].get(tx_date)
+                if daily_close is not None:
+                    item_6.setText(f"${daily_close:,.2f}")
+                else:
+                    item_6.setText("--")
             else:
                 item_6.setText("--")
 
         # --- Live Price (col 7) ---
-        live_price = self._current_prices.get(ticker)
         item_7 = self.item(row, 7)
         if item_7:
-            if live_price is not None:
-                item_7.setText(f"${live_price:,.2f}")
+            if is_free_cash:
+                # FREE CASH: show blank (price is always $1, redundant to display)
+                item_7.setText("")
             else:
-                item_7.setText("--")
+                live_price = self._current_prices.get(ticker)
+                if live_price is not None:
+                    item_7.setText(f"${live_price:,.2f}")
+                else:
+                    item_7.setText("--")
 
         # --- Principal (col 8) ---
-        principal = PortfolioService.calculate_principal(transaction)
         item_8 = self.item(row, 8)
         if item_8:
+            if is_free_cash:
+                # FREE CASH principal: qty - fees for Buy, -(qty + fees) for Sell
+                tx_type = transaction.get("transaction_type", "Buy")
+                fees = transaction.get("fees", 0.0)
+                if tx_type == "Buy":
+                    principal = quantity - fees
+                else:
+                    principal = -(quantity + fees)
+            else:
+                principal = PortfolioService.calculate_principal(transaction)
+
             if principal != 0:
                 # Format with sign: negative for buys, positive for sells
                 if principal < 0:
@@ -1095,11 +1338,19 @@ class TransactionLogTable(QTableWidget):
         # --- Market Value (col 9) ---
         item_9 = self.item(row, 9)
         if item_9:
-            if live_price is not None and quantity > 0:
-                market_value = live_price * quantity
-                item_9.setText(f"${market_value:,.2f}")
+            if is_free_cash:
+                # FREE CASH: market value = quantity (since price is $1)
+                if quantity > 0:
+                    item_9.setText(f"${quantity:,.2f}")
+                else:
+                    item_9.setText("--")
             else:
-                item_9.setText("--")
+                live_price = self._current_prices.get(ticker)
+                if live_price is not None and quantity > 0:
+                    market_value = live_price * quantity
+                    item_9.setText(f"${market_value:,.2f}")
+                else:
+                    item_9.setText("--")
 
     def update_current_prices(self, prices: Dict[str, float]):
         """
@@ -1158,7 +1409,7 @@ class TransactionLogTable(QTableWidget):
 
     def get_all_transactions(self) -> List[Dict[str, Any]]:
         """
-        Get all transactions from table (excluding blank row).
+        Get all transactions from table (excluding blank row and FREE CASH summary).
 
         Returns:
             List of transaction dicts
@@ -1166,7 +1417,8 @@ class TransactionLogTable(QTableWidget):
         transactions = []
         for row in range(self.rowCount()):
             tx = self._extract_transaction_from_row(row)
-            if tx and not tx.get("is_blank"):  # Filter out blank row
+            # Filter out blank row and FREE CASH summary row
+            if tx and not tx.get("is_blank") and not tx.get("is_free_cash_summary"):
                 transactions.append(tx)
         return transactions
 
@@ -1226,6 +1478,9 @@ class TransactionLogTable(QTableWidget):
 
         # Update all stored row positions after deletion
         self._update_row_positions(0)
+
+        # Update FREE CASH summary row
+        self._update_free_cash_summary_row()
 
     def _find_row_for_widget(self, widget: QWidget) -> Optional[int]:
         """
@@ -1455,6 +1710,15 @@ class TransactionLogTable(QTableWidget):
                                 # Valid data - validate and fetch prices
                                 is_valid, error = PortfolioService.validate_transaction(transaction)
                                 if is_valid:
+                                    # For FREE CASH ticker, auto-set execution price to $1.00
+                                    if ticker_upper == PortfolioService.FREE_CASH_TICKER:
+                                        transaction["entry_price"] = 1.0
+                                        price_widget = self.cellWidget(row, 3)
+                                        if price_widget:
+                                            inner_widget = price_widget.findChild(ValidatedNumericLineEdit)
+                                            if inner_widget:
+                                                inner_widget.setValue(1.0)
+
                                     # Update original values
                                     if transaction_id:
                                         self._original_values[transaction_id] = {
@@ -1464,6 +1728,8 @@ class TransactionLogTable(QTableWidget):
                                     self._update_calculated_cells(row)
                                     if transaction_id:
                                         self.transaction_modified.emit(transaction_id, transaction)
+                                    # Update FREE CASH summary row
+                                    self._update_free_cash_summary_row()
                                 # Clear selection and focus from the widget
                                 self.clearSelection()
                                 obj.clearFocus()  # Clear focus from the specific widget
@@ -1614,6 +1880,9 @@ class TransactionLogTable(QTableWidget):
             if transaction_id:
                 self.transaction_modified.emit(transaction_id, transaction)
 
+            # Update FREE CASH summary row
+            self._update_free_cash_summary_row()
+
     def _revert_ticker(self, row: int, original_ticker: str):
         """
         Revert ticker field to original value.
@@ -1716,16 +1985,19 @@ class TransactionLogTable(QTableWidget):
         # Emit signal
         self.transaction_deleted.emit(transaction_id)
 
+        # Update FREE CASH summary row
+        self._update_free_cash_summary_row()
+
     def _on_header_clicked(self, column: int):
         """
         Handle column header click for custom sorting.
-        Keeps blank row pinned at top while sorting transactions.
+        Keeps blank row and FREE CASH summary row pinned at top while sorting transactions.
 
         Args:
             column: Column index that was clicked
         """
-        # Collect all non-blank transactions
-        non_blank_transactions = []
+        # Collect all sortable transactions (exclude blank and FREE CASH summary)
+        sortable_transactions = []
         blank_transaction = None
 
         for row in range(self.rowCount()):
@@ -1733,10 +2005,13 @@ class TransactionLogTable(QTableWidget):
             if tx:
                 if tx.get("is_blank"):
                     blank_transaction = tx
+                elif tx.get("is_free_cash_summary"):
+                    # Skip FREE CASH summary - it will be recreated
+                    pass
                 else:
-                    non_blank_transactions.append(tx)
+                    sortable_transactions.append(tx)
 
-        if not non_blank_transactions:
+        if not sortable_transactions:
             return
 
         # Toggle sort order if same column, otherwise default to ascending
@@ -1785,7 +2060,7 @@ class TransactionLogTable(QTableWidget):
         reverse = self._current_sort_order == Qt.DescendingOrder
 
         # Sort the transactions
-        sorted_transactions = sorted(non_blank_transactions, key=get_sort_key, reverse=reverse)
+        sorted_transactions = sorted(sortable_transactions, key=get_sort_key, reverse=reverse)
 
         # Rebuild table
         self.setRowCount(0)
@@ -1795,16 +2070,21 @@ class TransactionLogTable(QTableWidget):
         self._row_widgets_map.clear()
 
         # Add blank row first if it exists (pinned at top)
+        # Note: _ensure_blank_row() also creates FREE CASH summary row at index 1
         if blank_transaction:
             self._ensure_blank_row()
 
-        # Add sorted transactions
+        # Add sorted transactions (starting at row 2, after blank and FREE CASH summary)
         for tx in sorted_transactions:
             self.add_transaction_row(tx)
 
         # Update calculated cells
         for row in range(self.rowCount()):
             self._update_calculated_cells(row)
+
+        # Update FREE CASH summary row after all transactions are added
+        # (must be done after transactions are added, not before)
+        self._update_free_cash_summary_row()
 
         # Reset column widths after rebuilding table
         self._reset_column_widths()
@@ -1815,10 +2095,11 @@ class TransactionLogTable(QTableWidget):
 
     def _sort_transactions(self):
         """
-        Sort transactions: blank row at top, completed transactions by date below.
+        Sort transactions: blank row at top, FREE CASH summary at row 1,
+        completed transactions by date below.
         """
-        # Get all transactions
-        all_transactions = []
+        # Get all sortable transactions (exclude blank and FREE CASH summary)
+        sortable_transactions = []
         blank_transaction = None
 
         for row in range(self.rowCount()):
@@ -1826,11 +2107,14 @@ class TransactionLogTable(QTableWidget):
             if tx:
                 if tx.get("is_blank"):
                     blank_transaction = tx
+                elif tx.get("is_free_cash_summary"):
+                    # Skip FREE CASH summary - it will be recreated
+                    pass
                 else:
-                    all_transactions.append(tx)
+                    sortable_transactions.append(tx)
 
-        # Sort non-blank transactions by date (oldest first)
-        all_transactions.sort(key=lambda t: t.get("date", ""))
+        # Sort transactions by date (oldest first)
+        sortable_transactions.sort(key=lambda t: t.get("date", ""))
 
         # Rebuild table
         self.setRowCount(0)
@@ -1839,13 +2123,16 @@ class TransactionLogTable(QTableWidget):
         self._transactions.clear()
         self._row_widgets_map.clear()
 
-        # Add blank row first if it exists
+        # Add blank row first if it exists (also creates FREE CASH summary at row 1)
         if blank_transaction:
             self._ensure_blank_row()
 
         # Add sorted transactions
-        for tx in all_transactions:
+        for tx in sortable_transactions:
             self.add_transaction_row(tx)
+
+        # Update FREE CASH summary row after all transactions are added
+        self._update_free_cash_summary_row()
 
         # Reset column widths after rebuilding table
         self._reset_column_widths()

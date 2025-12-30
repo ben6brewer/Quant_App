@@ -30,6 +30,7 @@ class AggregatePortfolioTable(QTableWidget):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self._holdings_data: List[Dict[str, Any]] = []
+        self._free_cash_summary: Dict[str, Any] = None  # FREE CASH summary data
         self._current_sort_column: int = -1
         self._current_sort_order: Qt.SortOrder = Qt.DescendingOrder
 
@@ -81,26 +82,29 @@ class AggregatePortfolioTable(QTableWidget):
             corner_button.setText(text)
             corner_button.setEnabled(False)
 
-    def update_holdings(self, holdings: List[Dict[str, Any]]):
+    def update_holdings(self, holdings: List[Dict[str, Any]], free_cash_summary: Dict[str, Any] = None):
         """
         Update table with aggregate holdings.
 
         Args:
             holdings: List of holding dicts from PortfolioService
+            free_cash_summary: Optional FREE CASH summary dict with quantity, principal, market_value
         """
         # Store holdings data for sorting
         self._holdings_data = holdings.copy() if holdings else []
+        self._free_cash_summary = free_cash_summary
 
         # Clear existing
         self.setRowCount(0)
 
-        if not holdings:
-            return
+        # Add totals row first (row 0, pinned at top) - includes FREE CASH in total
+        self._add_totals_row(holdings, free_cash_summary)
 
-        # Add totals row first (row 0, pinned at top)
-        self._add_totals_row(holdings)
+        # Add FREE CASH row if present and has value
+        if free_cash_summary and free_cash_summary.get("market_value", 0) != 0:
+            self._add_free_cash_row(free_cash_summary, holdings)
 
-        # Add holdings starting from row 1
+        # Add holdings starting after TOTAL (and FREE CASH if present)
         self._populate_holdings(holdings)
 
     def _populate_holdings(self, holdings: List[Dict[str, Any]]):
@@ -173,17 +177,31 @@ class AggregatePortfolioTable(QTableWidget):
             weight_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.setItem(row, 6, weight_item)
 
-    def _add_totals_row(self, holdings: List[Dict[str, Any]]):
+    def _add_totals_row(self, holdings: List[Dict[str, Any]], free_cash_summary: Dict[str, Any] = None):
         """
         Add a totals row at the top (row 0, pinned).
+        Includes FREE CASH in total market value.
 
         Args:
             holdings: List of holdings to calculate totals from
+            free_cash_summary: Optional FREE CASH summary to include in totals
         """
-        if not holdings:
-            return
+        # Calculate totals from holdings
+        if holdings:
+            totals = PortfolioService.calculate_portfolio_totals(holdings)
+        else:
+            totals = {
+                "total_market_value": 0.0,
+                "total_cost_basis": 0.0,
+                "total_pnl": 0.0,
+                "total_pnl_pct": 0.0
+            }
 
-        totals = PortfolioService.calculate_portfolio_totals(holdings)
+        # Add FREE CASH to total market value
+        total_market_value = totals.get("total_market_value", 0)
+        if free_cash_summary:
+            free_cash_value = free_cash_summary.get("market_value", 0) or 0
+            total_market_value += free_cash_value
 
         # Insert at row 0
         self.insertRow(0)
@@ -206,15 +224,15 @@ class AggregatePortfolioTable(QTableWidget):
             empty_item = QTableWidgetItem("")
             self.setItem(row, col, empty_item)
 
-        # Total Market Value
-        mv_item = QTableWidgetItem(f"${totals['total_market_value']:,.2f}")
+        # Total Market Value (including FREE CASH)
+        mv_item = QTableWidgetItem(f"${total_market_value:,.2f}")
         mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         font = QFont()
         font.setBold(True)
         mv_item.setFont(font)
         self.setItem(row, 4, mv_item)
 
-        # Total P&L
+        # Total P&L (FREE CASH has no P&L, so just use holdings P&L)
         total_pnl = totals['total_pnl']
         if total_pnl == 0:
             pnl_item = QTableWidgetItem("--")
@@ -239,15 +257,81 @@ class AggregatePortfolioTable(QTableWidget):
         weight_item.setFont(font)
         self.setItem(row, 6, weight_item)
 
+    def _add_free_cash_row(self, free_cash_summary: Dict[str, Any], holdings: List[Dict[str, Any]]):
+        """
+        Add FREE CASH row after TOTAL row.
+
+        Args:
+            free_cash_summary: Dict with quantity, principal, market_value
+            holdings: Holdings list for calculating total market value
+        """
+        row = self.rowCount()
+        self.insertRow(row)
+
+        # Set blank vertical header (no row number for FREE CASH)
+        blank_header = QTableWidgetItem("")
+        self.setVerticalHeaderItem(row, blank_header)
+
+        # Calculate total market value including FREE CASH for weight calculation
+        holdings_market_value = sum(h.get("market_value", 0) or 0 for h in holdings) if holdings else 0
+        free_cash_value = free_cash_summary.get("market_value", 0) or 0
+        total_market_value = holdings_market_value + free_cash_value
+
+        # Calculate weight
+        weight_pct = (free_cash_value / total_market_value * 100) if total_market_value > 0 else 0
+
+        # Ticker
+        ticker_item = QTableWidgetItem("FREE CASH")
+        ticker_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 0, ticker_item)
+
+        # Total Quantity (same as market value for cash since $1/unit)
+        qty = free_cash_summary.get("quantity", 0)
+        if qty != 0:
+            qty_item = QTableWidgetItem(f"${qty:,.2f}")
+        else:
+            qty_item = QTableWidgetItem("--")
+        qty_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 1, qty_item)
+
+        # Avg Cost Basis ($1.00 for cash)
+        cost_item = QTableWidgetItem("$1.00")
+        cost_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 2, cost_item)
+
+        # Current Price ($1.00 for cash)
+        price_item = QTableWidgetItem("$1.00")
+        price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 3, price_item)
+
+        # Market Value
+        if free_cash_value != 0:
+            mv_item = QTableWidgetItem(f"${free_cash_value:,.2f}")
+        else:
+            mv_item = QTableWidgetItem("--")
+        mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 4, mv_item)
+
+        # P&L (always $0 for cash, show as "--")
+        pnl_item = QTableWidgetItem("--")
+        pnl_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 5, pnl_item)
+
+        # Weight %
+        weight_item = QTableWidgetItem(f"{weight_pct:.2f}%")
+        weight_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(row, 6, weight_item)
+
     def _on_header_clicked(self, column: int):
         """
         Handle column header click for custom sorting.
         Keeps TOTAL row pinned at top while sorting holdings.
+        FREE CASH row sorts with regular holdings.
 
         Args:
             column: Column index that was clicked
         """
-        if not self._holdings_data:
+        if not self._holdings_data and not self._free_cash_summary:
             return
 
         # Toggle sort order if same column, otherwise default to ascending
@@ -275,11 +359,16 @@ class AggregatePortfolioTable(QTableWidget):
         reverse = self._current_sort_order == Qt.DescendingOrder
 
         # Sort the holdings data
-        sorted_holdings = sorted(self._holdings_data, key=key_func, reverse=reverse)
+        sorted_holdings = sorted(self._holdings_data, key=key_func, reverse=reverse) if self._holdings_data else []
 
-        # Clear and repopulate (keeping TOTAL row)
+        # Clear and repopulate (keeping TOTAL row pinned, FREE CASH row sorts with holdings)
         self.setRowCount(0)
-        self._add_totals_row(self._holdings_data)  # Use original data for totals
+        self._add_totals_row(self._holdings_data, self._free_cash_summary)
+
+        # Add FREE CASH row if present
+        if self._free_cash_summary and self._free_cash_summary.get("market_value", 0) != 0:
+            self._add_free_cash_row(self._free_cash_summary, self._holdings_data)
+
         self._populate_holdings(sorted_holdings)
 
         # Update header sort indicator
