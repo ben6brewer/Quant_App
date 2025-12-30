@@ -229,6 +229,21 @@ class PortfolioSettingsDialog(QDialog):
                 color: #cccccc;
                 font-size: 13px;
                 background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #00d4ff;
+                background-color: #00d4ff;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #00d4ff;
             }
             QPushButton {
                 background-color: #1e1e1e;
@@ -311,6 +326,21 @@ class PortfolioSettingsDialog(QDialog):
                 color: #333333;
                 font-size: 13px;
                 background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #cccccc;
+                background-color: #f5f5f5;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #0066cc;
+                background-color: #0066cc;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #0066cc;
             }
             QPushButton {
                 background-color: #f5f5f5;
@@ -393,6 +423,21 @@ class PortfolioSettingsDialog(QDialog):
                 color: #b0b0b0;
                 font-size: 13px;
                 background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #1a2838;
+                background-color: #0d1420;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #FF8000;
+                background-color: #FF8000;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #FF8000;
             }
             QPushButton {
                 background-color: transparent;

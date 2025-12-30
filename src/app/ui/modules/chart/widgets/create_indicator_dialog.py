@@ -617,6 +617,26 @@ class CreateIndicatorDialog(QDialog):
                 left: 15px;
                 padding: 0 5px;
             }
+            QCheckBox {
+                color: #cccccc;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #00d4ff;
+                background-color: #00d4ff;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #00d4ff;
+            }
             QComboBox {
                 background-color: #1e1e1e;
                 color: #ffffff;
@@ -630,12 +650,21 @@ class CreateIndicatorDialog(QDialog):
             }
             QComboBox::drop-down {
                 border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #ffffff;
+                margin-right: 8px;
             }
             QComboBox QAbstractItemView {
                 background-color: #2d2d2d;
                 color: #ffffff;
                 selection-background-color: #00d4ff;
                 selection-color: #000000;
+                padding: 4px;
             }
             QLineEdit {
                 background-color: #1e1e1e;
@@ -736,6 +765,26 @@ class CreateIndicatorDialog(QDialog):
                 left: 15px;
                 padding: 0 5px;
             }
+            QCheckBox {
+                color: #333333;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #cccccc;
+                background-color: #f5f5f5;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #0066cc;
+                background-color: #0066cc;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #0066cc;
+            }
             QComboBox {
                 background-color: #f5f5f5;
                 color: #000000;
@@ -749,12 +798,21 @@ class CreateIndicatorDialog(QDialog):
             }
             QComboBox::drop-down {
                 border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #000000;
+                margin-right: 8px;
             }
             QComboBox QAbstractItemView {
                 background-color: #ffffff;
                 color: #000000;
                 selection-background-color: #0066cc;
                 selection-color: #ffffff;
+                padding: 4px;
             }
             QLineEdit {
                 background-color: #f5f5f5;
@@ -855,6 +913,26 @@ class CreateIndicatorDialog(QDialog):
                 left: 15px;
                 padding: 0 5px;
             }
+            QCheckBox {
+                color: #b0b0b0;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #1a2838;
+                background-color: #0d1420;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #FF8000;
+                background-color: #FF8000;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #FF8000;
+            }
             QComboBox {
                 background-color: transparent;
                 color: #e8e8e8;
@@ -868,12 +946,21 @@ class CreateIndicatorDialog(QDialog):
             }
             QComboBox::drop-down {
                 border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #e8e8e8;
+                margin-right: 8px;
             }
             QComboBox QAbstractItemView {
                 background-color: #0d1420;
                 color: #e8e8e8;
                 selection-background-color: #FF8000;
                 selection-color: #000000;
+                padding: 4px;
             }
             QLineEdit {
                 background-color: transparent;

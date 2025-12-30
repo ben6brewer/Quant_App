@@ -20,8 +20,11 @@ class SettingsModule(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._is_changing_theme = False  # Flag to prevent redundant updates
         self._setup_ui()
         self._sync_theme_buttons()
+        self._apply_theme()
+        self.theme_manager.theme_changed.connect(self._on_external_theme_change)
 
     def _setup_ui(self) -> None:
         """Create the settings UI."""
@@ -40,15 +43,9 @@ class SettingsModule(QWidget):
         layout.setSpacing(30)
 
         # Header
-        header = QLabel("Settings")
-        header.setStyleSheet("""
-            QLabel {
-                font-size: 24px;
-                font-weight: bold;
-                margin-bottom: 10px;
-            }
-        """)
-        layout.addWidget(header)
+        self.header = QLabel("Settings")
+        self.header.setObjectName("headerLabel")
+        layout.addWidget(self.header)
 
         # Appearance settings
         appearance_group = self._create_appearance_group()
@@ -66,75 +63,27 @@ class SettingsModule(QWidget):
     def _create_appearance_group(self) -> QGroupBox:
         """Create appearance settings group."""
         group = QGroupBox("Appearance")
-        group.setStyleSheet("""
-            QGroupBox {
-                font-size: 18px;
-                font-weight: bold;
-                border: 2px solid #3d3d3d;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 20px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 15px;
-                padding: 0 5px;
-            }
-        """)
 
         layout = QVBoxLayout()
         layout.setSpacing(15)
 
         # Theme label
         theme_label = QLabel("Color Theme")
-        theme_label.setStyleSheet("font-size: 14px; font-weight: normal; margin-left: 10px;")
+        theme_label.setObjectName("themeLabel")
         layout.addWidget(theme_label)
 
         # Radio buttons for theme selection
         self.theme_group = QButtonGroup(self)
-        
+
         self.dark_radio = QRadioButton("Dark Mode")
-        self.dark_radio.setStyleSheet("""
-            QRadioButton {
-                font-size: 13px;
-                padding: 8px;
-                margin-left: 20px;
-            }
-            QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
-            }
-        """)
         self.theme_group.addButton(self.dark_radio, 0)
         layout.addWidget(self.dark_radio)
 
         self.light_radio = QRadioButton("Light Mode")
-        self.light_radio.setStyleSheet("""
-            QRadioButton {
-                font-size: 13px;
-                padding: 8px;
-                margin-left: 20px;
-            }
-            QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
-            }
-        """)
         self.theme_group.addButton(self.light_radio, 1)
         layout.addWidget(self.light_radio)
 
         self.bloomberg_radio = QRadioButton("Bloomberg Mode")
-        self.bloomberg_radio.setStyleSheet("""
-            QRadioButton {
-                font-size: 13px;
-                padding: 8px;
-                margin-left: 20px;
-            }
-            QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
-            }
-        """)
         self.theme_group.addButton(self.bloomberg_radio, 2)
         layout.addWidget(self.bloomberg_radio)
 
@@ -162,4 +111,209 @@ class SettingsModule(QWidget):
             theme = "bloomberg"
         else:
             theme = "light"
+
+        # Set flag to skip redundant _apply_theme call from signal
+        self._is_changing_theme = True
         self.theme_manager.set_theme(theme)
+        self._apply_theme()  # Apply once after setting theme
+        self._is_changing_theme = False
+
+    def _on_external_theme_change(self) -> None:
+        """Handle theme changes from external sources (not our radio buttons)."""
+        if self._is_changing_theme:
+            return  # Skip if we triggered the change
+        self._sync_theme_buttons()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """Apply theme-specific styling."""
+        theme = self.theme_manager.current_theme
+
+        if theme == "light":
+            stylesheet = self._get_light_stylesheet()
+        elif theme == "bloomberg":
+            stylesheet = self._get_bloomberg_stylesheet()
+        else:
+            stylesheet = self._get_dark_stylesheet()
+
+        self.setStyleSheet(stylesheet)
+
+    def _get_dark_stylesheet(self) -> str:
+        """Dark theme stylesheet."""
+        return """
+            QWidget {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+            QScrollArea {
+                background-color: #1e1e1e;
+                border: none;
+            }
+            QLabel#headerLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 10px;
+            }
+            QLabel#themeLabel {
+                font-size: 14px;
+                font-weight: normal;
+                color: #cccccc;
+                margin-left: 10px;
+            }
+            QGroupBox {
+                font-size: 18px;
+                font-weight: bold;
+                color: #ffffff;
+                border: 2px solid #3d3d3d;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 5px;
+            }
+            QRadioButton {
+                color: #ffffff;
+                font-size: 13px;
+                padding: 8px;
+                margin-left: 20px;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QRadioButton::indicator:checked {
+                border-color: #00d4ff;
+                background-color: #00d4ff;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #00d4ff;
+            }
+        """
+
+    def _get_light_stylesheet(self) -> str:
+        """Light theme stylesheet."""
+        return """
+            QWidget {
+                background-color: #ffffff;
+                color: #000000;
+            }
+            QScrollArea {
+                background-color: #ffffff;
+                border: none;
+            }
+            QLabel#headerLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #000000;
+                margin-bottom: 10px;
+            }
+            QLabel#themeLabel {
+                font-size: 14px;
+                font-weight: normal;
+                color: #333333;
+                margin-left: 10px;
+            }
+            QGroupBox {
+                font-size: 18px;
+                font-weight: bold;
+                color: #000000;
+                border: 2px solid #cccccc;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 5px;
+            }
+            QRadioButton {
+                color: #000000;
+                font-size: 13px;
+                padding: 8px;
+                margin-left: 20px;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid #cccccc;
+                background-color: #f5f5f5;
+            }
+            QRadioButton::indicator:checked {
+                border-color: #0066cc;
+                background-color: #0066cc;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #0066cc;
+            }
+        """
+
+    def _get_bloomberg_stylesheet(self) -> str:
+        """Bloomberg theme stylesheet."""
+        return """
+            QWidget {
+                background-color: #000814;
+                color: #e8e8e8;
+            }
+            QScrollArea {
+                background-color: #000814;
+                border: none;
+            }
+            QLabel#headerLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #e8e8e8;
+                margin-bottom: 10px;
+            }
+            QLabel#themeLabel {
+                font-size: 14px;
+                font-weight: normal;
+                color: #a8a8a8;
+                margin-left: 10px;
+            }
+            QGroupBox {
+                font-size: 18px;
+                font-weight: bold;
+                color: #e8e8e8;
+                border: 2px solid #1a2838;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 5px;
+            }
+            QRadioButton {
+                color: #e8e8e8;
+                font-size: 13px;
+                padding: 8px;
+                margin-left: 20px;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid #1a2838;
+                background-color: #0d1420;
+            }
+            QRadioButton::indicator:checked {
+                border-color: #FF8000;
+                background-color: #FF8000;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #FF8000;
+            }
+        """

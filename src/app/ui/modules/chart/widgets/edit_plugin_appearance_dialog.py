@@ -416,15 +416,63 @@ class EditPluginAppearanceDialog(QDialog):
                 padding: 5px 10px;
                 color: #ffffff;
             }
-            QLineEdit, QSpinBox, QComboBox {
+            QCheckBox {
+                color: #cccccc;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #3d3d3d;
+                background-color: #2d2d2d;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #00d4ff;
+                background-color: #00d4ff;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #00d4ff;
+            }
+            QLineEdit, QSpinBox {
                 background-color: #1e1e1e;
                 color: #ffffff;
                 border: 1px solid #3d3d3d;
                 border-radius: 4px;
                 padding: 8px;
             }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+            QLineEdit:focus, QSpinBox:focus {
                 border: 1px solid #00d4ff;
+            }
+            QComboBox {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox:hover {
+                border: 1px solid #00d4ff;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #ffffff;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                selection-background-color: #00d4ff;
+                selection-color: #000000;
+                padding: 4px;
             }
             QPushButton {
                 background-color: #1e1e1e;
@@ -503,15 +551,63 @@ class EditPluginAppearanceDialog(QDialog):
                 padding: 5px 10px;
                 color: #000000;
             }
-            QLineEdit, QSpinBox, QComboBox {
+            QCheckBox {
+                color: #333333;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #cccccc;
+                background-color: #f5f5f5;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #0066cc;
+                background-color: #0066cc;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #0066cc;
+            }
+            QLineEdit, QSpinBox {
                 background-color: #f5f5f5;
                 color: #000000;
                 border: 1px solid #cccccc;
                 border-radius: 4px;
                 padding: 8px;
             }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+            QLineEdit:focus, QSpinBox:focus {
                 border: 1px solid #0066cc;
+            }
+            QComboBox {
+                background-color: #f5f5f5;
+                color: #000000;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox:hover {
+                border: 1px solid #0066cc;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #000000;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #000000;
+                selection-background-color: #0066cc;
+                selection-color: #ffffff;
+                padding: 4px;
             }
             QPushButton {
                 background-color: #f5f5f5;
@@ -589,15 +685,63 @@ class EditPluginAppearanceDialog(QDialog):
                 padding: 5px 10px;
                 color: #ffffff;
             }
-            QLineEdit, QSpinBox, QComboBox {
+            QCheckBox {
+                color: #b0b0b0;
+                font-size: 13px;
+                background-color: transparent;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid #1a2838;
+                background-color: #0d1420;
+            }
+            QCheckBox::indicator:checked {
+                border-color: #FF8000;
+                background-color: #FF8000;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #FF8000;
+            }
+            QLineEdit, QSpinBox {
                 background-color: #1a2332;
                 color: #ffffff;
                 border: 1px solid #2a3442;
                 border-radius: 4px;
                 padding: 8px;
             }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+            QLineEdit:focus, QSpinBox:focus {
                 border: 1px solid #FF8000;
+            }
+            QComboBox {
+                background-color: #1a2332;
+                color: #ffffff;
+                border: 1px solid #2a3442;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QComboBox:hover {
+                border: 1px solid #FF8000;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #e8e8e8;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0d1420;
+                color: #e8e8e8;
+                selection-background-color: #FF8000;
+                selection-color: #000000;
+                padding: 4px;
             }
             QPushButton {
                 background-color: transparent;
