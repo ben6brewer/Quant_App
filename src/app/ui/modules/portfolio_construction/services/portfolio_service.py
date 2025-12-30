@@ -780,3 +780,261 @@ class PortfolioService:
             "principal": free_cash_balance,
             "market_value": free_cash_balance
         }
+
+    @staticmethod
+    def calculate_free_cash_at_date(
+        transactions: List[Dict[str, Any]],
+        target_date: str,
+        exclude_transaction_id: Optional[str] = None
+    ) -> float:
+        """
+        Calculate FREE CASH balance at a specific date.
+
+        Args:
+            transactions: List of all transactions
+            target_date: Date string (YYYY-MM-DD) - include transactions on/before this date
+            exclude_transaction_id: Optional transaction ID to exclude (for edit validation)
+
+        Returns:
+            FREE CASH balance as float (can be negative)
+        """
+        free_cash_balance = 0.0
+
+        for tx in transactions:
+            # Skip excluded transaction
+            if exclude_transaction_id and tx.get("id") == exclude_transaction_id:
+                continue
+
+            # Only include transactions on or before target date
+            tx_date = tx.get("date", "")
+            if tx_date > target_date:
+                continue
+
+            ticker = tx.get("ticker", "").upper()
+            tx_type = tx.get("transaction_type", "")
+            qty = float(tx.get("quantity", 0))
+            price = float(tx.get("entry_price", 0))
+            fees = float(tx.get("fees", 0))
+
+            if ticker == PortfolioService.FREE_CASH_TICKER:
+                if tx_type == "Buy":  # Deposit
+                    free_cash_balance += qty - fees
+                else:  # Sell = Withdrawal
+                    free_cash_balance -= (qty + fees)
+            else:
+                if tx_type == "Buy":
+                    free_cash_balance -= (qty * price + fees)
+                else:  # Sell
+                    free_cash_balance += (qty * price - fees)
+
+        return free_cash_balance
+
+    @staticmethod
+    def calculate_position_at_date(
+        transactions: List[Dict[str, Any]],
+        ticker: str,
+        target_date: str,
+        exclude_transaction_id: Optional[str] = None
+    ) -> float:
+        """
+        Calculate share position for a ticker at a specific date.
+
+        Args:
+            transactions: List of all transactions
+            ticker: Ticker symbol to calculate position for
+            target_date: Date string (YYYY-MM-DD) - include transactions on/before this date
+            exclude_transaction_id: Optional transaction ID to exclude (for edit validation)
+
+        Returns:
+            Net share position (can be negative for validation)
+        """
+        position = 0.0
+        ticker_upper = ticker.upper()
+
+        for tx in transactions:
+            # Skip excluded transaction
+            if exclude_transaction_id and tx.get("id") == exclude_transaction_id:
+                continue
+
+            # Only include transactions for this ticker
+            if tx.get("ticker", "").upper() != ticker_upper:
+                continue
+
+            # Only include transactions on or before target date
+            tx_date = tx.get("date", "")
+            if tx_date > target_date:
+                continue
+
+            qty = float(tx.get("quantity", 0))
+            tx_type = tx.get("transaction_type", "")
+
+            if tx_type == "Buy":
+                position += qty
+            else:  # Sell
+                position -= qty
+
+        return position
+
+    @staticmethod
+    def validate_transaction_safeguards(
+        transactions: List[Dict[str, Any]],
+        transaction: Dict[str, Any],
+        is_new: bool = False
+    ) -> Tuple[bool, str]:
+        """
+        Validate transaction safeguards (cash balance, position, chain).
+
+        Args:
+            transactions: List of all existing transactions
+            transaction: Transaction to validate (new or edited)
+            is_new: True if this is a new transaction
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        tx_id = transaction.get("id")
+        tx_date = transaction.get("date", "")
+        ticker = transaction.get("ticker", "").upper()
+        tx_type = transaction.get("transaction_type", "")
+        qty = float(transaction.get("quantity", 0))
+        price = float(transaction.get("entry_price", 0))
+        fees = float(transaction.get("fees", 0))
+
+        # Build transaction list for validation
+        # Exclude current transaction if editing, we'll add the new version
+        if is_new:
+            test_transactions = list(transactions)
+        else:
+            test_transactions = [tx for tx in transactions if tx.get("id") != tx_id]
+
+        # Calculate cash before this transaction
+        cash_before = PortfolioService.calculate_free_cash_at_date(
+            test_transactions, tx_date
+        )
+
+        # Validate based on transaction type
+        if ticker == PortfolioService.FREE_CASH_TICKER:
+            if tx_type == "Sell":  # Withdrawal
+                withdrawal_amount = qty + fees
+                if cash_before < withdrawal_amount:
+                    return (
+                        False,
+                        f"Cannot withdraw ${qty:,.2f}. "
+                        f"Only ${max(0, cash_before):,.2f} is available on {tx_date}."
+                    )
+        else:
+            # Regular security transaction
+            if tx_type == "Sell":
+                # Check position before this transaction
+                position_before = PortfolioService.calculate_position_at_date(
+                    test_transactions, ticker, tx_date
+                )
+                if position_before < qty:
+                    return (
+                        False,
+                        f"Cannot sell {qty:,.4f} shares of {ticker}. "
+                        f"You only have {max(0, position_before):,.4f} shares available on {tx_date}."
+                    )
+                # Also check that the sale proceeds minus fees don't cause issues
+                # (the cash impact is positive for sells, so usually not an issue)
+
+            elif tx_type == "Buy":
+                # Check if we have enough cash to buy
+                cost = qty * price + fees
+                if cash_before < cost:
+                    return (
+                        False,
+                        f"Cannot complete this purchase. "
+                        f"You would need ${cost:,.2f} but only have ${max(0, cash_before):,.2f} available on {tx_date}."
+                    )
+
+        # If editing an existing transaction, validate the chain
+        if not is_new:
+            chain_valid, chain_error = PortfolioService.validate_transaction_chain(
+                transactions, transaction
+            )
+            if not chain_valid:
+                return (False, chain_error)
+
+        return (True, "")
+
+    @staticmethod
+    def validate_transaction_chain(
+        transactions: List[Dict[str, Any]],
+        edited_transaction: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """
+        Validate that editing a transaction doesn't break subsequent transactions.
+
+        Args:
+            transactions: List of all transactions (with edited transaction already updated)
+            edited_transaction: The transaction that was edited
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        edit_date = edited_transaction.get("date", "")
+        edit_id = edited_transaction.get("id")
+
+        # Build list with edited transaction
+        all_transactions = [
+            tx if tx.get("id") != edit_id else edited_transaction
+            for tx in transactions
+        ]
+
+        # Sort by date
+        sorted_txs = sorted(all_transactions, key=lambda x: x.get("date", ""))
+
+        # Track running balances
+        cash_balance = 0.0
+        positions: Dict[str, float] = {}  # ticker -> position
+
+        for tx in sorted_txs:
+            tx_date = tx.get("date", "")
+            ticker = tx.get("ticker", "").upper()
+            tx_type = tx.get("transaction_type", "")
+            qty = float(tx.get("quantity", 0))
+            price = float(tx.get("entry_price", 0))
+            fees = float(tx.get("fees", 0))
+
+            if ticker == PortfolioService.FREE_CASH_TICKER:
+                if tx_type == "Buy":  # Deposit
+                    cash_balance += qty - fees
+                else:  # Sell = Withdrawal
+                    # Validate before applying
+                    withdrawal = qty + fees
+                    if cash_balance < withdrawal and tx_date >= edit_date:
+                        return (
+                            False,
+                            f"This change would cause insufficient cash for withdrawal on {tx_date}.\n"
+                            f"Available: ${max(0, cash_balance):,.2f}, Needed: ${withdrawal:,.2f}"
+                        )
+                    cash_balance -= withdrawal
+            else:
+                if ticker not in positions:
+                    positions[ticker] = 0.0
+
+                if tx_type == "Buy":
+                    cost = qty * price + fees
+                    # Validate cash before applying
+                    if cash_balance < cost and tx_date >= edit_date:
+                        return (
+                            False,
+                            f"This change would cause insufficient cash for {ticker} purchase on {tx_date}.\n"
+                            f"Available: ${max(0, cash_balance):,.2f}, Needed: ${cost:,.2f}"
+                        )
+                    cash_balance -= cost
+                    positions[ticker] += qty
+                else:  # Sell
+                    # Validate position before applying
+                    if positions[ticker] < qty and tx_date >= edit_date:
+                        return (
+                            False,
+                            f"This change would cause insufficient shares for {ticker} sale on {tx_date}.\n"
+                            f"Available: {max(0, positions[ticker]):,.4f}, Needed: {qty:,.4f}"
+                        )
+                    positions[ticker] -= qty
+                    proceeds = qty * price - fees
+                    cash_balance += proceeds
+
+        return (True, "")

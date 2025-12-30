@@ -1,6 +1,6 @@
 """Transaction Log Table Widget - Editable Transaction Table"""
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QLineEdit, QComboBox, QDoubleSpinBox, QAbstractButton, QWidget, QApplication,
@@ -1022,24 +1022,52 @@ class TransactionLogTable(QTableWidget):
             entry_price >= 0  # Allow 0 for gifts
         )
 
-    def _transition_blank_to_real(self, row: int, transaction: Dict[str, Any]):
+    def _transition_blank_to_real(self, row: int, transaction: Dict[str, Any]) -> bool:
         """
         Convert blank row to real transaction and create new blank.
 
         Args:
             row: Row index of blank row
             transaction: Updated transaction data
+
+        Returns:
+            True if transition succeeded, False if validation failed
         """
         import uuid
 
-        # Assign new UUID
-        new_id = str(uuid.uuid4())
-        transaction["id"] = new_id
-        transaction["is_blank"] = False
-        transaction["ticker"] = transaction["ticker"].upper().strip()
+        # Normalize ticker before validation (but don't modify other fields yet)
+        ticker_normalized = transaction["ticker"].upper().strip()
+
+        # Create a temporary copy for validation (don't mutate original yet)
+        temp_transaction = dict(transaction)
+        temp_transaction["id"] = str(uuid.uuid4())
+        temp_transaction["is_blank"] = False
+        temp_transaction["ticker"] = ticker_normalized
 
         # For FREE CASH ticker, auto-set execution price to $1.00
-        if transaction["ticker"] == PortfolioService.FREE_CASH_TICKER:
+        if ticker_normalized == PortfolioService.FREE_CASH_TICKER:
+            temp_transaction["entry_price"] = 1.0
+
+        # Validate transaction safeguards (cash balance, position)
+        is_valid, error_msg = self._validate_transaction_safeguards(row, temp_transaction, is_new=True)
+        if not is_valid:
+            # Set flag to prevent double dialog from focus loss
+            self._skip_focus_validation = True
+            CustomMessageBox.warning(
+                self.theme_manager,
+                self,
+                "Transaction Error",
+                error_msg
+            )
+            # Set flag again after dialog (dialog may have triggered focus events that reset it)
+            self._skip_focus_validation = True
+            return False  # Don't transition - keep as blank row (original transaction unchanged)
+
+        # Validation passed - now apply changes to original transaction
+        transaction["id"] = temp_transaction["id"]
+        transaction["is_blank"] = False
+        transaction["ticker"] = ticker_normalized
+        if ticker_normalized == PortfolioService.FREE_CASH_TICKER:
             transaction["entry_price"] = 1.0
 
         # Remove old blank entry from storage
@@ -1098,6 +1126,8 @@ class TransactionLogTable(QTableWidget):
         # Update FREE CASH summary row
         self._update_free_cash_summary_row()
 
+        return True  # Transition succeeded
+
     def add_transaction_row(self, transaction: Dict[str, Any]) -> int:
         """
         Add a new transaction row.
@@ -1131,7 +1161,11 @@ class TransactionLogTable(QTableWidget):
         # Store original values for revert on invalid edit
         self._original_values[tx_id] = {
             "ticker": transaction.get("ticker", ""),
-            "date": transaction.get("date", "")
+            "date": transaction.get("date", ""),
+            "quantity": transaction.get("quantity", 0.0),
+            "entry_price": transaction.get("entry_price", 0.0),
+            "fees": transaction.get("fees", 0.0),
+            "transaction_type": transaction.get("transaction_type", "Buy")
         }
 
         # Get current theme stylesheets
@@ -1693,11 +1727,16 @@ class TransactionLogTable(QTableWidget):
                                     )
                                     return True  # Consume event, don't transition
 
-                                self._transition_blank_to_real(row, transaction)
-                                # Move focus to new blank row's ticker field (row 0, col 1)
-                                new_blank_ticker = self.cellWidget(0, 1)
-                                if new_blank_ticker:
-                                    new_blank_ticker.setFocus()
+                                # Set flag before transition (in case dialog shows during validation)
+                                self._skip_focus_validation = True
+                                success = self._transition_blank_to_real(row, transaction)
+                                if success:
+                                    # Move focus to new blank row's ticker field (row 0, col 1)
+                                    new_blank_ticker = self.cellWidget(0, 1)
+                                    if new_blank_ticker:
+                                        new_blank_ticker.setFocus()
+                                # Keep flag set to prevent any pending focus handlers
+                                self._skip_focus_validation = True
                                 return True  # Consume event
 
                         # Handle normal rows (not blank)
@@ -1758,11 +1797,32 @@ class TransactionLogTable(QTableWidget):
                                             if inner_widget:
                                                 inner_widget.setValue(1.0)
 
+                                    # Validate transaction safeguards (cash balance, position, chain)
+                                    safeguard_valid, safeguard_error = self._validate_transaction_safeguards(
+                                        row, transaction, is_new=False
+                                    )
+                                    if not safeguard_valid:
+                                        self._skip_focus_validation = True
+                                        CustomMessageBox.warning(
+                                            self.theme_manager,
+                                            self,
+                                            "Transaction Error",
+                                            safeguard_error
+                                        )
+                                        # Revert all fields to original values
+                                        original = self._original_values.get(transaction_id, {})
+                                        self._revert_all_fields(row, original)
+                                        return True  # Consume event
+
                                     # Update original values
                                     if transaction_id:
                                         self._original_values[transaction_id] = {
                                             "ticker": ticker_upper,
-                                            "date": tx_date
+                                            "date": tx_date,
+                                            "quantity": transaction.get("quantity", 0.0),
+                                            "entry_price": transaction.get("entry_price", 0.0),
+                                            "fees": transaction.get("fees", 0.0),
+                                            "transaction_type": transaction.get("transaction_type", "Buy")
                                         }
                                     self._update_calculated_cells(row)
                                     if transaction_id:
@@ -1849,6 +1909,7 @@ class TransactionLogTable(QTableWidget):
                     # Don't transition - keep as blank row
                     return
 
+                # Transition will set skip flag if validation fails
                 self._transition_blank_to_real(row, transaction)
             return
 
@@ -1905,11 +1966,31 @@ class TransactionLogTable(QTableWidget):
                 # Don't fetch prices for invalid transactions
                 return
 
+            # Validate transaction safeguards (cash balance, position, chain)
+            safeguard_valid, safeguard_error = self._validate_transaction_safeguards(
+                row, transaction, is_new=False
+            )
+            if not safeguard_valid:
+                CustomMessageBox.warning(
+                    self.theme_manager,
+                    self,
+                    "Transaction Error",
+                    safeguard_error
+                )
+                # Revert all fields to original values
+                original = self._original_values.get(transaction_id, {})
+                self._revert_all_fields(row, original)
+                return
+
             # Update original values since validation passed
             if transaction_id:
                 self._original_values[transaction_id] = {
                     "ticker": ticker_upper,
-                    "date": tx_date
+                    "date": tx_date,
+                    "quantity": transaction.get("quantity", 0.0),
+                    "entry_price": transaction.get("entry_price", 0.0),
+                    "fees": transaction.get("fees", 0.0),
+                    "transaction_type": transaction.get("transaction_type", "Buy")
                 }
 
             # Update calculated cells (fetch prices)
@@ -1965,6 +2046,143 @@ class TransactionLogTable(QTableWidget):
             tx_id = transaction.get("id")
             if tx_id and tx_id in self._transactions_by_id:
                 self._transactions_by_id[tx_id]["date"] = original_date
+
+    def _revert_quantity(self, row: int, original_quantity: float):
+        """
+        Revert quantity field to original value.
+
+        Args:
+            row: Row index
+            original_quantity: Original quantity value to restore
+        """
+        qty_widget = self._get_inner_widget(row, 2)
+        if qty_widget and isinstance(qty_widget, ValidatedNumericLineEdit):
+            qty_widget.blockSignals(True)
+            qty_widget.setValue(original_quantity)
+            qty_widget.blockSignals(False)
+
+        # Update stored transaction
+        transaction = self._get_transaction_for_row(row)
+        if transaction:
+            transaction["quantity"] = original_quantity
+            tx_id = transaction.get("id")
+            if tx_id and tx_id in self._transactions_by_id:
+                self._transactions_by_id[tx_id]["quantity"] = original_quantity
+
+    def _revert_entry_price(self, row: int, original_price: float):
+        """
+        Revert entry price field to original value.
+
+        Args:
+            row: Row index
+            original_price: Original price value to restore
+        """
+        price_widget = self._get_inner_widget(row, 3)
+        if price_widget and isinstance(price_widget, ValidatedNumericLineEdit):
+            price_widget.blockSignals(True)
+            price_widget.setValue(original_price)
+            price_widget.blockSignals(False)
+
+        # Update stored transaction
+        transaction = self._get_transaction_for_row(row)
+        if transaction:
+            transaction["entry_price"] = original_price
+            tx_id = transaction.get("id")
+            if tx_id and tx_id in self._transactions_by_id:
+                self._transactions_by_id[tx_id]["entry_price"] = original_price
+
+    def _revert_fees(self, row: int, original_fees: float):
+        """
+        Revert fees field to original value.
+
+        Args:
+            row: Row index
+            original_fees: Original fees value to restore
+        """
+        fees_widget = self._get_inner_widget(row, 4)
+        if fees_widget and isinstance(fees_widget, ValidatedNumericLineEdit):
+            fees_widget.blockSignals(True)
+            fees_widget.setValue(original_fees)
+            fees_widget.blockSignals(False)
+
+        # Update stored transaction
+        transaction = self._get_transaction_for_row(row)
+        if transaction:
+            transaction["fees"] = original_fees
+            tx_id = transaction.get("id")
+            if tx_id and tx_id in self._transactions_by_id:
+                self._transactions_by_id[tx_id]["fees"] = original_fees
+
+    def _revert_transaction_type(self, row: int, original_type: str):
+        """
+        Revert transaction type field to original value.
+
+        Args:
+            row: Row index
+            original_type: Original transaction type ("Buy" or "Sell")
+        """
+        type_widget = self._get_inner_widget(row, 5)
+        if type_widget and isinstance(type_widget, QComboBox):
+            type_widget.blockSignals(True)
+            type_widget.setCurrentText(original_type)
+            type_widget.blockSignals(False)
+
+        # Update stored transaction
+        transaction = self._get_transaction_for_row(row)
+        if transaction:
+            transaction["transaction_type"] = original_type
+            tx_id = transaction.get("id")
+            if tx_id and tx_id in self._transactions_by_id:
+                self._transactions_by_id[tx_id]["transaction_type"] = original_type
+
+    def _revert_all_fields(self, row: int, original: Dict[str, Any]):
+        """
+        Revert all editable fields to original values.
+
+        Args:
+            row: Row index
+            original: Dict with original values for all fields
+        """
+        if not original:
+            return
+
+        if "ticker" in original:
+            self._revert_ticker(row, original["ticker"])
+        if "date" in original:
+            self._revert_date(row, original["date"])
+        if "quantity" in original:
+            self._revert_quantity(row, original["quantity"])
+        if "entry_price" in original:
+            self._revert_entry_price(row, original["entry_price"])
+        if "fees" in original:
+            self._revert_fees(row, original["fees"])
+        if "transaction_type" in original:
+            self._revert_transaction_type(row, original["transaction_type"])
+
+    def _validate_transaction_safeguards(
+        self,
+        row: int,
+        transaction: Dict[str, Any],
+        is_new: bool = False
+    ) -> Tuple[bool, str]:
+        """
+        Validate transaction safeguards (cash balance, position, chain).
+
+        Args:
+            row: Row index
+            transaction: Transaction to validate
+            is_new: True if this is a new transaction (blank row transition)
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # Get all existing transactions
+        all_transactions = self.get_all_transactions()
+
+        # Validate using PortfolioService
+        return PortfolioService.validate_transaction_safeguards(
+            all_transactions, transaction, is_new
+        )
 
     def _delete_empty_row(self, row: int):
         """
