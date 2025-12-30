@@ -29,6 +29,9 @@ class AggregatePortfolioTable(QTableWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._holdings_data: List[Dict[str, Any]] = []
+        self._current_sort_column: int = -1
+        self._current_sort_order: Qt.SortOrder = Qt.DescendingOrder
 
         self._setup_table()
         self._apply_theme()
@@ -59,8 +62,14 @@ class AggregatePortfolioTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setShowGrid(True)
 
-        # Enable sorting
-        self.setSortingEnabled(True)
+        # Disable built-in sorting - we handle it manually to keep TOTAL row pinned
+        self.setSortingEnabled(False)
+
+        # Connect header click for custom sorting
+        header = self.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._on_header_clicked)
 
         # Set corner label
         self._set_corner_label("Position")
@@ -79,21 +88,35 @@ class AggregatePortfolioTable(QTableWidget):
         Args:
             holdings: List of holding dicts from PortfolioService
         """
-        # Disable sorting while updating
-        self.setSortingEnabled(False)
+        # Store holdings data for sorting
+        self._holdings_data = holdings.copy() if holdings else []
 
         # Clear existing
         self.setRowCount(0)
 
         if not holdings:
-            self.setSortingEnabled(True)
             return
 
-        # Holdings are already sorted by weight descending from PortfolioService
+        # Add totals row first (row 0, pinned at top)
+        self._add_totals_row(holdings)
 
-        for holding in holdings:
+        # Add holdings starting from row 1
+        self._populate_holdings(holdings)
+
+    def _populate_holdings(self, holdings: List[Dict[str, Any]]):
+        """
+        Populate holdings rows (after the TOTAL row).
+
+        Args:
+            holdings: List of holding dicts to display
+        """
+        for idx, holding in enumerate(holdings):
             row = self.rowCount()
             self.insertRow(row)
+
+            # Set row label (1-based, excluding TOTAL row)
+            row_header = QTableWidgetItem(str(idx + 1))
+            self.setVerticalHeaderItem(row, row_header)
 
             # Ticker
             ticker_item = QTableWidgetItem(holding["ticker"])
@@ -150,15 +173,9 @@ class AggregatePortfolioTable(QTableWidget):
             weight_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.setItem(row, 6, weight_item)
 
-        # Add totals row (last row, bold)
-        self._add_totals_row(holdings)
-
-        # Re-enable sorting
-        self.setSortingEnabled(True)
-
     def _add_totals_row(self, holdings: List[Dict[str, Any]]):
         """
-        Add a totals row at the bottom.
+        Add a totals row at the top (row 0, pinned).
 
         Args:
             holdings: List of holdings to calculate totals from
@@ -168,8 +185,13 @@ class AggregatePortfolioTable(QTableWidget):
 
         totals = PortfolioService.calculate_portfolio_totals(holdings)
 
-        row = self.rowCount()
-        self.insertRow(row)
+        # Insert at row 0
+        self.insertRow(0)
+        row = 0
+
+        # Set vertical header label to blank for TOTAL row
+        blank_header = QTableWidgetItem("")
+        self.setVerticalHeaderItem(0, blank_header)
 
         # "TOTAL" label
         total_label = QTableWidgetItem("TOTAL")
@@ -216,6 +238,53 @@ class AggregatePortfolioTable(QTableWidget):
         font.setBold(True)
         weight_item.setFont(font)
         self.setItem(row, 6, weight_item)
+
+    def _on_header_clicked(self, column: int):
+        """
+        Handle column header click for custom sorting.
+        Keeps TOTAL row pinned at top while sorting holdings.
+
+        Args:
+            column: Column index that was clicked
+        """
+        if not self._holdings_data:
+            return
+
+        # Toggle sort order if same column, otherwise default to ascending
+        if column == self._current_sort_column:
+            if self._current_sort_order == Qt.AscendingOrder:
+                self._current_sort_order = Qt.DescendingOrder
+            else:
+                self._current_sort_order = Qt.AscendingOrder
+        else:
+            self._current_sort_column = column
+            self._current_sort_order = Qt.AscendingOrder
+
+        # Define sort key based on column
+        sort_keys = {
+            0: lambda h: h["ticker"].lower(),
+            1: lambda h: h["total_quantity"],
+            2: lambda h: h["avg_cost_basis"],
+            3: lambda h: h.get("current_price") or 0,
+            4: lambda h: h.get("market_value") or 0,
+            5: lambda h: h.get("total_pnl") or 0,
+            6: lambda h: h["weight_pct"],
+        }
+
+        key_func = sort_keys.get(column, lambda h: 0)
+        reverse = self._current_sort_order == Qt.DescendingOrder
+
+        # Sort the holdings data
+        sorted_holdings = sorted(self._holdings_data, key=key_func, reverse=reverse)
+
+        # Clear and repopulate (keeping TOTAL row)
+        self.setRowCount(0)
+        self._add_totals_row(self._holdings_data)  # Use original data for totals
+        self._populate_holdings(sorted_holdings)
+
+        # Update header sort indicator
+        header = self.horizontalHeader()
+        header.setSortIndicator(column, self._current_sort_order)
 
     def _apply_theme(self):
         """Apply theme-specific styling."""
