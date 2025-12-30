@@ -792,36 +792,57 @@ class TransactionLogTable(QTableWidget):
         Ensure FREE CASH summary row exists at index 1 (below blank row).
         Creates if missing, updates values if exists.
         """
-        # Check if FREE CASH summary already exists anywhere in the table
-        if self._free_cash_row_id in self._transactions_by_id:
-            # Summary row exists - find its actual row position by scanning the table
-            # (row mappings may be stale after row insert/remove operations)
-            actual_row = None
-            for row in range(self.rowCount()):
-                # Check if this row has "FREE CASH" as ticker in column 1
-                ticker_item = self.item(row, 1)
-                if ticker_item and ticker_item.text() == "FREE CASH":
-                    # Also verify it's the summary row by checking if column 0 has no widget
-                    if self.cellWidget(row, 0) is None:
-                        actual_row = row
-                        break
+        # First, scan the table to find any existing FREE CASH summary row
+        actual_row = None
+        for row in range(self.rowCount()):
+            # Check if this row has "FREE CASH" as ticker in column 1 (QTableWidgetItem)
+            ticker_item = self.item(row, 1)
+            if ticker_item and ticker_item.text() == "FREE CASH":
+                # Also verify it's the summary row by checking if column 0 has no widget
+                if self.cellWidget(row, 0) is None:
+                    actual_row = row
+                    break
 
-            if actual_row is not None:
-                # Update the mapping to the correct row
-                # First remove any old mapping to this row ID
-                for r in list(self._row_to_id.keys()):
-                    if self._row_to_id[r] == self._free_cash_row_id:
-                        del self._row_to_id[r]
-                        if r in self._transactions:
-                            del self._transactions[r]
-                        break
-                # Set correct mapping
-                self._row_to_id[actual_row] = self._free_cash_row_id
-                self._transactions[actual_row] = self._transactions_by_id[self._free_cash_row_id]
+        # If summary row exists in table, update mappings and return
+        if actual_row is not None:
+            # Remove any stale mappings to FREE CASH row ID
+            for r in list(self._row_to_id.keys()):
+                if self._row_to_id[r] == self._free_cash_row_id:
+                    del self._row_to_id[r]
+                    if r in self._transactions:
+                        del self._transactions[r]
+                    break
 
-            # Now update values
+            # Ensure entry exists in _transactions_by_id
+            if self._free_cash_row_id not in self._transactions_by_id:
+                self._transactions_by_id[self._free_cash_row_id] = {
+                    "id": self._free_cash_row_id,
+                    "is_free_cash_summary": True,
+                    "date": "",
+                    "ticker": "FREE CASH",
+                    "transaction_type": "",
+                    "quantity": 0.0,
+                    "entry_price": 0.0,
+                    "fees": 0.0
+                }
+
+            # Set correct mapping
+            self._row_to_id[actual_row] = self._free_cash_row_id
+            self._transactions[actual_row] = self._transactions_by_id[self._free_cash_row_id]
+
+            # Update calculated values
             self._update_free_cash_summary_row()
             return
+
+        # No summary row found in table - clean up any stale data and create new one
+        if self._free_cash_row_id in self._transactions_by_id:
+            del self._transactions_by_id[self._free_cash_row_id]
+        for r in list(self._row_to_id.keys()):
+            if self._row_to_id[r] == self._free_cash_row_id:
+                del self._row_to_id[r]
+                if r in self._transactions:
+                    del self._transactions[r]
+                break
 
         # Need to insert FREE CASH summary row at index 1
         # First shift all existing rows down (except blank row at 0)
@@ -1039,6 +1060,34 @@ class TransactionLogTable(QTableWidget):
 
         # Remove the blank row from the table
         self.removeRow(row)
+
+        # Shift _transactions indices down for rows that moved after removeRow
+        # This is necessary because _rebuild_transaction_map relies on _transactions
+        new_transactions = {}
+        for old_row, tx in self._transactions.items():
+            if old_row > row:
+                new_transactions[old_row - 1] = tx
+            elif old_row < row:
+                new_transactions[old_row] = tx
+            # old_row == row was already deleted, skip it
+        self._transactions = new_transactions
+
+        # Also shift _row_to_id and _row_widgets_map
+        new_row_to_id = {}
+        for old_row, tx_id in self._row_to_id.items():
+            if old_row > row:
+                new_row_to_id[old_row - 1] = tx_id
+            elif old_row < row:
+                new_row_to_id[old_row] = tx_id
+        self._row_to_id = new_row_to_id
+
+        new_row_widgets_map = {}
+        for old_row, widgets in self._row_widgets_map.items():
+            if old_row > row:
+                new_row_widgets_map[old_row - 1] = widgets
+            elif old_row < row:
+                new_row_widgets_map[old_row] = widgets
+        self._row_widgets_map = new_row_widgets_map
 
         # Rebuild mappings after row removal
         self._rebuild_transaction_map()
@@ -1539,9 +1588,10 @@ class TransactionLogTable(QTableWidget):
         """
         for row in range(start_row, self.rowCount()):
             for col in range(6):  # Columns 0-5 have widgets
-                widget = self.cellWidget(row, col)
-                if widget:
-                    widget.setProperty("_table_row", row)
+                # Update inner widget position (signals are connected to inner widgets)
+                inner_widget = self._get_inner_widget(row, col)
+                if inner_widget:
+                    inner_widget.setProperty("_table_row", row)
 
     def _on_widget_changed(self):
         """
