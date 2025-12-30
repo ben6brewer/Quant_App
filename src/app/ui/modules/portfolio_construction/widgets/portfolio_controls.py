@@ -20,6 +20,7 @@ class PortfolioControls(QWidget):
     new_portfolio_clicked = Signal()
     rename_portfolio_clicked = Signal()
     delete_portfolio_clicked = Signal()
+    settings_clicked = Signal()
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
@@ -81,8 +82,14 @@ class PortfolioControls(QWidget):
         self.delete_btn.clicked.connect(self.delete_portfolio_clicked.emit)
         layout.addWidget(self.delete_btn)
 
-        # Add stretch to center the portfolio section
+        # Add stretch to push settings button to the right
         layout.addStretch(1)
+
+        # Settings button (right-aligned)
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.setFixedSize(100, 40)
+        self.settings_btn.clicked.connect(self.settings_clicked.emit)
+        layout.addWidget(self.settings_btn)
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio dropdown selection."""

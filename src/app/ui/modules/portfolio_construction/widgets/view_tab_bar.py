@@ -23,11 +23,11 @@ class ViewTabBar(QWidget):
 
     def _setup_ui(self):
         """Setup tab bar UI."""
-        self.setFixedHeight(40)
+        self.setFixedHeight(52)
         self.setObjectName("viewTabBar")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(5)
 
         # Button group for exclusive selection
@@ -39,8 +39,8 @@ class ViewTabBar(QWidget):
         self.transactions_tab.setObjectName("viewTab")
         self.transactions_tab.setCheckable(True)
         self.transactions_tab.setCursor(Qt.PointingHandCursor)
-        self.transactions_tab.setMinimumWidth(150)
-        self.transactions_tab.setFixedHeight(32)
+        self.transactions_tab.setMinimumWidth(170)
+        self.transactions_tab.setFixedHeight(40)
         self.transactions_tab.setChecked(True)  # Default
         self.transactions_tab.clicked.connect(lambda: self.view_changed.emit(0))
         layout.addWidget(self.transactions_tab)
@@ -51,8 +51,8 @@ class ViewTabBar(QWidget):
         self.holdings_tab.setObjectName("viewTab")
         self.holdings_tab.setCheckable(True)
         self.holdings_tab.setCursor(Qt.PointingHandCursor)
-        self.holdings_tab.setMinimumWidth(150)
-        self.holdings_tab.setFixedHeight(32)
+        self.holdings_tab.setMinimumWidth(175)
+        self.holdings_tab.setFixedHeight(40)
         self.holdings_tab.clicked.connect(lambda: self.view_changed.emit(1))
         layout.addWidget(self.holdings_tab)
         self.button_group.addButton(self.holdings_tab)
@@ -91,8 +91,8 @@ class ViewTabBar(QWidget):
                 color: #cccccc;
                 border: none;
                 border-radius: 2px;
-                padding: 8px 16px;
-                font-size: 13px;
+                padding: 10px 20px;
+                font-size: 14px;
                 font-weight: 500;
             }
             #viewTab:hover {
@@ -118,8 +118,8 @@ class ViewTabBar(QWidget):
                 color: #333333;
                 border: none;
                 border-radius: 2px;
-                padding: 8px 16px;
-                font-size: 13px;
+                padding: 10px 20px;
+                font-size: 14px;
                 font-weight: 500;
             }
             #viewTab:hover {
@@ -145,8 +145,8 @@ class ViewTabBar(QWidget):
                 color: #a8a8a8;
                 border: none;
                 border-radius: 2px;
-                padding: 8px 16px;
-                font-size: 13px;
+                padding: 10px 20px;
+                font-size: 14px;
                 font-weight: 500;
             }
             #viewTab:hover {

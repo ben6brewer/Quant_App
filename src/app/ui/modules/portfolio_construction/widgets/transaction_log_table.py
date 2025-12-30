@@ -412,7 +412,7 @@ class ValidatedNumericLineEdit(QLineEdit):
         self.validator = QDoubleValidator(min_value, max_value, decimals, self)
         self.validator.setNotation(QDoubleValidator.StandardNotation)
         self.setValidator(self.validator)
-        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         if prefix:
             self.setPlaceholderText(f"{prefix}0.00")
@@ -522,6 +522,9 @@ class TransactionLogTable(QTableWidget):
         self._row_widgets_map: Dict[int, List[QWidget]] = {}
         self._skip_focus_validation: bool = False  # Prevent double validation dialogs
 
+        # Highlight editable fields setting (default True)
+        self._highlight_editable = True
+
         self._setup_table()
         self._apply_theme()
 
@@ -532,6 +535,14 @@ class TransactionLogTable(QTableWidget):
         """Configure table structure."""
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
+
+        # Set header alignment to left
+        header = self.horizontalHeader()
+        for col in range(len(self.COLUMNS)):
+            item = self.horizontalHeaderItem(col)
+            if item:
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         # Set column resize modes and widths
         self._reset_column_widths()
@@ -727,25 +738,25 @@ class TransactionLogTable(QTableWidget):
         # Daily Closing Price cell (read-only) - column 6
         daily_close_item = QTableWidgetItem("--")
         daily_close_item.setFlags(daily_close_item.flags() & ~Qt.ItemIsEditable)
-        daily_close_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        daily_close_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(0, 6, daily_close_item)
 
         # Live Price cell (read-only) - column 7
         live_price_item = QTableWidgetItem("--")
         live_price_item.setFlags(live_price_item.flags() & ~Qt.ItemIsEditable)
-        live_price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        live_price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(0, 7, live_price_item)
 
         # Principal cell (read-only) - column 8
         principal_item = QTableWidgetItem("--")
         principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
-        principal_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(0, 8, principal_item)
 
         # Market Value cell (read-only) - column 9
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
-        market_value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        market_value_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(0, 9, market_value_item)
 
         # Install focus watchers for auto-delete functionality
@@ -907,25 +918,25 @@ class TransactionLogTable(QTableWidget):
         # Daily Closing Price cell (read-only) - column 6
         daily_close_item = QTableWidgetItem("--")
         daily_close_item.setFlags(daily_close_item.flags() & ~Qt.ItemIsEditable)
-        daily_close_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        daily_close_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(row, 6, daily_close_item)
 
         # Live Price cell (read-only) - column 7
         live_price_item = QTableWidgetItem("--")
         live_price_item.setFlags(live_price_item.flags() & ~Qt.ItemIsEditable)
-        live_price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        live_price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(row, 7, live_price_item)
 
         # Principal cell (read-only) - column 8
         principal_item = QTableWidgetItem("--")
         principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
-        principal_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(row, 8, principal_item)
 
         # Market Value cell (read-only) - column 9
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
-        market_value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        market_value_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(row, 9, market_value_item)
 
         # Install focus watchers for auto-delete functionality
@@ -1286,10 +1297,17 @@ class TransactionLogTable(QTableWidget):
 
         # Install event filters on all editable columns (0-5)
         for col in range(6):
-            widget = self.cellWidget(row, col)
-            if widget:
-                widget.installEventFilter(self)
-                widgets.append(widget)
+            container = self.cellWidget(row, col)
+            if container:
+                # Get the inner widget (the actual editable widget, not the container)
+                inner_widget = container.property("_inner_widget")
+                if inner_widget:
+                    inner_widget.installEventFilter(self)
+                    widgets.append(inner_widget)
+                else:
+                    # Fallback if no inner widget (shouldn't happen)
+                    container.installEventFilter(self)
+                    widgets.append(container)
 
         # Store widget references for this row
         self._row_widgets_map[row] = widgets
@@ -1312,6 +1330,8 @@ class TransactionLogTable(QTableWidget):
             row = self._find_row_for_widget(obj)
             if row is not None:
                 self._current_editing_row = row
+                # Select this row visually (sync with table selection)
+                self.selectRow(row)
 
         elif event_type == QEvent.FocusOut:
             # Focus left a widget - defer check to see if it left the row
@@ -1769,7 +1789,10 @@ class TransactionLogTable(QTableWidget):
             return self._get_dark_widget_stylesheet()
 
     def _get_cell_background_color(self) -> str:
-        """Get the current theme's cell background color."""
+        """Get the current theme's cell background color (or transparent if highlighting disabled)."""
+        if not self._highlight_editable:
+            return "transparent"
+
         theme = self.theme_manager.current_theme
         if theme == "light":
             return "#0066cc"
@@ -1777,6 +1800,17 @@ class TransactionLogTable(QTableWidget):
             return "#FF8000"
         else:
             return "#00d4ff"
+
+    def set_highlight_editable(self, enabled: bool):
+        """
+        Enable or disable editable field highlighting.
+
+        Args:
+            enabled: True to show colored backgrounds on editable fields
+        """
+        self._highlight_editable = enabled
+        # Re-apply theme to update all widget styles
+        self._apply_theme()
 
     def _wrap_widget_in_cell(self, widget: QWidget) -> QWidget:
         """Wrap a widget in a container that fills the cell with themed background."""
@@ -1919,6 +1953,17 @@ class TransactionLogTable(QTableWidget):
 
     def _get_dark_widget_stylesheet(self) -> str:
         """Dark theme stylesheet for editable cell widgets."""
+        if not self._highlight_editable:
+            return """
+                QLineEdit {
+                    background-color: transparent;
+                    color: #ffffff;
+                    border: none;
+                    margin: 0px;
+                    padding: 0px 8px;
+                    font-size: 14px;
+                }
+            """
         return """
             QLineEdit {
                 background-color: #00d4ff;
@@ -1935,6 +1980,17 @@ class TransactionLogTable(QTableWidget):
 
     def _get_light_widget_stylesheet(self) -> str:
         """Light theme stylesheet for editable cell widgets."""
+        if not self._highlight_editable:
+            return """
+                QLineEdit {
+                    background-color: transparent;
+                    color: #000000;
+                    border: none;
+                    margin: 0px;
+                    padding: 0px 8px;
+                    font-size: 14px;
+                }
+            """
         return """
             QLineEdit {
                 background-color: #0066cc;
@@ -1951,6 +2007,17 @@ class TransactionLogTable(QTableWidget):
 
     def _get_bloomberg_widget_stylesheet(self) -> str:
         """Bloomberg theme stylesheet for editable cell widgets."""
+        if not self._highlight_editable:
+            return """
+                QLineEdit {
+                    background-color: transparent;
+                    color: #e8e8e8;
+                    border: none;
+                    margin: 0px;
+                    padding: 0px 8px;
+                    font-size: 14px;
+                }
+            """
         return """
             QLineEdit {
                 background-color: #FF8000;
@@ -1968,6 +2035,57 @@ class TransactionLogTable(QTableWidget):
     def _get_combo_stylesheet(self) -> str:
         """Get theme-aware stylesheet for combo box."""
         theme = self.theme_manager.current_theme
+
+        if not self._highlight_editable:
+            # Transparent combo styling when highlight is disabled
+            if theme == "bloomberg":
+                return """
+                    QComboBox {
+                        background-color: transparent;
+                        color: #e8e8e8;
+                        border: none;
+                        padding: 4px 8px;
+                        font-size: 14px;
+                    }
+                    QComboBox::drop-down { border: none; width: 0px; }
+                    QComboBox QAbstractItemView {
+                        background-color: #0d1420;
+                        color: #e8e8e8;
+                        selection-background-color: #FF8000;
+                    }
+                """
+            elif theme == "light":
+                return """
+                    QComboBox {
+                        background-color: transparent;
+                        color: #000000;
+                        border: none;
+                        padding: 4px 8px;
+                        font-size: 14px;
+                    }
+                    QComboBox::drop-down { border: none; width: 0px; }
+                    QComboBox QAbstractItemView {
+                        background-color: #ffffff;
+                        color: #000000;
+                        selection-background-color: #0066cc;
+                    }
+                """
+            else:  # dark
+                return """
+                    QComboBox {
+                        background-color: transparent;
+                        color: #ffffff;
+                        border: none;
+                        padding: 4px 8px;
+                        font-size: 14px;
+                    }
+                    QComboBox::drop-down { border: none; width: 0px; }
+                    QComboBox QAbstractItemView {
+                        background-color: #2d2d2d;
+                        color: #ffffff;
+                        selection-background-color: #00d4ff;
+                    }
+                """
 
         if theme == "bloomberg":
             return """

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common import CustomMessageBox
 
-from .services import PortfolioService, PortfolioPersistence
+from .services import PortfolioService, PortfolioPersistence, PortfolioSettingsManager
 from .widgets import (
     PortfolioControls,
     TransactionLogTable,
@@ -17,6 +17,7 @@ from .widgets import (
     RenamePortfolioDialog,
     ViewTabBar
 )
+from .widgets.portfolio_settings_dialog import PortfolioSettingsDialog
 
 
 class PortfolioConstructionModule(QWidget):
@@ -40,7 +41,13 @@ class PortfolioConstructionModule(QWidget):
         self._cached_prices = {}  # ticker -> price
         self._cached_tickers = set()  # Set of tickers we've fetched prices for
 
+        # Settings manager (handles persistence)
+        self._settings_manager = PortfolioSettingsManager()
+
         self._setup_ui()
+
+        # Apply persisted settings to widgets
+        self._apply_settings()
         self._connect_signals()
         self._apply_theme()
 
@@ -92,6 +99,7 @@ class PortfolioConstructionModule(QWidget):
         self.controls.rename_portfolio_clicked.connect(self._rename_portfolio_dialog)
         self.controls.delete_portfolio_clicked.connect(self._delete_portfolio_dialog)
         self.controls.home_clicked.connect(self._on_home_clicked)
+        self.controls.settings_clicked.connect(self._open_settings_dialog)
 
         # Transaction table
         self.transaction_table.transaction_added.connect(self._on_transaction_changed)
@@ -487,3 +495,25 @@ class PortfolioConstructionModule(QWidget):
                 background-color: {bg_color};
             }}
         """)
+
+    def _open_settings_dialog(self):
+        """Open settings dialog."""
+        dialog = PortfolioSettingsDialog(
+            self.theme_manager,
+            self._settings_manager.get_all_settings(),
+            self
+        )
+
+        if dialog.exec():
+            new_settings = dialog.get_settings()
+            if new_settings:
+                # Save settings to disk
+                self._settings_manager.update_settings(new_settings)
+                # Apply settings to widgets
+                self._apply_settings()
+
+    def _apply_settings(self):
+        """Apply current settings to widgets."""
+        self.transaction_table.set_highlight_editable(
+            self._settings_manager.get_setting("highlight_editable_fields")
+        )
