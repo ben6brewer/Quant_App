@@ -36,6 +36,10 @@ class PortfolioConstructionModule(QWidget):
         self.current_portfolio = None  # Current portfolio dict
         self.unsaved_changes = False
 
+        # Price cache - only fetch when tickers change
+        self._cached_prices = {}  # ticker -> price
+        self._cached_tickers = set()  # Set of tickers we've fetched prices for
+
         self._setup_ui()
         self._connect_signals()
         self._apply_theme()
@@ -151,9 +155,17 @@ class PortfolioConstructionModule(QWidget):
         self.transaction_table.clear_all_transactions()
         self.aggregate_table.setRowCount(0)
         self.unsaved_changes = False
+        # Clear price cache
+        self._cached_prices.clear()
+        self._cached_tickers.clear()
 
-    def _update_aggregate_table(self):
-        """Recalculate and update aggregate table."""
+    def _update_aggregate_table(self, force_fetch: bool = False):
+        """
+        Recalculate and update aggregate table.
+
+        Args:
+            force_fetch: If True, fetch prices for all tickers (used on portfolio load)
+        """
         transactions = self.transaction_table.get_all_transactions()
 
         if not transactions:
@@ -161,14 +173,35 @@ class PortfolioConstructionModule(QWidget):
             return
 
         # Get unique tickers
-        tickers = list(set(t["ticker"] for t in transactions if t["ticker"]))
+        tickers = set(t["ticker"] for t in transactions if t["ticker"])
 
         if not tickers:
             self.aggregate_table.setRowCount(0)
             return
 
-        # Fetch current prices
-        current_prices = PortfolioService.fetch_current_prices(tickers)
+        # Determine which tickers need price fetching
+        if force_fetch:
+            # Full refresh - fetch all tickers
+            tickers_to_fetch = list(tickers)
+        else:
+            # Only fetch prices for NEW tickers (not already cached)
+            tickers_to_fetch = [t for t in tickers if t not in self._cached_tickers]
+
+        # Fetch prices only for tickers that need it
+        if tickers_to_fetch:
+            new_prices = PortfolioService.fetch_current_prices(tickers_to_fetch)
+            # Update cache
+            self._cached_prices.update(new_prices)
+            self._cached_tickers.update(tickers_to_fetch)
+
+        # Remove cached tickers that are no longer in use
+        removed_tickers = self._cached_tickers - tickers
+        for ticker in removed_tickers:
+            self._cached_tickers.discard(ticker)
+            self._cached_prices.pop(ticker, None)
+
+        # Use cached prices for calculations
+        current_prices = {t: self._cached_prices.get(t) for t in tickers}
 
         # Update transaction table with prices
         self.transaction_table.update_current_prices(current_prices)
@@ -181,7 +214,10 @@ class PortfolioConstructionModule(QWidget):
 
     def _refresh_prices(self):
         """Manually refresh current prices."""
-        self._update_aggregate_table()
+        # Clear cache and force fetch all prices
+        self._cached_prices.clear()
+        self._cached_tickers.clear()
+        self._update_aggregate_table(force_fetch=True)
         CustomMessageBox.information(
             self.theme_manager,
             self,
@@ -265,9 +301,14 @@ class PortfolioConstructionModule(QWidget):
             )
             return
 
+        # Clear price cache when loading new portfolio
+        self._cached_prices.clear()
+        self._cached_tickers.clear()
+
         self.current_portfolio = portfolio
         self._populate_transaction_table()
-        self._update_aggregate_table()
+        # Force fetch all prices on portfolio load
+        self._update_aggregate_table(force_fetch=True)
 
         # Update controls
         portfolios = PortfolioPersistence.list_portfolios()
@@ -301,9 +342,11 @@ class PortfolioConstructionModule(QWidget):
             self.current_portfolio = PortfolioPersistence.create_new_portfolio(name)
             PortfolioPersistence.save_portfolio(self.current_portfolio)
 
-            # Clear tables
+            # Clear tables and price cache
             self.transaction_table.clear_all_transactions()
             self.aggregate_table.setRowCount(0)
+            self._cached_prices.clear()
+            self._cached_tickers.clear()
 
             # Update controls
             portfolios = PortfolioPersistence.list_portfolios()

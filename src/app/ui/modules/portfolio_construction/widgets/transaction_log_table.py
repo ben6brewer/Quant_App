@@ -626,12 +626,14 @@ class TransactionLogTable(QTableWidget):
         date_edit._parent_table = self  # Pass reference for validation dialogs
         date_edit.setDate(QDate.fromString(blank_transaction["date"], "yyyy-MM-dd"))
         date_edit.date_changed.connect(self._on_widget_changed)
+        self._set_widget_position(date_edit, 0, 0)
         self.setCellWidget(0, 0, date_edit)
 
         # Ticker cell
         ticker_edit = AutoSelectLineEdit(blank_transaction["ticker"])
         ticker_edit.setPlaceholderText("Enter ticker...")
         ticker_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(ticker_edit, 0, 1)
         self.setCellWidget(0, 1, ticker_edit)
 
         # Type cell
@@ -646,24 +648,28 @@ class TransactionLogTable(QTableWidget):
             QComboBox:focus { border: none; outline: none; }
             QComboBox:on { border: none; }
         """)
+        self._set_widget_position(type_combo, 0, 2)
         self.setCellWidget(0, 2, type_combo)
 
         # Quantity cell
         qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(blank_transaction["quantity"])
         qty_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(qty_edit, 0, 3)
         self.setCellWidget(0, 3, qty_edit)
 
         # Transaction Price cell
         price_edit = ValidatedNumericLineEdit(min_value=0.01, max_value=1000000, decimals=2, prefix="", show_dash_for_zero=True)
         price_edit.setValue(blank_transaction["entry_price"])
         price_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(price_edit, 0, 4)
         self.setCellWidget(0, 4, price_edit)
 
         # Fees cell
         fees_edit = ValidatedNumericLineEdit(min_value=0, max_value=10000, decimals=2, prefix="", show_dash_for_zero=True)
         fees_edit.setValue(blank_transaction["fees"])
         fees_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(fees_edit, 0, 5)
         self.setCellWidget(0, 5, fees_edit)
 
         # Market Value cell (read-only) - column 6
@@ -674,6 +680,9 @@ class TransactionLogTable(QTableWidget):
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(0)
+
+        # Update row positions for all shifted rows (rows 1+)
+        self._update_row_positions(1)
 
         self.setSortingEnabled(False)  # Keep sorting disabled for manual control
 
@@ -764,11 +773,13 @@ class TransactionLogTable(QTableWidget):
         date_edit._parent_table = self  # Pass reference for validation dialogs
         date_edit.setDate(QDate.fromString(transaction["date"], "yyyy-MM-dd"))
         date_edit.date_changed.connect(self._on_widget_changed)
+        self._set_widget_position(date_edit, row, 0)
         self.setCellWidget(row, 0, date_edit)
 
         # Ticker cell
         ticker_edit = AutoSelectLineEdit(transaction["ticker"])
         ticker_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(ticker_edit, row, 1)
         self.setCellWidget(row, 1, ticker_edit)
 
         # Type cell
@@ -783,24 +794,28 @@ class TransactionLogTable(QTableWidget):
             QComboBox:focus { border: none; outline: none; }
             QComboBox:on { border: none; }
         """)
+        self._set_widget_position(type_combo, row, 2)
         self.setCellWidget(row, 2, type_combo)
 
         # Quantity cell
         qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(transaction["quantity"])
         qty_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(qty_edit, row, 3)
         self.setCellWidget(row, 3, qty_edit)
 
         # Transaction Price cell
         price_edit = ValidatedNumericLineEdit(min_value=0.01, max_value=1000000, decimals=2, prefix="", show_dash_for_zero=True)
         price_edit.setValue(transaction["entry_price"])
         price_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(price_edit, row, 4)
         self.setCellWidget(row, 4, price_edit)
 
         # Fees cell
         fees_edit = ValidatedNumericLineEdit(min_value=0, max_value=10000, decimals=2, prefix="", show_dash_for_zero=True)
         fees_edit.setValue(transaction["fees"])
         fees_edit.textChanged.connect(self._on_widget_changed)
+        self._set_widget_position(fees_edit, row, 5)
         self.setCellWidget(row, 5, fees_edit)
 
         # Market Value cell (read-only) - column 6
@@ -993,9 +1008,12 @@ class TransactionLogTable(QTableWidget):
                 new_transactions[row] = tx
         self._transactions = new_transactions
 
+        # Update all stored row positions after deletion
+        self._update_row_positions(0)
+
     def _find_row_for_widget(self, widget: QWidget) -> Optional[int]:
         """
-        Find the row index for a given widget.
+        Find the row index for a given widget using stored property (O(1) lookup).
 
         Args:
             widget: The widget to find
@@ -1003,14 +1021,18 @@ class TransactionLogTable(QTableWidget):
         Returns:
             Row index or None if not found
         """
-        for row, widgets in self._row_widgets_map.items():
+        row = widget.property("_table_row")
+        if row is not None:
+            return row
+        # Fallback to slow search (should not be needed)
+        for r, widgets in self._row_widgets_map.items():
             if widget in widgets:
-                return row
+                return r
         return None
 
     def _find_cell_for_widget(self, widget: QWidget) -> tuple[Optional[int], Optional[int]]:
         """
-        Find the (row, col) for a given widget by searching all cells.
+        Find the (row, col) for a given widget using stored properties (O(1) lookup).
 
         Args:
             widget: The widget to find
@@ -1018,12 +1040,37 @@ class TransactionLogTable(QTableWidget):
         Returns:
             Tuple of (row, col) or (None, None) if not found
         """
-        for row in range(self.rowCount()):
-            for col in range(self.columnCount()):
-                cell_widget = self.cellWidget(row, col)
-                if cell_widget == widget:
-                    return (row, col)
+        row = widget.property("_table_row")
+        col = widget.property("_table_col")
+        if row is not None and col is not None:
+            return (row, col)
         return (None, None)
+
+    def _set_widget_position(self, widget: QWidget, row: int, col: int):
+        """
+        Store row/col position on widget for O(1) lookup.
+
+        Args:
+            widget: The widget to tag
+            row: Row index
+            col: Column index
+        """
+        widget.setProperty("_table_row", row)
+        widget.setProperty("_table_col", col)
+
+    def _update_row_positions(self, start_row: int):
+        """
+        Update stored row positions for all widgets from start_row onwards.
+        Called after row insertion/deletion to keep positions in sync.
+
+        Args:
+            start_row: First row to update
+        """
+        for row in range(start_row, self.rowCount()):
+            for col in range(6):  # Columns 0-5 have widgets
+                widget = self.cellWidget(row, col)
+                if widget:
+                    widget.setProperty("_table_row", row)
 
     def _on_widget_changed(self):
         """
@@ -1242,6 +1289,9 @@ class TransactionLogTable(QTableWidget):
         self._row_to_id = new_row_to_id
         self._transactions = new_transactions
         self._row_widgets_map = new_row_widgets_map
+
+        # Update stored row positions for all widgets from deleted row onwards
+        self._update_row_positions(row)
 
         # Emit signal
         self.transaction_deleted.emit(transaction_id)
