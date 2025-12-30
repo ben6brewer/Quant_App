@@ -532,6 +532,9 @@ class TransactionLogTable(QTableWidget):
         # FREE CASH summary row tracking (pinned at row 1, below blank row)
         self._free_cash_row_id = "FREE_CASH_SUMMARY"
 
+        # Sequence counter for same-day transaction ordering (higher = newer)
+        self._next_sequence: int = 0
+
         self._setup_table()
         self._apply_theme()
 
@@ -634,6 +637,27 @@ class TransactionLogTable(QTableWidget):
             if tx and "id" in tx:
                 new_row_to_id[row] = tx["id"]
         self._row_to_id = new_row_to_id
+
+    def _get_next_sequence(self) -> int:
+        """Get next sequence number and increment counter."""
+        seq = self._next_sequence
+        self._next_sequence += 1
+        return seq
+
+    def _initialize_sequence_counter(self, transactions: List[Dict[str, Any]]):
+        """
+        Initialize sequence counter from existing transactions.
+        Sets counter to max(existing sequences) + 1.
+
+        Args:
+            transactions: List of transaction dicts
+        """
+        if not transactions:
+            self._next_sequence = 0
+            return
+
+        max_seq = max(tx.get("sequence", 0) for tx in transactions)
+        self._next_sequence = max_seq + 1
 
     def _ensure_blank_row(self):
         """Ensure blank row exists at top of table. Create if missing."""
@@ -1076,6 +1100,9 @@ class TransactionLogTable(QTableWidget):
         if ticker_normalized == PortfolioService.FREE_CASH_TICKER:
             transaction["entry_price"] = 1.0
 
+        # Assign sequence number for same-day ordering (higher = newer)
+        transaction["sequence"] = self._get_next_sequence()
+
         # Remove old blank entry from storage
         if "BLANK_ROW" in self._transactions_by_id:
             del self._transactions_by_id["BLANK_ROW"]
@@ -1132,6 +1159,9 @@ class TransactionLogTable(QTableWidget):
         # Update FREE CASH summary row
         self._update_free_cash_summary_row()
 
+        # Re-sort to default order (date descending, sequence descending)
+        self.sort_by_date_descending()
+
         return True  # Transition succeeded
 
     def add_transaction_row(self, transaction: Dict[str, Any]) -> int:
@@ -1171,7 +1201,8 @@ class TransactionLogTable(QTableWidget):
             "quantity": transaction.get("quantity", 0.0),
             "entry_price": transaction.get("entry_price", 0.0),
             "fees": transaction.get("fees", 0.0),
-            "transaction_type": transaction.get("transaction_type", "Buy")
+            "transaction_type": transaction.get("transaction_type", "Buy"),
+            "sequence": transaction.get("sequence", 0)
         }
 
         # Get current theme stylesheets
@@ -1342,6 +1373,10 @@ class TransactionLogTable(QTableWidget):
             # Preserve is_blank flag if it exists
             if "is_blank" in existing_transaction:
                 extracted["is_blank"] = existing_transaction["is_blank"]
+
+            # Preserve sequence for same-day ordering
+            if "sequence" in existing_transaction:
+                extracted["sequence"] = existing_transaction["sequence"]
 
             return extracted
         except Exception as e:
@@ -2036,7 +2071,8 @@ class TransactionLogTable(QTableWidget):
                     "quantity": transaction.get("quantity", 0.0),
                     "entry_price": transaction.get("entry_price", 0.0),
                     "fees": transaction.get("fees", 0.0),
-                    "transaction_type": transaction.get("transaction_type", "Buy")
+                    "transaction_type": transaction.get("transaction_type", "Buy"),
+                    "sequence": transaction.get("sequence", 0)
                 }
 
             # Update calculated cells (fetch prices)
@@ -2048,6 +2084,10 @@ class TransactionLogTable(QTableWidget):
 
             # Update FREE CASH summary row
             self._update_free_cash_summary_row()
+
+            # Re-sort if date was changed to maintain chronological order
+            if tx_date != original_date:
+                self.sort_by_date_descending()
 
     def _revert_ticker(self, row: int, original_ticker: str):
         """
@@ -2334,8 +2374,9 @@ class TransactionLogTable(QTableWidget):
             ticker = tx.get("ticker", "")
             tx_date = tx.get("date", "")
 
-            if column == 0:  # Date
-                return tx_date
+            if column == 0:  # Date - use sequence as secondary sort for same-day transactions
+                sequence = tx.get("sequence", 0)
+                return (tx_date, sequence)
             elif column == 1:  # Ticker
                 return ticker.lower()
             elif column == 2:  # Quantity
@@ -2439,6 +2480,74 @@ class TransactionLogTable(QTableWidget):
 
         # Reset column widths after rebuilding table
         self._reset_column_widths()
+
+    def sort_by_date_descending(self):
+        """
+        Sort transactions by date DESCENDING (most recent first).
+        For same-day transactions, sort by sequence DESCENDING (newest first).
+
+        This is the default sort applied on load and after adding transactions.
+        Keeps blank row pinned at row 0 and FREE CASH summary at row 1.
+        """
+        # Collect all sortable transactions (exclude blank and FREE CASH summary)
+        sortable_transactions = []
+        blank_transaction = None
+
+        for row in range(self.rowCount()):
+            tx = self._extract_transaction_from_row(row)
+            if tx:
+                if tx.get("is_blank"):
+                    blank_transaction = tx
+                elif tx.get("is_free_cash_summary"):
+                    # Skip FREE CASH summary - it will be recreated
+                    pass
+                else:
+                    sortable_transactions.append(tx)
+
+        if not sortable_transactions:
+            return
+
+        # Sort by date descending, then by sequence descending for same-day
+        def sort_key(tx: Dict[str, Any]):
+            date = tx.get("date", "")
+            sequence = tx.get("sequence", 0)
+            return (date, sequence)
+
+        # Reverse=True for descending order on both fields
+        sorted_transactions = sorted(sortable_transactions, key=sort_key, reverse=True)
+
+        # Rebuild table
+        self.setRowCount(0)
+        self._transactions_by_id.clear()
+        self._row_to_id.clear()
+        self._transactions.clear()
+        self._row_widgets_map.clear()
+
+        # Add blank row first if it exists (also creates FREE CASH summary at row 1)
+        if blank_transaction:
+            self._ensure_blank_row()
+
+        # Add sorted transactions
+        for tx in sorted_transactions:
+            self.add_transaction_row(tx)
+
+        # Update calculated cells
+        for row in range(self.rowCount()):
+            self._update_calculated_cells(row)
+
+        # Update FREE CASH summary row after all transactions are added
+        self._update_free_cash_summary_row()
+
+        # Reset column widths after rebuilding table
+        self._reset_column_widths()
+
+        # Update sort state to reflect date column, descending
+        self._current_sort_column = 0  # Date column
+        self._current_sort_order = Qt.DescendingOrder
+
+        # Update header sort indicator
+        header = self.horizontalHeader()
+        header.setSortIndicator(0, Qt.DescendingOrder)
 
     def _apply_theme(self):
         """Apply theme-specific styling."""

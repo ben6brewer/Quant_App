@@ -49,7 +49,21 @@ class PortfolioPersistence:
 
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                portfolio = json.load(f)
+
+            # Migrate: Add sequence numbers if missing (for same-day ordering)
+            transactions = portfolio.get("transactions", [])
+            needs_save = False
+            for i, tx in enumerate(transactions):
+                if "sequence" not in tx:
+                    tx["sequence"] = i  # Assign based on array position
+                    needs_save = True
+
+            # Auto-save migrated portfolio
+            if needs_save:
+                cls.save_portfolio(portfolio)
+
+            return portfolio
         except (json.JSONDecodeError, IOError) as e:
             print(f"Error loading portfolio {name}: {e}")
             return None

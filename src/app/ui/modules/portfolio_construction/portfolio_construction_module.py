@@ -134,14 +134,19 @@ class PortfolioConstructionModule(QWidget):
         if not self.current_portfolio:
             return
 
-        for transaction in self.current_portfolio.get("transactions", []):
+        transactions = self.current_portfolio.get("transactions", [])
+
+        # Initialize sequence counter from existing transactions
+        self.transaction_table._initialize_sequence_counter(transactions)
+
+        for transaction in transactions:
             self.transaction_table.add_transaction_row(transaction)
 
         # Ensure blank row exists for adding new transactions
         self.transaction_table._ensure_blank_row()
 
-        # Sort to maintain blank at top, transactions by date
-        self.transaction_table._sort_transactions()
+        # Sort by date descending (most recent first) with sequence for same-day ordering
+        self.transaction_table.sort_by_date_descending()
 
         # Fetch historical prices for all transactions in batch
         self.transaction_table.fetch_historical_prices_batch()

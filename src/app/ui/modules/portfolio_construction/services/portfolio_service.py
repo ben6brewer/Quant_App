@@ -24,7 +24,8 @@ class PortfolioService:
         quantity: float,
         entry_price: float,
         fees: float = 0.0,
-        notes: str = ""
+        notes: str = "",
+        sequence: int = 0
     ) -> Dict[str, Any]:
         """
         Create a new transaction with generated UUID.
@@ -37,6 +38,7 @@ class PortfolioService:
             entry_price: Price per share
             fees: Transaction fees
             notes: Optional user notes
+            sequence: Ordering number for same-day transactions (higher = newer)
 
         Returns:
             Transaction dict
@@ -49,7 +51,8 @@ class PortfolioService:
             "quantity": float(quantity),
             "entry_price": float(entry_price),
             "fees": float(fees),
-            "notes": notes.strip()
+            "notes": notes.strip(),
+            "sequence": sequence
         }
 
     @staticmethod
@@ -322,6 +325,11 @@ class PortfolioService:
         # FREE CASH is always valid (special cash ticker)
         if ticker == PortfolioService.FREE_CASH_TICKER:
             return True, None
+
+        # Reject tickers with spaces (except FREE CASH which is already handled above)
+        # Spaces cause yfinance to interpret as multiple tickers
+        if " " in ticker:
+            return False, f"Invalid ticker '{ticker}'. Ticker symbols cannot contain spaces."
 
         try:
             df = fetch_price_history(ticker, period="max", interval="1d")
