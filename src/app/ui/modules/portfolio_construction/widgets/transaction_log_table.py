@@ -525,6 +525,10 @@ class TransactionLogTable(QTableWidget):
         # Highlight editable fields setting (default True)
         self._highlight_editable = True
 
+        # Custom sorting state (blank row always stays at top)
+        self._current_sort_column: int = -1
+        self._current_sort_order: Qt.SortOrder = Qt.AscendingOrder
+
         self._setup_table()
         self._apply_theme()
 
@@ -562,8 +566,14 @@ class TransactionLogTable(QTableWidget):
         # Enable smooth pixel-based scrolling instead of item-based
         self.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
 
-        # Enable sorting
-        self.setSortingEnabled(True)
+        # Disable built-in sorting - we handle it manually to keep blank row pinned at top
+        self.setSortingEnabled(False)
+
+        # Connect header click for custom sorting
+        header = self.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._on_header_clicked)
 
         # Set corner label
         self._set_corner_label("Transaction")
@@ -663,6 +673,10 @@ class TransactionLogTable(QTableWidget):
         self.setSortingEnabled(False)
         self.insertRow(0)
         self.setRowHeight(0, 48)  # Ensure consistent row height
+
+        # Set blank vertical header for dummy row (excludes from row count display)
+        blank_header = QTableWidgetItem("")
+        self.setVerticalHeaderItem(0, blank_header)
 
         # Apply shifted mappings
         self._row_to_id = new_row_to_id
@@ -842,6 +856,10 @@ class TransactionLogTable(QTableWidget):
         self.insertRow(row)
         self.setRowHeight(row, 48)  # Ensure consistent row height
 
+        # Set row label (row number excludes blank row at index 0)
+        row_header = QTableWidgetItem(str(row))
+        self.setVerticalHeaderItem(row, row_header)
+
         # Store transaction in UUID-based storage
         tx_id = transaction["id"]
         self._transactions_by_id[tx_id] = transaction
@@ -941,9 +959,6 @@ class TransactionLogTable(QTableWidget):
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(row)
-
-        # Re-enable sorting
-        self.setSortingEnabled(True)
 
         return row
 
@@ -1700,6 +1715,103 @@ class TransactionLogTable(QTableWidget):
 
         # Emit signal
         self.transaction_deleted.emit(transaction_id)
+
+    def _on_header_clicked(self, column: int):
+        """
+        Handle column header click for custom sorting.
+        Keeps blank row pinned at top while sorting transactions.
+
+        Args:
+            column: Column index that was clicked
+        """
+        # Collect all non-blank transactions
+        non_blank_transactions = []
+        blank_transaction = None
+
+        for row in range(self.rowCount()):
+            tx = self._extract_transaction_from_row(row)
+            if tx:
+                if tx.get("is_blank"):
+                    blank_transaction = tx
+                else:
+                    non_blank_transactions.append(tx)
+
+        if not non_blank_transactions:
+            return
+
+        # Toggle sort order if same column, otherwise default to ascending
+        if column == self._current_sort_column:
+            if self._current_sort_order == Qt.AscendingOrder:
+                self._current_sort_order = Qt.DescendingOrder
+            else:
+                self._current_sort_order = Qt.AscendingOrder
+        else:
+            self._current_sort_column = column
+            self._current_sort_order = Qt.AscendingOrder
+
+        # Define sort key functions based on column
+        # Columns 0-5: Editable fields stored in transaction dict
+        # Columns 6-9: Calculated/read-only fields
+        def get_sort_key(tx: Dict[str, Any]):
+            ticker = tx.get("ticker", "")
+            tx_date = tx.get("date", "")
+
+            if column == 0:  # Date
+                return tx_date
+            elif column == 1:  # Ticker
+                return ticker.lower()
+            elif column == 2:  # Quantity
+                return tx.get("quantity", 0.0)
+            elif column == 3:  # Execution Price
+                return tx.get("entry_price", 0.0)
+            elif column == 4:  # Fees
+                return tx.get("fees", 0.0)
+            elif column == 5:  # Type
+                return tx.get("transaction_type", "").lower()
+            elif column == 6:  # Daily Closing Price
+                if ticker and tx_date and ticker in self._historical_prices:
+                    return self._historical_prices[ticker].get(tx_date, 0.0) or 0.0
+                return 0.0
+            elif column == 7:  # Live Price
+                return self._current_prices.get(ticker, 0.0) or 0.0
+            elif column == 8:  # Principal
+                return PortfolioService.calculate_principal(tx)
+            elif column == 9:  # Market Value
+                live_price = self._current_prices.get(ticker, 0.0) or 0.0
+                quantity = tx.get("quantity", 0.0)
+                return live_price * quantity
+            return 0
+
+        reverse = self._current_sort_order == Qt.DescendingOrder
+
+        # Sort the transactions
+        sorted_transactions = sorted(non_blank_transactions, key=get_sort_key, reverse=reverse)
+
+        # Rebuild table
+        self.setRowCount(0)
+        self._transactions_by_id.clear()
+        self._row_to_id.clear()
+        self._transactions.clear()
+        self._row_widgets_map.clear()
+
+        # Add blank row first if it exists (pinned at top)
+        if blank_transaction:
+            self._ensure_blank_row()
+
+        # Add sorted transactions
+        for tx in sorted_transactions:
+            self.add_transaction_row(tx)
+
+        # Update calculated cells
+        for row in range(self.rowCount()):
+            self._update_calculated_cells(row)
+
+        # Reset column widths after rebuilding table
+        self._reset_column_widths()
+
+        # Update header sort indicator
+        header = self.horizontalHeader()
+        header.setSortIndicator(column, self._current_sort_order)
 
     def _sort_transactions(self):
         """
