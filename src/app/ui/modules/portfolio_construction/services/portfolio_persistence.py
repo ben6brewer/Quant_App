@@ -137,3 +137,47 @@ class PortfolioPersistence:
         """
         path = cls._PORTFOLIOS_DIR / f"{name}.json"
         return path.exists()
+
+    @classmethod
+    def rename_portfolio(cls, old_name: str, new_name: str) -> bool:
+        """
+        Rename a portfolio.
+
+        Args:
+            old_name: Current portfolio name
+            new_name: New portfolio name
+
+        Returns:
+            True if renamed successfully, False otherwise
+        """
+        if old_name == new_name:
+            return True  # No change needed
+
+        old_path = cls._PORTFOLIOS_DIR / f"{old_name}.json"
+        new_path = cls._PORTFOLIOS_DIR / f"{new_name}.json"
+
+        if not old_path.exists():
+            return False
+
+        if new_path.exists():
+            return False  # Target name already exists
+
+        try:
+            # Load portfolio
+            with open(old_path, "r", encoding="utf-8") as f:
+                portfolio = json.load(f)
+
+            # Update name and timestamp
+            portfolio["name"] = new_name
+            portfolio["last_modified"] = datetime.now().isoformat()
+
+            # Save with new name
+            with open(new_path, "w", encoding="utf-8") as f:
+                json.dump(portfolio, f, indent=2, ensure_ascii=False)
+
+            # Delete old file
+            old_path.unlink()
+            return True
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            print(f"Error renaming portfolio {old_name} to {new_name}: {e}")
+            return False

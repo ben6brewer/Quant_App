@@ -2,119 +2,370 @@
 
 from typing import Dict, List, Any, Optional
 from PySide6.QtWidgets import (
-    QTableWidget, QTableWidgetItem, QHeaderView, QDateEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView,
     QLineEdit, QComboBox, QDoubleSpinBox, QAbstractButton, QWidget, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QDate, QTimer, QEvent
-from PySide6.QtGui import QColor, QDoubleValidator
+from PySide6.QtGui import QDoubleValidator, QKeySequence
 
 from app.core.theme_manager import ThemeManager
 from ..services.portfolio_service import PortfolioService
 from .no_scroll_combobox import NoScrollComboBox
 
 
-class AutoSelectDateEdit(QDateEdit):
-    """QDateEdit that auto-selects text and allows seamless date typing."""
+class DateInputWidget(QLineEdit):
+    """Free-form date input widget with live dash formatting and validation."""
+
+    # Signal for QDateEdit compatibility
+    date_changed = Signal(QDate)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setCalendarPopup(True)
-        self.setDisplayFormat("yyyy-MM-dd")
-        # Get the internal line edit for text manipulation
-        self.line_edit = self.lineEdit()
-        if self.line_edit:
-            self.line_edit.installEventFilter(self)
+        self.setPlaceholderText("YYYY-MM-DD")
+        self.setMaxLength(10)  # "2025-01-15" = 10 chars
 
-        # Track raw digits for seamless typing
-        self._raw_digits = ""
-        self._is_typing = False
+        # Parent reference for validation dialogs
+        self._parent_table = None
 
-    def eventFilter(self, obj, event):
-        """Handle focus and key events for seamless typing."""
-        if obj == self.line_edit:
-            if event.type() == QEvent.FocusIn:
-                # Select all text when focused
-                QTimer.singleShot(0, self.line_edit.selectAll)
-                self._is_typing = False
-                self._raw_digits = ""
-            elif event.type() == QEvent.MouseButtonPress:
-                # Select all on mouse click
-                QTimer.singleShot(0, self.line_edit.selectAll)
-                self._is_typing = False
-                self._raw_digits = ""
-            elif event.type() == QEvent.KeyPress:
-                # Handle seamless date typing
-                key = event.key()
-                text = event.text()
+        # Current valid date (or None if invalid/incomplete)
+        self._current_date = QDate.currentDate()
 
-                # Check if it's a digit
-                if text.isdigit():
-                    # Start fresh if not already typing
-                    if not self._is_typing:
-                        self._raw_digits = ""
-                        self._is_typing = True
+    def keyPressEvent(self, event):
+        """Handle key press for live dash formatting."""
+        key = event.key()
+        text_input = event.text()
 
-                    # Add digit to raw string (max 8 digits for YYYYMMDD)
-                    if len(self._raw_digits) < 8:
-                        self._raw_digits += text
-                        self._format_and_display()
-                    return True  # Consume the event
+        # Handle digit input
+        if text_input.isdigit():
+            current = self.text()
+            cursor = self.cursorPosition()
 
-                # Handle backspace
-                elif key == Qt.Key_Backspace:
-                    if self._is_typing and self._raw_digits:
-                        self._raw_digits = self._raw_digits[:-1]
-                        if self._raw_digits:
-                            self._format_and_display()
-                        else:
-                            # Reset to current date if all digits deleted
-                            self._is_typing = False
-                            self.line_edit.setText("")
-                        return True  # Consume the event
+            # If text is selected, replace selection with digit
+            if self.hasSelectedText():
+                start = self.selectionStart()
+                end = start + len(self.selectedText())
+                # Remove selected text
+                new_text = current[:start] + text_input + current[end:]
+                # Format with dashes
+                formatted = self._format_with_dashes(new_text)
+                # Cursor should be after the inserted digit
+                digits_before = start  # Count of characters before selection
+                # Find position after first digit in formatted text
+                digit_count = 0
+                new_cursor = 0
+                for i, char in enumerate(formatted):
+                    if char.isdigit():
+                        digit_count += 1
+                        if digit_count == 1:  # Position after first digit
+                            new_cursor = i + 1
+                            break
+                self.setText(formatted)
+                self.setCursorPosition(new_cursor)
+                return
 
-                # Reset typing mode on Enter, Tab, or Escape
-                elif key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab, Qt.Key_Escape):
-                    self._is_typing = False
-                    self._raw_digits = ""
+            # Insert digit at cursor (no selection)
+            new_text = current[:cursor] + text_input + current[cursor:]
 
-        return super().eventFilter(obj, event)
+            # Format with dashes
+            formatted = self._format_with_dashes(new_text)
 
-    def _format_and_display(self):
-        """Format raw digits as YYYY-MM-DD and display."""
-        if not self._raw_digits:
+            # Calculate new cursor position
+            new_cursor = self._calculate_cursor_after_insert(cursor, formatted, current)
+
+            # Update
+            self.setText(formatted)
+            self.setCursorPosition(new_cursor)
+            return  # Consume event
+
+        # Handle dash or slash input - accept but just reformat
+        elif text_input in ('-', '/'):
+            current = self.text()
+            cursor = self.cursorPosition()
+
+            # Just reformat current text (dash/slash gets ignored in formatting)
+            # This allows typing "2025-01" naturally
+            formatted = self._format_with_dashes(current)
+
+            # If cursor is at a dash position after reformatting, move past it
+            if cursor < len(formatted) and formatted[cursor:cursor+1] == '-':
+                self.setCursorPosition(cursor + 1)
+
+            return  # Consume event
+
+        # Handle backspace
+        elif key == Qt.Key_Backspace:
+            self._handle_backspace()
             return
 
-        # Pad with zeros to show partial date
-        digits = self._raw_digits.ljust(8, '0')
+        # Handle Delete key
+        elif key == Qt.Key_Delete:
+            self._handle_delete()
+            return
 
-        # Extract year, month, day
-        year = digits[0:4]
-        month = digits[4:6]
-        day = digits[6:8]
+        # Handle Enter/Return (validate)
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            if self._trigger_validation():
+                self.clearFocus()
+            return
 
-        # Format as YYYY-MM-DD
-        formatted = f"{year}-{month}-{day}"
+        # Handle Tab (validate and move)
+        elif key == Qt.Key_Tab:
+            self._trigger_validation()
+            super().keyPressEvent(event)  # Let Tab propagate
+            return
 
-        # Update the line edit text directly
-        self.line_edit.setText(formatted)
+        # Handle Escape (revert)
+        elif key == Qt.Key_Escape:
+            self._revert_to_last_valid()
+            return
 
-        # Try to parse and set the date if valid
-        try:
-            date = QDate.fromString(formatted, "yyyy-MM-dd")
-            if date.isValid():
-                self.blockSignals(True)
-                self.setDate(date)
-                self.blockSignals(False)
-        except:
-            pass
+        # Handle Paste
+        elif event.matches(QKeySequence.Paste):
+            clipboard = QApplication.clipboard()
+            pasted_text = clipboard.text()
+
+            # Extract digits only (handles 2025/01/01, 2025-01-01, or any format)
+            digits = ''.join(c for c in pasted_text if c.isdigit())[:8]
+            formatted = self._format_with_dashes(digits)
+
+            self.setText(formatted)
+            self.setCursorPosition(len(formatted))
+            return
+
+        # Block all other keys (letters, symbols, etc.)
+        return  # Consume event
+
+    def _format_with_dashes(self, text: str) -> str:
+        """Format text with dashes, allowing incomplete dates."""
+        # Extract digits only
+        digits = ''.join(c for c in text if c.isdigit())[:8]
+
+        # Return empty if no digits
+        if not digits:
+            return ""
+
+        # Format based on length
+        if len(digits) <= 4:
+            return digits
+        elif len(digits) <= 6:
+            return f"{digits[:4]}-{digits[4:]}"
+        else:
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+
+    def _calculate_cursor_after_insert(self, old_cursor: int, new_text: str, old_text: str) -> int:
+        """Calculate cursor position after inserting digit and auto-dashes."""
+        old_dashes_before = old_text[:old_cursor].count('-')
+        new_cursor = old_cursor + 1
+        new_dashes_before = new_text[:new_cursor].count('-')
+
+        if new_dashes_before > old_dashes_before:
+            new_cursor += (new_dashes_before - old_dashes_before)
+
+        return new_cursor
+
+    def _find_cursor_after_n_digits(self, text: str, n: int) -> int:
+        """Find cursor position after n digits (accounting for dashes)."""
+        digit_count = 0
+        for i, char in enumerate(text):
+            if char.isdigit():
+                digit_count += 1
+                if digit_count == n:
+                    return i + 1
+        return len(text)
+
+    def _handle_backspace(self):
+        """Handle backspace with dash auto-removal."""
+        current = self.text()
+        cursor = self.cursorPosition()
+
+        # If text is selected, delete selection
+        if self.hasSelectedText():
+            start = self.selectionStart()
+            end = start + len(self.selectedText())
+            new_text = current[:start] + current[end:]
+
+            # Format remaining text
+            formatted = self._format_with_dashes(new_text)
+            self.setText(formatted)
+            self.setCursorPosition(min(start, len(formatted)))
+            return
+
+        # Nothing to delete
+        if cursor == 0:
+            return
+
+        # Get character before cursor
+        char_before = current[cursor - 1]
+
+        # If dash, skip it and delete digit before
+        if char_before == '-':
+            if cursor >= 2:
+                # Delete digit before dash
+                new_text = current[:cursor - 2] + current[cursor:]
+                formatted = self._format_with_dashes(new_text)
+
+                # Calculate cursor position
+                digits_before = current[:cursor - 2].replace("-", "")
+                new_cursor = self._find_cursor_after_n_digits(formatted, len(digits_before))
+
+                self.setText(formatted)
+                self.setCursorPosition(new_cursor)
+            else:
+                # Clear field (only 1 digit + dash)
+                self.clear()
+        else:
+            # Delete digit
+            new_text = current[:cursor - 1] + current[cursor:]
+            formatted = self._format_with_dashes(new_text)
+
+            # Calculate cursor position
+            digits_before = current[:cursor - 1].replace("-", "")
+            new_cursor = self._find_cursor_after_n_digits(formatted, len(digits_before))
+
+            self.setText(formatted)
+            self.setCursorPosition(new_cursor)
+
+    def _handle_delete(self):
+        """Handle Delete key (forward delete)."""
+        current = self.text()
+        cursor = self.cursorPosition()
+
+        # If text is selected, delete selection (same as backspace)
+        if self.hasSelectedText():
+            self._handle_backspace()
+            return
+
+        # Nothing to delete
+        if cursor >= len(current):
+            return
+
+        # Get character at cursor
+        char_at_cursor = current[cursor]
+
+        # If dash, skip it and delete digit after
+        if char_at_cursor == '-':
+            if cursor + 1 < len(current):
+                # Delete digit after dash
+                new_text = current[:cursor + 1] + current[cursor + 2:]
+                formatted = self._format_with_dashes(new_text)
+
+                # Keep cursor at same position
+                digits_before = current[:cursor].replace("-", "")
+                new_cursor = self._find_cursor_after_n_digits(formatted, len(digits_before))
+
+                self.setText(formatted)
+                self.setCursorPosition(new_cursor)
+            else:
+                # Dash at end, just remove it
+                self.setText(current[:cursor])
+        else:
+            # Delete digit at cursor
+            new_text = current[:cursor] + current[cursor + 1:]
+            formatted = self._format_with_dashes(new_text)
+
+            # Keep cursor at same position
+            digits_before = current[:cursor].replace("-", "")
+            new_cursor = self._find_cursor_after_n_digits(formatted, len(digits_before))
+
+            self.setText(formatted)
+            self.setCursorPosition(new_cursor)
+
+    def _trigger_validation(self) -> bool:
+        """Validate the current date and show error dialog if needed."""
+        current = self.text()
+
+        # Empty field is allowed (no error)
+        if not current:
+            self._current_date = None
+            return True
+
+        # Extract digits
+        digits = current.replace("-", "")
+
+        # Incomplete date (less than 8 digits)
+        if len(digits) < 8:
+            if self._parent_table:
+                self._show_validation_error(
+                    "Incomplete Date",
+                    f"Please enter a complete date in YYYY-MM-DD format.\nCurrent input: {current}"
+                )
+                self.setFocus()
+                self.selectAll()
+            return False
+
+        # Parse as QDate
+        parsed_date = QDate.fromString(current, "yyyy-MM-dd")
+
+        if not parsed_date.isValid():
+            if self._parent_table:
+                self._show_validation_error(
+                    "Invalid Date",
+                    f"The date '{current}' is not valid.\nPlease check the month and day values."
+                )
+                self.setFocus()
+                self.selectAll()
+            return False
+
+        # Check future date
+        if parsed_date > QDate.currentDate():
+            if self._parent_table:
+                self._show_validation_error(
+                    "Future Date Not Allowed",
+                    f"Transaction dates cannot be after today ({QDate.currentDate().toString('yyyy-MM-dd')})."
+                )
+                self.setFocus()
+                self.selectAll()
+            return False
+
+        # Valid date - store and emit signal
+        self._current_date = parsed_date
+        self.date_changed.emit(parsed_date)
+        return True
+
+    def _show_validation_error(self, title: str, message: str):
+        """Show validation error dialog."""
+        from app.ui.widgets.common import CustomMessageBox
+
+        if self._parent_table and hasattr(self._parent_table, 'theme_manager'):
+            CustomMessageBox.warning(
+                self._parent_table.theme_manager,
+                self._parent_table,
+                title,
+                message
+            )
+
+    def _revert_to_last_valid(self):
+        """Revert to last valid date (Escape key)."""
+        if self._current_date and self._current_date.isValid():
+            self.setText(self._current_date.toString("yyyy-MM-dd"))
+        else:
+            self.clear()
+        self.clearFocus()
 
     def focusInEvent(self, event):
-        """Select all text when date edit receives focus."""
+        """Select all text when focused."""
         super().focusInEvent(event)
-        if self.line_edit:
-            QTimer.singleShot(0, self.line_edit.selectAll)
-        self._is_typing = False
-        self._raw_digits = ""
+        QTimer.singleShot(0, self.selectAll)
+
+    def focusOutEvent(self, event):
+        """Validate when focus leaves."""
+        self._trigger_validation()
+        super().focusOutEvent(event)
+
+    # QDateEdit compatibility methods
+    def setDate(self, date: QDate):
+        """Set the date (for compatibility with QDateEdit)."""
+        if date.isValid():
+            self.setText(date.toString("yyyy-MM-dd"))
+            self._current_date = date
+
+    def date(self) -> QDate:
+        """Get the current date (for compatibility with QDateEdit)."""
+        return self._current_date if self._current_date and self._current_date.isValid() else QDate()
+
+    def dateChanged(self):
+        """For compatibility with QDateEdit signal."""
+        return self.date_changed
 
 
 class AutoSelectLineEdit(QLineEdit):
@@ -224,9 +475,7 @@ class TransactionLogTable(QTableWidget):
         "Quantity",          # QDoubleSpinBox
         "Transaction Price", # QDoubleSpinBox
         "Fees",              # QDoubleSpinBox
-        "Notes",             # QLineEdit
-        "Market Value",      # Read-only label (calculated)
-        "P&L"                # Read-only label (calculated)
+        "Market Value"       # Read-only label (calculated)
     ]
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
@@ -260,25 +509,23 @@ class TransactionLogTable(QTableWidget):
         # Column widths
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)  # Date
-        self.setColumnWidth(0, 120)
+        self.setColumnWidth(0, 130)
         header.setSectionResizeMode(1, QHeaderView.Interactive)  # Ticker
-        self.setColumnWidth(1, 100)
+        self.setColumnWidth(1, 110)
         header.setSectionResizeMode(2, QHeaderView.Fixed)  # Type
         self.setColumnWidth(2, 80)
         header.setSectionResizeMode(3, QHeaderView.Interactive)  # Quantity
-        self.setColumnWidth(3, 100)
-        header.setSectionResizeMode(4, QHeaderView.Interactive)  # Entry Price
-        self.setColumnWidth(4, 110)
+        self.setColumnWidth(3, 110)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)  # Transaction Price
+        self.setColumnWidth(4, 140)
         header.setSectionResizeMode(5, QHeaderView.Interactive)  # Fees
-        self.setColumnWidth(5, 90)
-        header.setSectionResizeMode(6, QHeaderView.Stretch)  # Notes
-        header.setSectionResizeMode(7, QHeaderView.Interactive)  # Market Value
-        self.setColumnWidth(7, 120)
-        header.setSectionResizeMode(8, QHeaderView.Interactive)  # P&L
-        self.setColumnWidth(8, 120)
+        self.setColumnWidth(5, 100)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)  # Market Value (stretches)
 
-        # Table properties
-        self.verticalHeader().setVisible(True)  # Show row numbers
+        # Table properties - fixed row heights
+        v_header = self.verticalHeader()
+        v_header.setVisible(True)  # Show row numbers
+        v_header.setDefaultSectionSize(48)  # Fixed row height
         self.setSelectionBehavior(QTableWidget.SelectRows)
         self.setSelectionMode(QTableWidget.ExtendedSelection)
         self.setAlternatingRowColors(True)
@@ -341,8 +588,7 @@ class TransactionLogTable(QTableWidget):
             "transaction_type": "Buy",
             "quantity": 0.0,
             "entry_price": 0.0,
-            "fees": 0.0,
-            "notes": ""
+            "fees": 0.0
         }
 
         # Shift existing row indices down (before inserting at row 0)
@@ -376,11 +622,10 @@ class TransactionLogTable(QTableWidget):
 
         # Create widgets for blank row
         # Date cell
-        date_edit = AutoSelectDateEdit()
+        date_edit = DateInputWidget()
+        date_edit._parent_table = self  # Pass reference for validation dialogs
         date_edit.setDate(QDate.fromString(blank_transaction["date"], "yyyy-MM-dd"))
-        date_edit.setReadOnly(False)
-        date_edit.lineEdit().setPlaceholderText("YYYY-MM-DD")
-        date_edit.dateChanged.connect(self._on_widget_changed)
+        date_edit.date_changed.connect(self._on_widget_changed)
         self.setCellWidget(0, 0, date_edit)
 
         # Ticker cell
@@ -396,7 +641,7 @@ class TransactionLogTable(QTableWidget):
         type_combo.currentTextChanged.connect(self._on_widget_changed)
         # Hide dropdown arrow and remove all highlight effects
         type_combo.setStyleSheet("""
-            QComboBox { border: none; }
+            QComboBox { border: none; font-size: 14px; }
             QComboBox::drop-down { border: none; width: 0px; }
             QComboBox:focus { border: none; outline: none; }
             QComboBox:on { border: none; }
@@ -421,22 +666,11 @@ class TransactionLogTable(QTableWidget):
         fees_edit.textChanged.connect(self._on_widget_changed)
         self.setCellWidget(0, 5, fees_edit)
 
-        # Notes cell
-        notes_edit = AutoSelectLineEdit(blank_transaction.get("notes", ""))
-        notes_edit.textChanged.connect(self._on_widget_changed)
-        self.setCellWidget(0, 6, notes_edit)
-
-        # Market Value cell (read-only)
+        # Market Value cell (read-only) - column 6
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
         market_value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setItem(0, 7, market_value_item)
-
-        # P&L cell (read-only)
-        pnl_item = QTableWidgetItem("--")
-        pnl_item.setFlags(pnl_item.flags() & ~Qt.ItemIsEditable)
-        pnl_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setItem(0, 8, pnl_item)
+        self.setItem(0, 6, market_value_item)
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(0)
@@ -525,67 +759,55 @@ class TransactionLogTable(QTableWidget):
         # Also store in legacy dict for backwards compatibility
         self._transactions[row] = transaction
 
-        # Date cell: AutoSelectDateEdit widget
-        date_edit = AutoSelectDateEdit()
+        # Date cell
+        date_edit = DateInputWidget()
+        date_edit._parent_table = self  # Pass reference for validation dialogs
         date_edit.setDate(QDate.fromString(transaction["date"], "yyyy-MM-dd"))
-        date_edit.setReadOnly(False)  # Explicit (default is False)
-        date_edit.lineEdit().setPlaceholderText("YYYY-MM-DD")  # Add hint
-        date_edit.dateChanged.connect(self._on_widget_changed)
+        date_edit.date_changed.connect(self._on_widget_changed)
         self.setCellWidget(row, 0, date_edit)
 
-        # Ticker cell: AutoSelectLineEdit
+        # Ticker cell
         ticker_edit = AutoSelectLineEdit(transaction["ticker"])
         ticker_edit.textChanged.connect(self._on_widget_changed)
         self.setCellWidget(row, 1, ticker_edit)
 
-        # Type cell: NoScrollComboBox (wheel-scroll disabled)
+        # Type cell
         type_combo = NoScrollComboBox()
         type_combo.addItems(["Buy", "Sell"])
         type_combo.setCurrentText(transaction["transaction_type"])
         type_combo.currentTextChanged.connect(self._on_widget_changed)
         # Hide dropdown arrow and remove all highlight effects
         type_combo.setStyleSheet("""
-            QComboBox { border: none; }
+            QComboBox { border: none; font-size: 14px; }
             QComboBox::drop-down { border: none; width: 0px; }
             QComboBox:focus { border: none; outline: none; }
             QComboBox:on { border: none; }
         """)
         self.setCellWidget(row, 2, type_combo)
 
-        # Quantity cell: ValidatedNumericLineEdit
+        # Quantity cell
         qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(transaction["quantity"])
         qty_edit.textChanged.connect(self._on_widget_changed)
         self.setCellWidget(row, 3, qty_edit)
 
-        # Transaction Price cell: ValidatedNumericLineEdit
+        # Transaction Price cell
         price_edit = ValidatedNumericLineEdit(min_value=0.01, max_value=1000000, decimals=2, prefix="", show_dash_for_zero=True)
         price_edit.setValue(transaction["entry_price"])
         price_edit.textChanged.connect(self._on_widget_changed)
         self.setCellWidget(row, 4, price_edit)
 
-        # Fees cell: ValidatedNumericLineEdit
+        # Fees cell
         fees_edit = ValidatedNumericLineEdit(min_value=0, max_value=10000, decimals=2, prefix="", show_dash_for_zero=True)
         fees_edit.setValue(transaction["fees"])
         fees_edit.textChanged.connect(self._on_widget_changed)
         self.setCellWidget(row, 5, fees_edit)
 
-        # Notes cell: AutoSelectLineEdit
-        notes_edit = AutoSelectLineEdit(transaction.get("notes", ""))
-        notes_edit.textChanged.connect(self._on_widget_changed)
-        self.setCellWidget(row, 6, notes_edit)
-
-        # Market Value cell: Read-only QTableWidgetItem
+        # Market Value cell (read-only) - column 6
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
         market_value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setItem(row, 7, market_value_item)
-
-        # P&L cell: Read-only QTableWidgetItem
-        pnl_item = QTableWidgetItem("--")
-        pnl_item.setFlags(pnl_item.flags() & ~Qt.ItemIsEditable)
-        pnl_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.setItem(row, 8, pnl_item)
+        self.setItem(row, 6, market_value_item)
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(row)
@@ -643,15 +865,16 @@ class TransactionLogTable(QTableWidget):
         transaction_id = existing_transaction["id"]
 
         try:
+            # Get widgets directly from cells
             date_edit = self.cellWidget(row, 0)
             ticker_edit = self.cellWidget(row, 1)
             type_combo = self.cellWidget(row, 2)
             qty_spin = self.cellWidget(row, 3)
             price_spin = self.cellWidget(row, 4)
             fees_spin = self.cellWidget(row, 5)
-            notes_edit = self.cellWidget(row, 6)
+            # Column 6 is Market Value (read-only item, not widget)
 
-            if not all([date_edit, ticker_edit, type_combo, qty_spin, price_spin, fees_spin, notes_edit]):
+            if not all([date_edit, ticker_edit, type_combo, qty_spin, price_spin, fees_spin]):
                 return None
 
             extracted = {
@@ -661,8 +884,7 @@ class TransactionLogTable(QTableWidget):
                 "transaction_type": type_combo.currentText(),
                 "quantity": qty_spin.value(),
                 "entry_price": price_spin.value(),
-                "fees": fees_spin.value(),
-                "notes": notes_edit.text().strip()
+                "fees": fees_spin.value()
             }
 
             # Preserve is_blank flag if it exists
@@ -676,7 +898,7 @@ class TransactionLogTable(QTableWidget):
 
     def _update_calculated_cells(self, row: int):
         """
-        Update Market Value and P&L cells.
+        Update Market Value cell.
 
         Args:
             row: Row index
@@ -691,32 +913,14 @@ class TransactionLogTable(QTableWidget):
         current_price = self._current_prices.get(ticker)
 
         if current_price is None:
-            self.item(row, 7).setText("--")
-            self.item(row, 8).setText("--")
+            self.item(row, 6).setText("--")  # Market Value is now column 6
             return
 
         # Calculate market value
         market_value = current_price * transaction["quantity"]
 
-        # Calculate P&L
-        cost_basis = PortfolioService.calculate_cost_basis(transaction)
-        if transaction["transaction_type"] == "Buy":
-            pnl = market_value - cost_basis
-        else:  # Sell
-            pnl = -cost_basis - market_value  # Proceeds - current value
-
-        # Update cells
-        self.item(row, 7).setText(f"${market_value:,.2f}")
-
-        pnl_item = self.item(row, 8)
-        pnl_item.setText(f"${pnl:+,.2f}")
-        # Color coding
-        if pnl > 0:
-            pnl_item.setForeground(QColor(76, 153, 0))  # Green
-        elif pnl < 0:
-            pnl_item.setForeground(QColor(200, 50, 50))  # Red
-        else:
-            pnl_item.setForeground(QColor(128, 128, 128))  # Gray
+        # Update cell
+        self.item(row, 6).setText(f"${market_value:,.2f}")  # Market Value is now column 6
 
     def update_current_prices(self, prices: Dict[str, float]):
         """
@@ -843,36 +1047,12 @@ class TransactionLogTable(QTableWidget):
         """
         widgets = []
 
-        # Date widget (col 0)
-        date_widget = self.cellWidget(row, 0)
-        if date_widget:
-            date_widget.installEventFilter(self)
-            widgets.append(date_widget)
-
-        # Ticker widget (col 1)
-        ticker_widget = self.cellWidget(row, 1)
-        if ticker_widget:
-            ticker_widget.installEventFilter(self)
-            widgets.append(ticker_widget)
-
-        # Type widget (col 2)
-        type_widget = self.cellWidget(row, 2)
-        if type_widget:
-            type_widget.installEventFilter(self)
-            widgets.append(type_widget)
-
-        # Quantity, Entry Price, Fees widgets (cols 3, 4, 5)
-        for col in [3, 4, 5]:
+        # Install event filters on all editable columns (0-5)
+        for col in range(6):
             widget = self.cellWidget(row, col)
             if widget:
                 widget.installEventFilter(self)
                 widgets.append(widget)
-
-        # Notes widget (col 6)
-        notes_widget = self.cellWidget(row, 6)
-        if notes_widget:
-            notes_widget.installEventFilter(self)
-            widgets.append(notes_widget)
 
         # Store widget references for this row
         self._row_widgets_map[row] = widgets
@@ -906,8 +1086,10 @@ class TransactionLogTable(QTableWidget):
             key_event = event
             if isinstance(key_event, QKeyEvent):
                 key = key_event.key()
-                # Check for Enter/Return key
-                if key in (Qt.Key_Return, Qt.Key_Enter):
+                modifiers = key_event.modifiers()
+
+                # Check for Enter/Return key (but NOT Shift+Enter - let that through for newlines)
+                if key in (Qt.Key_Return, Qt.Key_Enter) and not (modifiers & Qt.ShiftModifier):
                     # Find which row this widget belongs to
                     row = self._find_row_for_widget(obj)
                     if row is not None:
@@ -1120,10 +1302,10 @@ class TransactionLogTable(QTableWidget):
                 color: #ffffff;
                 gridline-color: #3d3d3d;
                 border: 1px solid #3d3d3d;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableWidget::item {
-                padding: 5px;
+                padding: 8px;
             }
             QTableWidget::item:selected {
                 background-color: #00d4ff;
@@ -1132,18 +1314,18 @@ class TransactionLogTable(QTableWidget):
             QHeaderView::section {
                 background-color: #2d2d2d;
                 color: #cccccc;
-                padding: 5px;
+                padding: 8px;
                 border: 1px solid #3d3d3d;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableCornerButton::section {
                 background-color: #2d2d2d;
                 color: #cccccc;
                 border: 1px solid #3d3d3d;
                 font-weight: bold;
-                font-size: 11px;
-                padding: 5px;
+                font-size: 13px;
+                padding: 8px;
             }
         """
 
@@ -1156,10 +1338,10 @@ class TransactionLogTable(QTableWidget):
                 color: #000000;
                 gridline-color: #cccccc;
                 border: 1px solid #cccccc;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableWidget::item {
-                padding: 5px;
+                padding: 8px;
             }
             QTableWidget::item:selected {
                 background-color: #0066cc;
@@ -1168,18 +1350,18 @@ class TransactionLogTable(QTableWidget):
             QHeaderView::section {
                 background-color: #f5f5f5;
                 color: #333333;
-                padding: 5px;
+                padding: 8px;
                 border: 1px solid #cccccc;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableCornerButton::section {
                 background-color: #f5f5f5;
                 color: #333333;
                 border: 1px solid #cccccc;
                 font-weight: bold;
-                font-size: 11px;
-                padding: 5px;
+                font-size: 13px;
+                padding: 8px;
             }
         """
 
@@ -1192,10 +1374,10 @@ class TransactionLogTable(QTableWidget):
                 color: #e8e8e8;
                 gridline-color: #1a2838;
                 border: 1px solid #1a2838;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableWidget::item {
-                padding: 5px;
+                padding: 8px;
             }
             QTableWidget::item:selected {
                 background-color: #FF8000;
@@ -1204,17 +1386,17 @@ class TransactionLogTable(QTableWidget):
             QHeaderView::section {
                 background-color: #0d1420;
                 color: #a8a8a8;
-                padding: 5px;
+                padding: 8px;
                 border: 1px solid #1a2838;
                 font-weight: bold;
-                font-size: 12px;
+                font-size: 14px;
             }
             QTableCornerButton::section {
                 background-color: #0d1420;
                 color: #a8a8a8;
                 border: 1px solid #1a2838;
                 font-weight: bold;
-                font-size: 11px;
-                padding: 5px;
+                font-size: 13px;
+                padding: 8px;
             }
         """

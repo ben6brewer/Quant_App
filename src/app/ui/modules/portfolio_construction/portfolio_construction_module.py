@@ -14,6 +14,7 @@ from .widgets import (
     AggregatePortfolioTable,
     NewPortfolioDialog,
     LoadPortfolioDialog,
+    RenamePortfolioDialog,
     ViewTabBar
 )
 
@@ -84,6 +85,8 @@ class PortfolioConstructionModule(QWidget):
         self.controls.portfolio_changed.connect(self._on_portfolio_changed)
         self.controls.save_clicked.connect(self._save_portfolio)
         self.controls.new_portfolio_clicked.connect(self._new_portfolio_dialog)
+        self.controls.rename_portfolio_clicked.connect(self._rename_portfolio_dialog)
+        self.controls.delete_portfolio_clicked.connect(self._delete_portfolio_dialog)
         self.controls.home_clicked.connect(self._on_home_clicked)
 
         # Transaction table
@@ -307,6 +310,77 @@ class PortfolioConstructionModule(QWidget):
             self.controls.update_portfolio_list(portfolios, name)
 
             self.unsaved_changes = False
+
+    def _rename_portfolio_dialog(self):
+        """Open rename portfolio dialog."""
+        if not self.current_portfolio:
+            return
+
+        current_name = self.current_portfolio.get("name", "")
+        existing = PortfolioPersistence.list_portfolios()
+        dialog = RenamePortfolioDialog(self.theme_manager, current_name, existing, self)
+
+        if dialog.exec():
+            new_name = dialog.get_name()
+            if new_name and new_name != current_name:
+                success = PortfolioPersistence.rename_portfolio(current_name, new_name)
+                if success:
+                    # Update current portfolio name
+                    self.current_portfolio["name"] = new_name
+                    # Refresh dropdown
+                    portfolios = PortfolioPersistence.list_portfolios()
+                    self.controls.update_portfolio_list(portfolios, new_name)
+                else:
+                    CustomMessageBox.critical(
+                        self.theme_manager,
+                        self,
+                        "Rename Error",
+                        f"Failed to rename portfolio to '{new_name}'."
+                    )
+
+    def _delete_portfolio_dialog(self):
+        """Show confirmation dialog and delete current portfolio."""
+        if not self.current_portfolio:
+            return
+
+        portfolio_name = self.current_portfolio.get("name", "")
+
+        # Confirm deletion
+        reply = CustomMessageBox.question(
+            self.theme_manager,
+            self,
+            "Delete Portfolio",
+            f"Are you sure you want to delete '{portfolio_name}'?\n\nThis action cannot be undone.",
+            CustomMessageBox.Yes | CustomMessageBox.No,
+            CustomMessageBox.No
+        )
+
+        if reply != CustomMessageBox.Yes:
+            return
+
+        # Delete portfolio
+        success = PortfolioPersistence.delete_portfolio(portfolio_name)
+
+        if success:
+            # Get remaining portfolios
+            portfolios = PortfolioPersistence.list_portfolios()
+
+            if not portfolios:
+                # Create new Default portfolio if none left
+                self.current_portfolio = PortfolioPersistence.create_new_portfolio("Default")
+                PortfolioPersistence.save_portfolio(self.current_portfolio)
+                portfolios = ["Default"]
+
+            # Load first available portfolio
+            self.controls.update_portfolio_list(portfolios, portfolios[0])
+            self._load_portfolio(portfolios[0])
+        else:
+            CustomMessageBox.critical(
+                self.theme_manager,
+                self,
+                "Delete Error",
+                f"Failed to delete portfolio '{portfolio_name}'."
+            )
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio selection change in dropdown."""
