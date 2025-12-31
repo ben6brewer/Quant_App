@@ -89,6 +89,10 @@ class TransactionLogTable(QTableWidget):
         # any pending deferred focus callbacks that were queued before the operation
         self._focus_generation: int = 0
 
+        # Track rows where user manually entered execution price (not auto-filled)
+        # Set of row indices - if row is in this set, don't auto-fill the price
+        self._user_entered_price_rows: set = set()
+
         self._setup_table()
         self._apply_theme()
 
@@ -677,6 +681,9 @@ class TransactionLogTable(QTableWidget):
         # Assign sequence number for same-day ordering (higher = newer)
         transaction["sequence"] = self._get_next_sequence()
 
+        # Clear user-entered price tracking for this row (new blank row starts fresh)
+        self._user_entered_price_rows.discard(row)
+
         # Remove old blank entry from storage
         if "BLANK_ROW" in self._transactions_by_id:
             del self._transactions_by_id["BLANK_ROW"]
@@ -1132,6 +1139,7 @@ class TransactionLogTable(QTableWidget):
         self._transactions_by_id.clear()
         self._row_to_id.clear()
         self._transactions.clear()  # Clear legacy storage too
+        self._user_entered_price_rows.clear()  # Clear price tracking
         self._current_prices.clear()  # Clear current prices cache
         self._historical_prices.clear()  # Clear historical prices cache
         self._original_values.clear()  # Clear original values tracking
@@ -1285,6 +1293,13 @@ class TransactionLogTable(QTableWidget):
 
         row, col = self._find_cell_for_widget(widget)
         if row is not None and col is not None:
+            # Track if user manually entered execution price (col 3)
+            # This prevents auto-fill from overwriting user input
+            if col == 3:
+                transaction = self._get_transaction_for_row(row)
+                if transaction and transaction.get("is_blank"):
+                    self._user_entered_price_rows.add(row)
+
             self._on_cell_changed(row, col)
 
     def _on_date_validation_error(self, title: str, message: str):
@@ -1928,7 +1943,7 @@ class TransactionLogTable(QTableWidget):
     def _try_autofill_execution_price(self, row: int) -> None:
         """
         Auto-fill execution price for blank row when date and ticker are filled.
-        Only fills if execution price is currently empty/zero.
+        Only fills if execution price was not manually entered by user.
         Fetches price in background thread to avoid UI lag.
 
         Args:
@@ -1941,13 +1956,16 @@ class TransactionLogTable(QTableWidget):
         if not transaction or not transaction.get("is_blank"):
             return
 
+        # Don't auto-fill if user manually entered a price
+        if row in self._user_entered_price_rows:
+            return
+
         # Get date and ticker values
         ticker = transaction.get("ticker", "").strip().upper()
         tx_date = transaction.get("date", "")
-        entry_price = transaction.get("entry_price", 0.0)
 
-        # Only proceed if date AND ticker are filled AND execution price is empty
-        if not ticker or not tx_date or entry_price > 0:
+        # Only proceed if date AND ticker are filled
+        if not ticker or not tx_date:
             return
 
         # FREE CASH is always $1.00 - no network call needed
@@ -1992,9 +2010,8 @@ class TransactionLogTable(QTableWidget):
         if not transaction or not transaction.get("is_blank"):
             return
 
-        # Don't overwrite if user has entered a value
-        current_price = transaction.get("entry_price", 0.0)
-        if current_price > 0:
+        # Don't overwrite if user manually entered a price
+        if row in self._user_entered_price_rows:
             return
 
         price_widget = self._get_inner_widget(row, 3)
