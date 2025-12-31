@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 
 from app.core.theme_manager import ThemeManager
+from app.services.theme_stylesheet_service import ThemeStylesheetService
 from ..services.portfolio_service import PortfolioService
 
 
@@ -394,123 +395,5 @@ class AggregatePortfolioTable(QTableWidget):
     def _apply_theme(self):
         """Apply theme-specific styling."""
         theme = self.theme_manager.current_theme
-
-        if theme == "light":
-            stylesheet = self._get_light_stylesheet()
-        elif theme == "bloomberg":
-            stylesheet = self._get_bloomberg_stylesheet()
-        else:
-            stylesheet = self._get_dark_stylesheet()
-
+        stylesheet = ThemeStylesheetService.get_table_stylesheet(theme)
         self.setStyleSheet(stylesheet)
-
-    def _get_dark_stylesheet(self) -> str:
-        """Dark theme stylesheet."""
-        return """
-            QTableWidget {
-                background-color: #1e1e1e;
-                alternate-background-color: #232323;
-                color: #ffffff;
-                gridline-color: #3d3d3d;
-                border: 1px solid #3d3d3d;
-                font-size: 14px;
-            }
-            QTableWidget::item {
-                padding: 0px;
-            }
-            QTableWidget::item:selected {
-                background-color: #00d4ff;
-                color: #000000;
-            }
-            QHeaderView::section {
-                background-color: #2d2d2d;
-                color: #cccccc;
-                padding: 8px;
-                border: 1px solid #3d3d3d;
-                font-weight: bold;
-                font-size: 14px;
-                text-align: left;
-            }
-            QTableCornerButton::section {
-                background-color: #2d2d2d;
-                color: #cccccc;
-                border: 1px solid #3d3d3d;
-                font-weight: bold;
-                font-size: 11px;
-                padding: 8px;
-            }
-        """
-
-    def _get_light_stylesheet(self) -> str:
-        """Light theme stylesheet."""
-        return """
-            QTableWidget {
-                background-color: #ffffff;
-                alternate-background-color: #f5f5f5;
-                color: #000000;
-                gridline-color: #cccccc;
-                border: 1px solid #cccccc;
-                font-size: 14px;
-            }
-            QTableWidget::item {
-                padding: 0px;
-            }
-            QTableWidget::item:selected {
-                background-color: #0066cc;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #f5f5f5;
-                color: #333333;
-                padding: 8px;
-                border: 1px solid #cccccc;
-                font-weight: bold;
-                font-size: 14px;
-                text-align: left;
-            }
-            QTableCornerButton::section {
-                background-color: #f5f5f5;
-                color: #333333;
-                border: 1px solid #cccccc;
-                font-weight: bold;
-                font-size: 11px;
-                padding: 8px;
-            }
-        """
-
-    def _get_bloomberg_stylesheet(self) -> str:
-        """Bloomberg theme stylesheet."""
-        return """
-            QTableWidget {
-                background-color: #000814;
-                alternate-background-color: #0a0f1c;
-                color: #e8e8e8;
-                gridline-color: #1a2838;
-                border: 1px solid #1a2838;
-                font-size: 14px;
-            }
-            QTableWidget::item {
-                padding: 0px;
-            }
-            QTableWidget::item:selected {
-                background-color: #FF8000;
-                color: #000000;
-            }
-            QHeaderView::section {
-                background-color: #0d1420;
-                color: #a8a8a8;
-                padding: 8px;
-                border: 1px solid #1a2838;
-                font-weight: bold;
-                font-size: 14px;
-                text-align: left;
-            }
-            QTableCornerButton::section {
-                background-color: #0d1420;
-                color: #a8a8a8;
-                border: 1px solid #1a2838;
-                font-weight: bold;
-                font-size: 11px;
-                padding: 8px;
-            }
-        """
