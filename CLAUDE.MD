@@ -97,8 +97,10 @@ src/app/
 │   └── theme_manager.py       # Dark/Light/Bloomberg themes
 │
 ├── services/                  # SHARED ONLY
-│   ├── market_data.py         # Yahoo Finance fetching
-│   └── favorites_service.py   # Favorites persistence
+│   ├── market_data.py              # Yahoo Finance fetching
+│   ├── favorites_service.py        # Favorites persistence
+│   ├── theme_stylesheet_service.py # Centralized theme colors/styles
+│   └── base_settings_manager.py    # Abstract settings persistence
 │
 ├── ui/
 │   ├── hub_window.py          # Main window, title bar, navigation
@@ -111,7 +113,7 @@ src/app/
 │   │   │   └── overlays/      # resize_handle.py
 │   │   │
 │   │   ├── navigation/        # home_screen.py, module_tile.py, etc.
-│   │   └── common/            # custom_message_box.py
+│   │   └── common/            # Shared widgets (ThemedDialog, DateInputWidget, etc.)
 │   │
 │   └── modules/
 │       └── chart/             # Example module structure
@@ -318,36 +320,23 @@ self._current_ticker = "BTC-USD"
 
 ### 1. Custom Title Bar Pattern
 
-All windows/dialogs use frameless design for theme control:
+All dialogs use `ThemedDialog` base class for frameless design:
 
 ```python
-class CustomDialog(QDialog):
+from app.ui.widgets.common import ThemedDialog
+
+class MyDialog(ThemedDialog):
     def __init__(self, theme_manager, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self._drag_pos = QPoint()
+        super().__init__(theme_manager, "Dialog Title", parent)
 
-        # Create custom title bar with close button
-        self.title_bar = self._create_title_bar("Dialog Title")
-
-        # Enable dragging
-        self.title_bar.mousePressEvent = self._title_bar_mouse_press
-        self.title_bar.mouseMoveEvent = self._title_bar_mouse_move
-
-    def _title_bar_mouse_press(self, event: QMouseEvent):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-
-    def _title_bar_mouse_move(self, event: QMouseEvent):
-        if event.buttons() == Qt.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
+    def _setup_content(self, layout):
+        # Add dialog-specific widgets to layout
+        layout.addWidget(QLabel("Content"))
 ```
 
-**Requirements**:
-- Title label: `background-color: transparent` (critical for all themes)
-- Close button hover: `#d32f2f` red (consistent across themes)
-- Main windows: Add minimize/maximize buttons
-- Dialogs: Close button only
+**ThemedDialog provides**: Custom title bar, drag-to-move, theme styling, close button.
+
+**For main windows**: Implement title bar manually with minimize/maximize buttons.
 
 ### 2. Widget Masking for Overlays
 
@@ -454,6 +443,33 @@ Custom axis formatter maps numeric → date strings (see `DateIndexAxisItem`)
 ---
 
 ## Reusable Components Reference
+
+### Shared Base Classes & Services
+
+**ThemedDialog** (`common/themed_dialog.py`, ~130 lines):
+- Base class for frameless dialogs with custom title bar
+- Drag-to-move, theme-aware styling via ThemeStylesheetService
+- Subclasses override `_setup_content(layout)` to add widgets
+
+**ThemeStylesheetService** (`services/theme_stylesheet_service.py`):
+- Centralized theme colors (dark/light/bloomberg)
+- Methods: `get_colors()`, `get_table_stylesheet()`, `get_dialog_stylesheet()`, `get_line_edit_stylesheet()`, `get_combobox_stylesheet()`
+- All theme colors defined in `COLORS` dict for easy maintenance
+
+**BaseSettingsManager** (`services/base_settings_manager.py`):
+- Abstract base for module settings persistence
+- Subclasses define `DEFAULT_SETTINGS` property and `settings_filename`
+- Provides: `get_setting()`, `update_settings()`, `save_settings()`, `load_settings()`
+
+### Common Widgets (`ui/widgets/common/`)
+
+- **DateInputWidget**: Date input with live dash formatting, validation
+- **AutoSelectLineEdit**: Auto-select on focus, auto-capitalize
+- **ValidatedNumericLineEdit**: Numeric input with min/max validation
+- **NoScrollComboBox**: ComboBox that ignores scroll wheel
+- **CustomMessageBox**: Themed message dialogs
+
+---
 
 ### BaseChart (~600 lines)
 
