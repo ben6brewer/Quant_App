@@ -1553,11 +1553,32 @@ class TransactionLogTable(QTableWidget):
         """Delete selected rows and emit signals."""
         selected_rows = sorted(set(idx.row() for idx in self.selectedIndexes()), reverse=True)
 
+        # Get all current transactions for validation
+        all_transactions = self.get_all_transactions()
+        deleted_any = False
+
         for row in selected_rows:
             # Get transaction using UUID-based lookup
             transaction = self._get_transaction_for_row(row)
             if transaction:
+                # Skip blank rows and FREE CASH summary row
+                if transaction.get("is_blank") or transaction.get("is_summary"):
+                    continue
+
                 transaction_id = transaction["id"]
+
+                # Validate that deletion won't break the portfolio
+                can_delete, error_msg = PortfolioService.validate_transaction_deletion(
+                    all_transactions, transaction
+                )
+                if not can_delete:
+                    CustomMessageBox.warning(
+                        self.theme_manager,
+                        self,
+                        "Cannot Delete Transaction",
+                        error_msg
+                    )
+                    continue  # Skip this deletion, try next selected row
 
                 # Remove from UUID-based storage
                 if transaction_id in self._transactions_by_id:
@@ -1575,28 +1596,33 @@ class TransactionLogTable(QTableWidget):
                 if row in self._transactions:
                     del self._transactions[row]
 
+                # Remove from all_transactions for subsequent validation
+                all_transactions = [tx for tx in all_transactions if tx.get("id") != transaction_id]
+
                 # Remove row from table
                 self.removeRow(row)
 
                 # Emit signal
                 self.transaction_deleted.emit(transaction_id)
+                deleted_any = True
 
-        # Rebuild transaction map (row indices shifted after deletion)
-        self._rebuild_transaction_map()
+        if deleted_any:
+            # Rebuild transaction map (row indices shifted after deletion)
+            self._rebuild_transaction_map()
 
-        # Also rebuild legacy map
-        new_transactions = {}
-        for row in range(self.rowCount()):
-            tx = self._get_transaction_for_row(row)
-            if tx:
-                new_transactions[row] = tx
-        self._transactions = new_transactions
+            # Also rebuild legacy map
+            new_transactions = {}
+            for row in range(self.rowCount()):
+                tx = self._get_transaction_for_row(row)
+                if tx:
+                    new_transactions[row] = tx
+            self._transactions = new_transactions
 
-        # Update all stored row positions after deletion
-        self._update_row_positions(0)
+            # Update all stored row positions after deletion
+            self._update_row_positions(0)
 
-        # Update FREE CASH summary row
-        self._update_free_cash_summary_row()
+            # Update FREE CASH summary row
+            self._update_free_cash_summary_row()
 
     def _find_row_for_widget(self, widget: QWidget) -> Optional[int]:
         """
@@ -1828,7 +1854,37 @@ class TransactionLogTable(QTableWidget):
                             transaction_id = transaction.get("id")
 
                             if not ticker or quantity == 0.0:
-                                # Empty ticker or zero quantity - delete row
+                                # Empty ticker or zero quantity - validate before deleting
+                                # Use original values to check if deletion would break portfolio
+                                original = self._original_values.get(transaction_id, {})
+                                if original:
+                                    # Build original transaction for validation
+                                    original_tx = {
+                                        "id": transaction_id,
+                                        "ticker": original.get("ticker", ""),
+                                        "date": original.get("date", ""),
+                                        "quantity": original.get("quantity", 0.0),
+                                        "entry_price": original.get("entry_price", 0.0),
+                                        "fees": original.get("fees", 0.0),
+                                        "transaction_type": original.get("transaction_type", "Buy")
+                                    }
+                                    all_transactions = self.get_all_transactions()
+                                    can_delete, error_msg = PortfolioService.validate_transaction_deletion(
+                                        all_transactions, original_tx
+                                    )
+                                    if not can_delete:
+                                        self._skip_focus_validation = True
+                                        CustomMessageBox.warning(
+                                            self.theme_manager,
+                                            self,
+                                            "Cannot Delete Transaction",
+                                            error_msg
+                                        )
+                                        # Revert to original values
+                                        self._revert_all_fields(row, original)
+                                        return True  # Consume event
+
+                                # Validation passed or no original - delete row
                                 self._delete_empty_row(row)
                                 return True  # Consume event
                             else:
@@ -1880,7 +1936,7 @@ class TransactionLogTable(QTableWidget):
 
                                     # Validate transaction safeguards (cash balance, position, chain)
                                     safeguard_valid, safeguard_error = self._validate_transaction_safeguards(
-                                        row, transaction, is_new=False
+                                        row, transaction, is_new=False, original_date=original_date
                                     )
                                     if not safeguard_valid:
                                         self._skip_focus_validation = True
@@ -2001,7 +2057,36 @@ class TransactionLogTable(QTableWidget):
         transaction_id = transaction.get("id")
 
         if not ticker or quantity == 0.0:
-            # Empty ticker or zero quantity - delete this row
+            # Empty ticker or zero quantity - validate before deleting
+            # Use original values to check if deletion would break portfolio
+            original = self._original_values.get(transaction_id, {})
+            if original:
+                # Build original transaction for validation
+                original_tx = {
+                    "id": transaction_id,
+                    "ticker": original.get("ticker", ""),
+                    "date": original.get("date", ""),
+                    "quantity": original.get("quantity", 0.0),
+                    "entry_price": original.get("entry_price", 0.0),
+                    "fees": original.get("fees", 0.0),
+                    "transaction_type": original.get("transaction_type", "Buy")
+                }
+                all_transactions = self.get_all_transactions()
+                can_delete, error_msg = PortfolioService.validate_transaction_deletion(
+                    all_transactions, original_tx
+                )
+                if not can_delete:
+                    CustomMessageBox.warning(
+                        self.theme_manager,
+                        self,
+                        "Cannot Delete Transaction",
+                        error_msg
+                    )
+                    # Revert to original values
+                    self._revert_all_fields(row, original)
+                    return
+
+            # Validation passed or no original - delete row
             self._delete_empty_row(row)
         else:
             # Has ticker and quantity - validate ticker and date, then fetch prices
@@ -2049,7 +2134,7 @@ class TransactionLogTable(QTableWidget):
 
             # Validate transaction safeguards (cash balance, position, chain)
             safeguard_valid, safeguard_error = self._validate_transaction_safeguards(
-                row, transaction, is_new=False
+                row, transaction, is_new=False, original_date=original_date
             )
             if not safeguard_valid:
                 CustomMessageBox.warning(
@@ -2249,7 +2334,8 @@ class TransactionLogTable(QTableWidget):
         self,
         row: int,
         transaction: Dict[str, Any],
-        is_new: bool = False
+        is_new: bool = False,
+        original_date: str = ""
     ) -> Tuple[bool, str]:
         """
         Validate transaction safeguards (cash balance, position, chain).
@@ -2258,6 +2344,7 @@ class TransactionLogTable(QTableWidget):
             row: Row index
             transaction: Transaction to validate
             is_new: True if this is a new transaction (blank row transition)
+            original_date: Original date before edit (for detecting date adjustments)
 
         Returns:
             Tuple of (is_valid, error_message)
@@ -2267,7 +2354,7 @@ class TransactionLogTable(QTableWidget):
 
         # Validate using PortfolioService
         return PortfolioService.validate_transaction_safeguards(
-            all_transactions, transaction, is_new
+            all_transactions, transaction, is_new, original_date
         )
 
     def _delete_empty_row(self, row: int):

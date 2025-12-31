@@ -887,7 +887,8 @@ class PortfolioService:
     def validate_transaction_safeguards(
         transactions: List[Dict[str, Any]],
         transaction: Dict[str, Any],
-        is_new: bool = False
+        is_new: bool = False,
+        original_date: str = ""
     ) -> Tuple[bool, str]:
         """
         Validate transaction safeguards (cash balance, position, chain).
@@ -896,6 +897,7 @@ class PortfolioService:
             transactions: List of all existing transactions
             transaction: Transaction to validate (new or edited)
             is_new: True if this is a new transaction
+            original_date: Original date before edit (for detecting date adjustments)
 
         Returns:
             Tuple of (is_valid, error_message)
@@ -958,8 +960,31 @@ class PortfolioService:
 
         # If editing an existing transaction, validate the chain
         if not is_new:
+            # Detect FREE CASH deposit date adjustment (moving date backwards)
+            # This is a special case where user is adjusting when cash was deposited
+            # Moving a deposit date backwards should always be allowed as it only
+            # makes cash available earlier (helps subsequent transactions)
+            is_free_cash_deposit_moving_back = (
+                ticker == PortfolioService.FREE_CASH_TICKER
+                and tx_type == "Buy"
+                and original_date
+                and tx_date <= original_date
+            )
+
+            # Detect FREE CASH deposit moving forward - need to validate from original date
+            # to catch any transactions that would now be before the deposit
+            is_free_cash_deposit_moving_forward = (
+                ticker == PortfolioService.FREE_CASH_TICKER
+                and tx_type == "Buy"
+                and original_date
+                and tx_date > original_date
+            )
+
+            # Pass original_date when moving forward so validation starts from there
+            validation_start_date = original_date if is_free_cash_deposit_moving_forward else ""
+
             chain_valid, chain_error = PortfolioService.validate_transaction_chain(
-                transactions, transaction
+                transactions, transaction, is_free_cash_deposit_moving_back, validation_start_date
             )
             if not chain_valid:
                 return (False, chain_error)
@@ -969,7 +994,9 @@ class PortfolioService:
     @staticmethod
     def validate_transaction_chain(
         transactions: List[Dict[str, Any]],
-        edited_transaction: Dict[str, Any]
+        edited_transaction: Dict[str, Any],
+        skip_validation: bool = False,
+        validation_start_date: str = ""
     ) -> Tuple[bool, str]:
         """
         Validate that editing a transaction doesn't break subsequent transactions.
@@ -977,12 +1004,27 @@ class PortfolioService:
         Args:
             transactions: List of all transactions (with edited transaction already updated)
             edited_transaction: The transaction that was edited
+            skip_validation: True to skip chain validation entirely (e.g., FREE CASH deposit
+                moving to an earlier date)
+            validation_start_date: Override date to start validation from. Used when a
+                FREE CASH deposit moves forward - validation must start from the original
+                date to catch transactions that would now be before the deposit.
 
         Returns:
             Tuple of (is_valid, error_message)
         """
+        # When adjusting a FREE CASH deposit date backwards, skip chain validation
+        # Moving a deposit earlier only makes cash available sooner, which can only
+        # help (not break) subsequent transactions
+        if skip_validation:
+            return (True, "")
+
         edit_date = edited_transaction.get("date", "")
         edit_id = edited_transaction.get("id")
+
+        # Use validation_start_date if provided (for FREE CASH deposit moving forward)
+        # This ensures we validate transactions between old and new dates
+        check_from_date = validation_start_date if validation_start_date else edit_date
 
         # Build list with edited transaction
         all_transactions = [
@@ -1011,7 +1053,7 @@ class PortfolioService:
                 else:  # Sell = Withdrawal
                     # Validate before applying
                     withdrawal = qty + fees
-                    if cash_balance < withdrawal and tx_date >= edit_date:
+                    if cash_balance < withdrawal and tx_date >= check_from_date:
                         return (
                             False,
                             f"This change would cause insufficient cash for withdrawal on {tx_date}.\n"
@@ -1025,7 +1067,7 @@ class PortfolioService:
                 if tx_type == "Buy":
                     cost = qty * price + fees
                     # Validate cash before applying
-                    if cash_balance < cost and tx_date >= edit_date:
+                    if cash_balance < cost and tx_date >= check_from_date:
                         return (
                             False,
                             f"This change would cause insufficient cash for {ticker} purchase on {tx_date}.\n"
@@ -1035,11 +1077,104 @@ class PortfolioService:
                     positions[ticker] += qty
                 else:  # Sell
                     # Validate position before applying
-                    if positions[ticker] < qty and tx_date >= edit_date:
+                    if positions[ticker] < qty and tx_date >= check_from_date:
                         return (
                             False,
                             f"This change would cause insufficient shares for {ticker} sale on {tx_date}.\n"
                             f"Available: {max(0, positions[ticker]):,.4f}, Needed: {qty:,.4f}"
+                        )
+                    positions[ticker] -= qty
+                    proceeds = qty * price - fees
+                    cash_balance += proceeds
+
+        return (True, "")
+
+    @staticmethod
+    def validate_transaction_deletion(
+        transactions: List[Dict[str, Any]],
+        transaction_to_delete: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """
+        Validate that deleting a transaction won't break the portfolio.
+
+        This is especially important for FREE CASH deposits - deleting one
+        could leave subsequent transactions without sufficient funds.
+
+        Args:
+            transactions: List of all current transactions
+            transaction_to_delete: The transaction being deleted
+
+        Returns:
+            Tuple of (can_delete, error_message)
+        """
+        delete_id = transaction_to_delete.get("id")
+        delete_ticker = transaction_to_delete.get("ticker", "").upper()
+        delete_type = transaction_to_delete.get("transaction_type", "")
+        delete_date = transaction_to_delete.get("date", "")
+
+        # Build list without the transaction to delete
+        remaining_transactions = [
+            tx for tx in transactions if tx.get("id") != delete_id
+        ]
+
+        # If no remaining transactions, deletion is always valid
+        if not remaining_transactions:
+            return (True, "")
+
+        # Sort by date
+        sorted_txs = sorted(remaining_transactions, key=lambda x: x.get("date", ""))
+
+        # Track running balances
+        cash_balance = 0.0
+        positions: Dict[str, float] = {}
+
+        # Find first problem after the deletion date
+        for tx in sorted_txs:
+            tx_date = tx.get("date", "")
+            ticker = tx.get("ticker", "").upper()
+            tx_type = tx.get("transaction_type", "")
+            qty = float(tx.get("quantity", 0))
+            price = float(tx.get("entry_price", 0))
+            fees = float(tx.get("fees", 0))
+
+            if ticker == PortfolioService.FREE_CASH_TICKER:
+                if tx_type == "Buy":  # Deposit
+                    cash_balance += qty - fees
+                else:  # Sell = Withdrawal
+                    withdrawal = qty + fees
+                    if cash_balance < withdrawal and tx_date >= delete_date:
+                        return (
+                            False,
+                            f"Cannot delete this deposit. It would cause insufficient cash "
+                            f"for withdrawal on {tx_date}.\n\n"
+                            f"Available: ${max(0, cash_balance):,.2f}, Needed: ${withdrawal:,.2f}\n\n"
+                            f"Please delete or modify transactions that depend on this cash first."
+                        )
+                    cash_balance -= withdrawal
+            else:
+                if ticker not in positions:
+                    positions[ticker] = 0.0
+
+                if tx_type == "Buy":
+                    cost = qty * price + fees
+                    if cash_balance < cost and tx_date >= delete_date:
+                        return (
+                            False,
+                            f"Cannot delete this deposit. It would cause insufficient cash "
+                            f"for {ticker} purchase on {tx_date}.\n\n"
+                            f"Available: ${max(0, cash_balance):,.2f}, Needed: ${cost:,.2f}\n\n"
+                            f"Please delete or modify transactions that depend on this cash first."
+                        )
+                    cash_balance -= cost
+                    positions[ticker] += qty
+                else:  # Sell
+                    if positions[ticker] < qty and tx_date >= delete_date:
+                        return (
+                            False,
+                            f"Cannot delete this transaction. It would cause insufficient shares "
+                            f"for {ticker} sale on {tx_date}.\n\n"
+                            f"Available: {max(0, positions[ticker]):,.4f}, Needed: {qty:,.4f}\n\n"
+                            f"Please delete or modify transactions that depend on this position first."
                         )
                     positions[ticker] -= qty
                     proceeds = qty * price - fees

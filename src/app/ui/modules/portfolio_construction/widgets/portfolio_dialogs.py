@@ -637,15 +637,6 @@ class LoadPortfolioDialog(QDialog):
 
         name = current_item.text()
 
-        if name == "Default":
-            CustomMessageBox.warning(
-                self.theme_manager,
-                self,
-                "Cannot Delete",
-                "Cannot delete the Default portfolio."
-            )
-            return
-
         reply = CustomMessageBox.question(
             self.theme_manager,
             self,

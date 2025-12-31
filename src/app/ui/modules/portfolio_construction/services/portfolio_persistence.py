@@ -107,9 +107,6 @@ class PortfolioPersistence:
         Returns:
             True if deleted successfully, False otherwise
         """
-        if name == cls._DEFAULT_PORTFOLIO:
-            return False  # Prevent deleting default portfolio
-
         path = cls._PORTFOLIOS_DIR / f"{name}.json"
         if path.exists():
             try:
