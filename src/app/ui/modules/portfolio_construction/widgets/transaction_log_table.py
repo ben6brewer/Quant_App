@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional, Tuple
 from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractButton, QWidget, QHBoxLayout
+    QAbstractButton, QWidget, QHBoxLayout, QApplication, QLineEdit
 )
 from PySide6.QtCore import Qt, Signal, QDate, QTimer, QEvent
 

@@ -5,11 +5,13 @@ from .date_input_widget import DateInputWidget
 from .auto_select_line_edit import AutoSelectLineEdit
 from .validated_numeric_line_edit import ValidatedNumericLineEdit
 from .no_scroll_combobox import NoScrollComboBox
+from .themed_dialog import ThemedDialog
 
 __all__ = [
     'CustomMessageBox',
     'DateInputWidget',
     'AutoSelectLineEdit',
     'ValidatedNumericLineEdit',
-    'NoScrollComboBox'
+    'NoScrollComboBox',
+    'ThemedDialog'
 ]

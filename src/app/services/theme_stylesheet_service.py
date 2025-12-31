@@ -173,3 +173,173 @@ class ThemeStylesheetService:
                 selection-background-color: {c['accent_selection']};
             }}
         """
+
+    @classmethod
+    def get_dialog_stylesheet(cls, theme: str) -> str:
+        """Get QDialog stylesheet for themed dialogs.
+
+        Includes styling for:
+        - Dialog background and title bar
+        - Labels (regular and description)
+        - Line edits
+        - Buttons (regular and title bar close)
+        - List widgets
+        - Combo boxes
+        - Radio buttons and checkboxes
+        """
+        c = cls.get_colors(theme)
+
+        # Additional colors for dialogs
+        bg_pressed = "#1a1a1a" if theme == "dark" else "#d0d0d0" if theme == "light" else "#060a10"
+        bg_hover = "#3d3d3d" if theme == "dark" else "#e8e8e8" if theme == "light" else "#1a2838"
+        text_desc = "#888888" if theme == "dark" else "#666666" if theme == "light" else "#666666"
+        text_disabled = "#666666" if theme == "dark" else "#999999" if theme == "light" else "#555555"
+
+        return f"""
+            QDialog {{
+                background-color: {c['bg']};
+                color: {c['text']};
+            }}
+            QWidget#titleBar {{
+                background-color: {c['bg_header']};
+            }}
+            QLabel#titleLabel {{
+                color: {c['text']};
+                font-size: 14px;
+                font-weight: bold;
+                background-color: transparent;
+            }}
+            QPushButton#titleBarCloseButton {{
+                background-color: transparent;
+                color: {c['text']};
+                border: none;
+                font-size: 16px;
+            }}
+            QPushButton#titleBarCloseButton:hover {{
+                background-color: #d32f2f;
+                color: #ffffff;
+            }}
+            QLabel {{
+                color: {c['text_muted']};
+                font-size: 13px;
+            }}
+            QLabel#descriptionLabel {{
+                color: {text_desc};
+                font-size: 12px;
+            }}
+            QLineEdit {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
+                border-radius: 3px;
+                padding: 5px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {c['accent']};
+            }}
+            QListWidget {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
+                border-radius: 3px;
+                font-size: 13px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {c['accent']};
+                color: {c['text_on_accent']};
+            }}
+            QListWidget::item:hover {{
+                background-color: {bg_hover};
+            }}
+            QComboBox {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
+                border-radius: 3px;
+                padding: 5px 10px;
+                font-size: 13px;
+            }}
+            QComboBox:hover {{
+                border-color: {c['accent']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {c['text']};
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                selection-background-color: {c['accent']};
+                selection-color: {c['text_on_accent']};
+                font-size: 13px;
+                padding: 4px;
+            }}
+            QRadioButton {{
+                color: {c['text']};
+                font-size: 13px;
+                spacing: 8px;
+            }}
+            QRadioButton::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid {c['border']};
+                background-color: {c['bg_header']};
+            }}
+            QRadioButton::indicator:checked {{
+                border-color: {c['accent']};
+                background-color: {c['accent']};
+            }}
+            QRadioButton::indicator:hover {{
+                border-color: {c['accent']};
+            }}
+            QCheckBox {{
+                color: {c['text']};
+                font-size: 13px;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 2px solid {c['border']};
+                background-color: {c['bg_header']};
+            }}
+            QCheckBox::indicator:checked {{
+                border-color: {c['accent']};
+                background-color: {c['accent']};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {c['accent']};
+            }}
+            QCheckBox:disabled {{
+                color: {text_disabled};
+            }}
+            QCheckBox::indicator:disabled {{
+                border-color: {c['bg_header']};
+                background-color: {bg_pressed};
+            }}
+            QPushButton {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
+                border-radius: 3px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {bg_hover};
+                border-color: {c['accent']};
+            }}
+            QPushButton:pressed {{
+                background-color: {bg_pressed};
+            }}
+        """
