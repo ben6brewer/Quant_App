@@ -139,6 +139,7 @@ class TransactionLogTable(QTableWidget):
 
         # Enable smooth pixel-based scrolling instead of item-based
         self.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
+        self.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
 
         # Disable built-in sorting - we handle it manually to keep blank row pinned at top
         self.setSortingEnabled(False)

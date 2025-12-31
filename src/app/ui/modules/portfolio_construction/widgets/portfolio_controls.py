@@ -1,8 +1,32 @@
 """Portfolio Controls Widget - Top Control Bar"""
 
 from typing import List
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton, QAbstractItemView, QListView
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QWheelEvent
+
+
+class SmoothScrollListView(QListView):
+    """QListView with smoother, slower scrolling for combo box dropdowns."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+    def wheelEvent(self, event: QWheelEvent):
+        """Override wheel event to reduce scroll speed."""
+        # Get the scroll delta (typically 120 per notch)
+        delta = event.angleDelta().y()
+
+        # Reduce scroll speed by scrolling fewer pixels per wheel notch
+        # Default is ~3 items worth, we want ~1 item worth (smoother)
+        pixels_to_scroll = int(delta / 4)  # Divide by 4 for smoother scrolling
+
+        # Get current scroll position and update
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
+
+        event.accept()
 
 from app.core.theme_manager import ThemeManager
 
@@ -53,8 +77,13 @@ class PortfolioControls(QWidget):
         self.portfolio_label.setObjectName("portfolio_label")
         layout.addWidget(self.portfolio_label)
         self.portfolio_combo = QComboBox()
-        self.portfolio_combo.setFixedWidth(200)
-        self.portfolio_combo.setFixedHeight(36)
+        self.portfolio_combo.setFixedWidth(250)
+        self.portfolio_combo.setFixedHeight(45)
+        self.portfolio_combo.setPlaceholderText("Select Portfolio...")
+        # Use custom smooth scroll view for the dropdown
+        smooth_view = SmoothScrollListView(self.portfolio_combo)
+        smooth_view.setAlternatingRowColors(True)
+        self.portfolio_combo.setView(smooth_view)
         self.portfolio_combo.currentTextChanged.connect(self._on_portfolio_changed)
         layout.addWidget(self.portfolio_combo)
 
@@ -105,23 +134,20 @@ class PortfolioControls(QWidget):
         if name == "Create New Portfolio":
             # Reset to previous selection before emitting new portfolio signal
             self.portfolio_combo.blockSignals(True)
-            # Find first real portfolio (not special items)
+            # Find first real portfolio (not "Create New Portfolio")
             found_portfolio = False
             for i in range(self.portfolio_combo.count()):
                 item_text = self.portfolio_combo.itemText(i)
-                if item_text not in ("Create New Portfolio", "Select Portfolio..."):
+                if item_text != "Create New Portfolio":
                     self.portfolio_combo.setCurrentIndex(i)
                     found_portfolio = True
                     break
             if not found_portfolio:
-                # No portfolios exist, reset to placeholder
-                self.portfolio_combo.setCurrentIndex(0)
+                # No portfolios exist, reset to placeholder (index -1 shows placeholder)
+                self.portfolio_combo.setCurrentIndex(-1)
             self.portfolio_combo.blockSignals(False)
             # Emit signal to create new portfolio
             self.new_portfolio_clicked.emit()
-        elif name == "Select Portfolio...":
-            # Placeholder selected, do nothing
-            pass
         elif name:
             self.portfolio_changed.emit(name)
 
@@ -148,16 +174,14 @@ class PortfolioControls(QWidget):
         """
         self.portfolio_combo.blockSignals(True)
         self.portfolio_combo.clear()
-        # Add placeholder as first option
-        self.portfolio_combo.addItem("Select Portfolio...")
-        # Add "Create New Portfolio" as second option
+        # Add "Create New Portfolio" as first option
         self.portfolio_combo.addItem("Create New Portfolio")
         self.portfolio_combo.addItems(portfolios)
         if current and current in portfolios:
             self.portfolio_combo.setCurrentText(current)
         else:
-            # Default to placeholder (no portfolio selected)
-            self.portfolio_combo.setCurrentIndex(0)
+            # Default to placeholder (index -1 shows placeholder text)
+            self.portfolio_combo.setCurrentIndex(-1)
         self.portfolio_combo.blockSignals(False)
 
         # Update button states based on whether a portfolio is selected
@@ -183,8 +207,8 @@ class PortfolioControls(QWidget):
             Portfolio name or empty string
         """
         current = self.portfolio_combo.currentText()
-        # Return empty string for placeholder/special items
-        if current in ("Select Portfolio...", "Create New Portfolio"):
+        # Return empty string for special items or placeholder (empty text)
+        if not current or current == "Create New Portfolio":
             return ""
         return current
 
@@ -222,30 +246,42 @@ class PortfolioControls(QWidget):
                 color: #ffffff;
                 border: 1px solid #3d3d3d;
                 border-radius: 3px;
-                padding: 5px 10px;
-                font-size: 15px;
+                padding: 8px 12px;
+                font-size: 16px;
             }
             QComboBox:hover {
                 border-color: #00d4ff;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 20px;
+                width: 24px;
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid #ffffff;
-                margin-right: 8px;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 7px solid #ffffff;
+                margin-right: 10px;
             }
             QComboBox QAbstractItemView {
                 background-color: #2d2d2d;
                 color: #ffffff;
                 selection-background-color: #00d4ff;
                 selection-color: #000000;
-                font-size: 14px;
+                font-size: 15px;
                 padding: 4px;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 10px 12px;
+                min-height: 28px;
+            }
+            QComboBox QAbstractItemView::item:alternate {
+                background-color: #252525;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #00d4ff;
+                color: #000000;
             }
             QPushButton {
                 background-color: #2d2d2d;
@@ -311,30 +347,42 @@ class PortfolioControls(QWidget):
                 color: #000000;
                 border: 1px solid #cccccc;
                 border-radius: 3px;
-                padding: 5px 10px;
-                font-size: 15px;
+                padding: 8px 12px;
+                font-size: 16px;
             }
             QComboBox:hover {
                 border-color: #0066cc;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 20px;
+                width: 24px;
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid #000000;
-                margin-right: 8px;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 7px solid #000000;
+                margin-right: 10px;
             }
             QComboBox QAbstractItemView {
                 background-color: #f5f5f5;
                 color: #000000;
                 selection-background-color: #0066cc;
                 selection-color: #ffffff;
-                font-size: 14px;
+                font-size: 15px;
                 padding: 4px;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 10px 12px;
+                min-height: 28px;
+            }
+            QComboBox QAbstractItemView::item:alternate {
+                background-color: #e8e8e8;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #0066cc;
+                color: #ffffff;
             }
             QPushButton {
                 background-color: #f5f5f5;
@@ -400,30 +448,42 @@ class PortfolioControls(QWidget):
                 color: #e8e8e8;
                 border: 1px solid #1a2838;
                 border-radius: 3px;
-                padding: 5px 10px;
-                font-size: 15px;
+                padding: 8px 12px;
+                font-size: 16px;
             }
             QComboBox:hover {
                 border-color: #FF8000;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 20px;
+                width: 24px;
             }
             QComboBox::down-arrow {
                 image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid #e8e8e8;
-                margin-right: 8px;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 7px solid #e8e8e8;
+                margin-right: 10px;
             }
             QComboBox QAbstractItemView {
                 background-color: #0d1420;
                 color: #e8e8e8;
                 selection-background-color: #FF8000;
                 selection-color: #000000;
-                font-size: 14px;
+                font-size: 15px;
                 padding: 4px;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 10px 12px;
+                min-height: 28px;
+            }
+            QComboBox QAbstractItemView::item:alternate {
+                background-color: #0a1018;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #FF8000;
+                color: #000000;
             }
             QPushButton {
                 background-color: #0d1420;
