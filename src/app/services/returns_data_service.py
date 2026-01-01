@@ -725,6 +725,60 @@ class ReturnsDataService:
     # =========================================================================
 
     @classmethod
+    def get_distribution_statistics(cls, returns: pd.Series) -> Dict[str, float]:
+        """
+        Calculate distribution statistics for a returns series.
+
+        This method computes standard statistical measures used in distribution
+        analysis, suitable for histograms, risk reports, and performance summaries.
+
+        Args:
+            returns: Series of returns (as decimals, e.g., 0.05 = 5%)
+
+        Returns:
+            Dict with keys:
+            - mean: Average return
+            - std: Standard deviation (sample, ddof=1)
+            - skew: Skewness (third moment, asymmetry)
+            - kurtosis: Excess kurtosis (fourth moment, tail risk)
+            - min: Minimum return
+            - max: Maximum return
+            - count: Number of observations
+        """
+        if returns is None or returns.empty:
+            return {
+                "mean": float("nan"),
+                "std": float("nan"),
+                "skew": float("nan"),
+                "kurtosis": float("nan"),
+                "min": float("nan"),
+                "max": float("nan"),
+                "count": 0,
+            }
+
+        clean_returns = returns.dropna()
+        if clean_returns.empty:
+            return {
+                "mean": float("nan"),
+                "std": float("nan"),
+                "skew": float("nan"),
+                "kurtosis": float("nan"),
+                "min": float("nan"),
+                "max": float("nan"),
+                "count": 0,
+            }
+
+        return {
+            "mean": clean_returns.mean(),
+            "std": clean_returns.std(ddof=1),
+            "skew": clean_returns.skew(),
+            "kurtosis": clean_returns.kurtosis(),
+            "min": clean_returns.min(),
+            "max": clean_returns.max(),
+            "count": len(clean_returns),
+        }
+
+    @classmethod
     def get_portfolio_volatility(
         cls,
         portfolio_name: str,
@@ -1137,3 +1191,424 @@ class ReturnsDataService:
             days_under_water.iloc[i] = current_underwater_days
 
         return days_under_water
+
+    # =========================================================================
+    # Risk-Adjusted Performance Metrics
+    # =========================================================================
+
+    @classmethod
+    def get_sharpe_ratio(
+        cls,
+        returns: pd.Series,
+        risk_free_rate: float = 0.0,
+    ) -> float:
+        """
+        Calculate the Sharpe ratio for a returns series.
+
+        Sharpe ratio measures risk-adjusted return: (mean return - risk-free rate) / volatility.
+        Higher values indicate better risk-adjusted performance.
+
+        Args:
+            returns: Series of returns (as decimals, e.g., 0.05 = 5%)
+            risk_free_rate: Annualized risk-free rate (as decimal, e.g., 0.05 = 5%)
+
+        Returns:
+            Annualized Sharpe ratio, or NaN if insufficient data
+        """
+        if returns is None or returns.empty:
+            return float("nan")
+
+        clean_returns = returns.dropna()
+        if len(clean_returns) < 2:
+            return float("nan")
+
+        # Convert annualized risk-free rate to daily
+        daily_rf = risk_free_rate / 252
+
+        # Calculate excess returns
+        excess_returns = clean_returns - daily_rf
+
+        # Calculate Sharpe ratio
+        std = excess_returns.std(ddof=1)
+        if std == 0 or np.isnan(std):
+            return float("nan")
+
+        # Annualize: multiply by sqrt(252)
+        return (excess_returns.mean() / std) * np.sqrt(252)
+
+    @classmethod
+    def get_sortino_ratio(
+        cls,
+        returns: pd.Series,
+        risk_free_rate: float = 0.0,
+        target_return: float = 0.0,
+    ) -> float:
+        """
+        Calculate the Sortino ratio for a returns series.
+
+        Sortino ratio is similar to Sharpe but only penalizes downside volatility,
+        making it more appropriate for asymmetric return distributions.
+
+        Args:
+            returns: Series of returns (as decimals, e.g., 0.05 = 5%)
+            risk_free_rate: Annualized risk-free rate (as decimal, e.g., 0.05 = 5%)
+            target_return: Annualized target/minimum acceptable return (default: 0)
+
+        Returns:
+            Annualized Sortino ratio, or NaN if insufficient data
+        """
+        if returns is None or returns.empty:
+            return float("nan")
+
+        clean_returns = returns.dropna()
+        if len(clean_returns) < 2:
+            return float("nan")
+
+        # Convert annualized rates to daily
+        daily_rf = risk_free_rate / 252
+        daily_target = target_return / 252
+
+        # Calculate excess returns over target
+        excess_returns = clean_returns - daily_rf
+
+        # Calculate downside deviation (only negative returns below target)
+        downside_returns = clean_returns[clean_returns < daily_target] - daily_target
+        if len(downside_returns) == 0:
+            # No downside - infinite Sortino (return a large number or NaN)
+            return float("nan")
+
+        downside_std = np.sqrt((downside_returns ** 2).mean())
+        if downside_std == 0 or np.isnan(downside_std):
+            return float("nan")
+
+        # Annualize: multiply by sqrt(252)
+        return (excess_returns.mean() / downside_std) * np.sqrt(252)
+
+    # =========================================================================
+    # Benchmark-Relative Metrics
+    # =========================================================================
+
+    @classmethod
+    def get_beta(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+    ) -> float:
+        """
+        Calculate portfolio beta relative to a benchmark.
+
+        Beta measures the portfolio's sensitivity to benchmark movements.
+        Beta > 1 means more volatile than benchmark, Beta < 1 means less volatile.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+
+        Returns:
+            Beta coefficient, or NaN if insufficient data
+        """
+        if portfolio_returns is None or benchmark_returns is None:
+            return float("nan")
+
+        # Align the two series to common dates
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns], axis=1, keys=["portfolio", "benchmark"]
+        ).dropna()
+
+        if len(aligned) < 2:
+            return float("nan")
+
+        # Beta = Cov(Rp, Rb) / Var(Rb)
+        covariance = aligned["portfolio"].cov(aligned["benchmark"])
+        benchmark_variance = aligned["benchmark"].var()
+
+        if benchmark_variance == 0 or np.isnan(benchmark_variance):
+            return float("nan")
+
+        return covariance / benchmark_variance
+
+    @classmethod
+    def get_alpha(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+        risk_free_rate: float = 0.0,
+    ) -> float:
+        """
+        Calculate Jensen's alpha (annualized).
+
+        Alpha measures excess return not explained by beta exposure to benchmark.
+        Positive alpha indicates outperformance, negative indicates underperformance.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+            risk_free_rate: Annualized risk-free rate (as decimal, e.g., 0.05 = 5%)
+
+        Returns:
+            Annualized alpha, or NaN if insufficient data
+        """
+        beta = cls.get_beta(portfolio_returns, benchmark_returns)
+        if np.isnan(beta):
+            return float("nan")
+
+        # Align returns
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns], axis=1, keys=["portfolio", "benchmark"]
+        ).dropna()
+
+        if len(aligned) < 2:
+            return float("nan")
+
+        # Annualize mean returns
+        portfolio_annual = aligned["portfolio"].mean() * 252
+        benchmark_annual = aligned["benchmark"].mean() * 252
+
+        # Jensen's Alpha = Rp - [Rf + beta * (Rb - Rf)]
+        alpha = portfolio_annual - (risk_free_rate + beta * (benchmark_annual - risk_free_rate))
+
+        return alpha
+
+    @classmethod
+    def get_tracking_error(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+    ) -> float:
+        """
+        Calculate annualized tracking error.
+
+        Tracking error measures the volatility of the difference between
+        portfolio and benchmark returns. Lower values indicate closer tracking.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+
+        Returns:
+            Annualized tracking error, or NaN if insufficient data
+        """
+        if portfolio_returns is None or benchmark_returns is None:
+            return float("nan")
+
+        # Align the two series
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns], axis=1, keys=["portfolio", "benchmark"]
+        ).dropna()
+
+        if len(aligned) < 2:
+            return float("nan")
+
+        # Tracking error = std(portfolio - benchmark) * sqrt(252)
+        excess_returns = aligned["portfolio"] - aligned["benchmark"]
+        tracking_error = excess_returns.std(ddof=1) * np.sqrt(252)
+
+        return tracking_error
+
+    @classmethod
+    def get_information_ratio(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+    ) -> float:
+        """
+        Calculate the information ratio.
+
+        Information ratio measures active return per unit of active risk.
+        Higher values indicate better risk-adjusted active performance.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+
+        Returns:
+            Information ratio, or NaN if insufficient data
+        """
+        tracking_error = cls.get_tracking_error(portfolio_returns, benchmark_returns)
+        if np.isnan(tracking_error) or tracking_error == 0:
+            return float("nan")
+
+        # Align returns
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns], axis=1, keys=["portfolio", "benchmark"]
+        ).dropna()
+
+        if len(aligned) < 2:
+            return float("nan")
+
+        # Annualized excess return
+        excess_returns = aligned["portfolio"] - aligned["benchmark"]
+        annualized_excess = excess_returns.mean() * 252
+
+        # Information ratio = annualized excess return / tracking error
+        return annualized_excess / tracking_error
+
+    @classmethod
+    def get_correlation(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+    ) -> float:
+        """
+        Calculate correlation between portfolio and benchmark returns.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+
+        Returns:
+            Correlation coefficient (-1 to 1), or NaN if insufficient data
+        """
+        if portfolio_returns is None or benchmark_returns is None:
+            return float("nan")
+
+        # Align the two series
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns], axis=1, keys=["portfolio", "benchmark"]
+        ).dropna()
+
+        if len(aligned) < 2:
+            return float("nan")
+
+        return aligned["portfolio"].corr(aligned["benchmark"])
+
+    @classmethod
+    def get_r_squared(
+        cls,
+        portfolio_returns: pd.Series,
+        benchmark_returns: pd.Series,
+    ) -> float:
+        """
+        Calculate R-squared (coefficient of determination).
+
+        R-squared measures what percentage of portfolio variance is explained
+        by the benchmark. Higher values indicate closer relationship.
+
+        Args:
+            portfolio_returns: Series of portfolio returns (as decimals)
+            benchmark_returns: Series of benchmark returns (as decimals)
+
+        Returns:
+            R-squared (0 to 1), or NaN if insufficient data
+        """
+        correlation = cls.get_correlation(portfolio_returns, benchmark_returns)
+        if np.isnan(correlation):
+            return float("nan")
+
+        return correlation ** 2
+
+    @classmethod
+    def get_benchmark_returns(
+        cls,
+        benchmark: str,
+        is_portfolio: bool,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        include_cash: bool = False,
+        interval: str = "daily",
+    ) -> pd.Series:
+        """
+        Get returns for a benchmark (ticker or portfolio).
+
+        This is a unified helper method that retrieves returns for either
+        a ticker symbol or another portfolio, making benchmark comparisons
+        seamless across the application.
+
+        Args:
+            benchmark: Ticker symbol (e.g., "SPY") or portfolio name
+            is_portfolio: True if benchmark is a portfolio name, False for ticker
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+            include_cash: Include cash in portfolio benchmark (ignored for tickers)
+            interval: Return interval - "daily", "weekly", "monthly", "yearly"
+
+        Returns:
+            Series of benchmark returns (as decimals)
+        """
+        if is_portfolio:
+            return cls.get_time_varying_portfolio_returns(
+                benchmark, start_date, end_date, include_cash, interval
+            )
+        else:
+            return cls.get_ticker_returns(benchmark, start_date, end_date, interval)
+
+    @classmethod
+    def get_risk_metrics(
+        cls,
+        portfolio_name: str,
+        benchmark: str,
+        is_benchmark_portfolio: bool = False,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        include_cash: bool = False,
+        risk_free_rate: float = 0.0,
+    ) -> Dict[str, float]:
+        """
+        Calculate comprehensive risk metrics for a portfolio vs benchmark.
+
+        This is a convenience method that calculates all common risk and
+        performance metrics in a single call, avoiding redundant data fetching.
+
+        Args:
+            portfolio_name: Name of the portfolio
+            benchmark: Benchmark ticker (e.g., "SPY") or portfolio name
+            is_benchmark_portfolio: True if benchmark is a portfolio name
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+            include_cash: Include cash in portfolio calculations
+            risk_free_rate: Annualized risk-free rate (as decimal, e.g., 0.05 = 5%)
+
+        Returns:
+            Dict with keys:
+            - beta: Portfolio beta vs benchmark
+            - alpha: Jensen's alpha (annualized)
+            - tracking_error: Annualized tracking error
+            - information_ratio: Information ratio
+            - sharpe_ratio: Portfolio Sharpe ratio
+            - sortino_ratio: Portfolio Sortino ratio
+            - benchmark_sharpe: Benchmark Sharpe ratio
+            - correlation: Correlation with benchmark
+            - r_squared: R-squared of regression
+            - portfolio_volatility: Annualized portfolio volatility
+            - benchmark_volatility: Annualized benchmark volatility
+        """
+        # Get portfolio returns
+        portfolio_returns = cls.get_time_varying_portfolio_returns(
+            portfolio_name, start_date, end_date, include_cash, interval="daily"
+        )
+
+        # Get benchmark returns
+        benchmark_returns = cls.get_benchmark_returns(
+            benchmark, is_benchmark_portfolio, start_date, end_date, include_cash, "daily"
+        )
+
+        # Handle empty returns
+        if portfolio_returns.empty or benchmark_returns.empty:
+            return {
+                "beta": float("nan"),
+                "alpha": float("nan"),
+                "tracking_error": float("nan"),
+                "information_ratio": float("nan"),
+                "sharpe_ratio": float("nan"),
+                "sortino_ratio": float("nan"),
+                "benchmark_sharpe": float("nan"),
+                "correlation": float("nan"),
+                "r_squared": float("nan"),
+                "portfolio_volatility": float("nan"),
+                "benchmark_volatility": float("nan"),
+            }
+
+        # Calculate all metrics
+        return {
+            "beta": cls.get_beta(portfolio_returns, benchmark_returns),
+            "alpha": cls.get_alpha(portfolio_returns, benchmark_returns, risk_free_rate),
+            "tracking_error": cls.get_tracking_error(portfolio_returns, benchmark_returns),
+            "information_ratio": cls.get_information_ratio(portfolio_returns, benchmark_returns),
+            "sharpe_ratio": cls.get_sharpe_ratio(portfolio_returns, risk_free_rate),
+            "sortino_ratio": cls.get_sortino_ratio(portfolio_returns, risk_free_rate),
+            "benchmark_sharpe": cls.get_sharpe_ratio(benchmark_returns, risk_free_rate),
+            "correlation": cls.get_correlation(portfolio_returns, benchmark_returns),
+            "r_squared": cls.get_r_squared(portfolio_returns, benchmark_returns),
+            "portfolio_volatility": portfolio_returns.std() * np.sqrt(252),
+            "benchmark_volatility": benchmark_returns.std() * np.sqrt(252),
+        }
