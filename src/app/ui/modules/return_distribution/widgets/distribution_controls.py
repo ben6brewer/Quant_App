@@ -15,6 +15,7 @@ from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
 from app.core.config import CHART_INTERVALS
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
 class SmoothScrollListView(QListView):
@@ -33,7 +34,7 @@ class SmoothScrollListView(QListView):
         event.accept()
 
 
-class DistributionControls(QWidget):
+class DistributionControls(LazyThemeMixin, QWidget):
     """
     Control bar at top of return distribution module.
     Contains: Home button, Portfolio selector, Metric selector, Interval selector, Date Range selector, Settings button.
@@ -70,6 +71,7 @@ class DistributionControls(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._custom_start_date: Optional[str] = None
         self._custom_end_date: Optional[str] = None
         # Track last processed values to prevent duplicate signals
@@ -79,7 +81,13 @@ class DistributionControls(QWidget):
         self._setup_ui()
         self._apply_theme()
 
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Lazy theme - only apply when visible
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self):
         """Setup control bar UI."""

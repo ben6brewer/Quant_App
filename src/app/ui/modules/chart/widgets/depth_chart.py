@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from ..services import BinanceOrderBook
 from .order_book_ladder import OrderBookLadderWidget
 
@@ -167,26 +168,39 @@ class DepthChartWidget(pg.PlotWidget):
         self.autoRange()
 
 
-class OrderBookPanel(QWidget):
+class OrderBookPanel(LazyThemeMixin, QWidget):
     """
     Panel showing order book in ladder format (default) with optional depth chart.
     """
-    
+
     def __init__(self, theme_manager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self.binance_api = BinanceOrderBook()
         self.current_ticker = None
-        
+
         # Update timer
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._refresh_data)
-        
+
         self._setup_ui()
         self._apply_theme()
-        
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy_panel)
+
+    def _on_theme_changed_lazy_panel(self) -> None:
+        """Handle theme change with visibility check."""
+        if self.isVisible():
+            self._apply_theme()
+        else:
+            self._theme_dirty = True
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
     
     def _setup_ui(self):
         """Setup the UI."""
@@ -258,14 +272,8 @@ class OrderBookPanel(QWidget):
             self.ladder_btn.setChecked(False)
             self.chart_btn.setChecked(True)
     
-    def _on_theme_changed(self, theme: str):
-        """Handle theme change."""
-        self._apply_theme()
-        self.depth_chart.set_theme(theme)
-        self.ladder_widget.set_theme(theme)
-    
     def _apply_theme(self):
-        """Apply theme styling."""
+        """Apply theme styling to panel and child widgets."""
         theme = self.theme_manager.current_theme
 
         if theme == "light":
@@ -276,6 +284,9 @@ class OrderBookPanel(QWidget):
             stylesheet = self._get_dark_stylesheet()
 
         self.setStyleSheet(stylesheet)
+        # Also update child widgets
+        self.depth_chart.set_theme(theme)
+        self.ladder_widget.set_theme(theme)
     
     def _get_dark_stylesheet(self) -> str:
         """Get dark theme stylesheet."""

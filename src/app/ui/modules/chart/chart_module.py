@@ -40,9 +40,10 @@ from app.core.config import (
     CHART_TYPES,
     CHART_SCALES,
 )
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
-class ChartModule(QWidget):
+class ChartModule(LazyThemeMixin, QWidget):
     """
     Charting module with indicator support and order book depth.
     Handles ticker data loading, chart display, and technical indicators.
@@ -57,27 +58,41 @@ class ChartModule(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self.equation_parser = TickerEquationParser()
         self.indicator_service = IndicatorService()
-        
+
         # Initialize chart settings manager
         self.chart_settings_manager = ChartSettingsManager()
-        
+
         # Initialize indicator service to load saved indicators
         IndicatorService.initialize()
-        
+
         self._setup_ui()
         self._setup_state()
         self._connect_signals()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy_chart)
 
         # Auto-load initial ticker
         self.load_ticker_max(self.controls.get_ticker())
 
-    def _on_theme_changed(self, theme: str) -> None:
-        """Handle theme change signal."""
+    def _on_theme_changed_lazy_chart(self, theme: str) -> None:
+        """Handle theme change with visibility check."""
+        if self.isVisible():
+            self._apply_theme()
+        else:
+            self._theme_dirty = True
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
+
+    def _apply_theme(self) -> None:
+        """Apply theme to chart and depth panel."""
+        theme = self.theme_manager.current_theme
         self._apply_depth_panel_theme()
         self.chart.set_theme(theme)
 

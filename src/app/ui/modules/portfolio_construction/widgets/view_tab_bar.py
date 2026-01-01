@@ -4,9 +4,10 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QButtonGroup
 from PySide6.QtCore import Signal, Qt
 
 from app.core.theme_manager import ThemeManager
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
-class ViewTabBar(QWidget):
+class ViewTabBar(LazyThemeMixin, QWidget):
     """
     Horizontal tab bar for switching between table views.
     Simpler than SectionTabBar - only 2 tabs with exclusive selection.
@@ -17,9 +18,16 @@ class ViewTabBar(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._setup_ui()
         self._apply_theme()
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Lazy theme - only apply when visible
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self):
         """Setup tab bar UI."""

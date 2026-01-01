@@ -20,9 +20,10 @@ from app.core.config import (
     CHART_TYPES,
     CHART_SCALES,
 )
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
-class ChartControls(QWidget):
+class ChartControls(LazyThemeMixin, QWidget):
     """Control bar widget for chart configuration.
 
     Provides home button, ticker input, interval/chart type/scale selectors,
@@ -42,12 +43,18 @@ class ChartControls(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._setup_ui()
         self._connect_signals()
         self._apply_theme()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Create the control bar UI layout."""

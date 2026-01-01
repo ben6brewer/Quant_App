@@ -6,11 +6,12 @@ from PySide6.QtCore import Signal, Qt
 
 from app.core.theme_manager import ThemeManager
 from app.core.config import MODULE_SECTIONS
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from .section_tab_bar import SectionTabBar
 from .module_tile_grid import ModuleTileGrid
 
 
-class HomeScreen(QWidget):
+class HomeScreen(LazyThemeMixin, QWidget):
     """
     Main home screen combining section tabs and module tile grid.
     """
@@ -22,9 +23,15 @@ class HomeScreen(QWidget):
         super().__init__(parent)
 
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
 
         self._setup_ui()
         self._connect_signals()
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Setup the home screen UI."""
@@ -53,9 +60,6 @@ class HomeScreen(QWidget):
         # Apply settings button styling
         self._apply_settings_btn_styling()
 
-        # Connect theme changes for settings button
-        self.theme_manager.theme_changed.connect(self._on_settings_btn_theme_changed)
-
         layout.addWidget(top_bar)
 
         # Search bar container (centered, width of 2 tiles)
@@ -83,8 +87,8 @@ class HomeScreen(QWidget):
         # Apply search box styling
         self._apply_search_styling()
 
-        # Connect theme changes for search box
-        self.theme_manager.theme_changed.connect(self._on_search_theme_changed)
+        # Connect theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
 
         # Module tile grid below
         self.tile_grid = ModuleTileGrid(self.theme_manager)
@@ -150,12 +154,9 @@ class HomeScreen(QWidget):
         self.tab_bar.clear_selection()
         self.tile_grid.set_section_filter("")
 
-    def _on_search_theme_changed(self, theme: str) -> None:
-        """Handle theme change for search box."""
+    def _apply_theme(self) -> None:
+        """Apply theme to all themed components."""
         self._apply_search_styling()
-
-    def _on_settings_btn_theme_changed(self, theme: str) -> None:
-        """Handle theme change for settings button."""
         self._apply_settings_btn_styling()
 
     def _apply_settings_btn_styling(self) -> None:

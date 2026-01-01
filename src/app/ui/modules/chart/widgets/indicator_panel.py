@@ -4,10 +4,11 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QListWi
 from PySide6.QtCore import Signal
 
 from app.core.theme_manager import ThemeManager
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from ..services import ChartThemeService, IndicatorService
 
 
-class IndicatorPanel(QWidget):
+class IndicatorPanel(LazyThemeMixin, QWidget):
     """Sidebar panel for technical indicator selection and management.
 
     Provides lists of overlay and oscillator indicators with buttons
@@ -26,12 +27,18 @@ class IndicatorPanel(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._setup_ui()
         self._connect_signals()
         self._apply_theme()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Create the indicator panel UI layout."""

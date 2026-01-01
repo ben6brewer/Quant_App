@@ -7,10 +7,11 @@ from PySide6.QtCore import Signal, Qt
 from app.core.theme_manager import ThemeManager
 from app.core.config import MODULE_SECTIONS, TILE_COLS, TILE_SPACING
 from app.services.favorites_service import FavoritesService
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from .module_tile import ModuleTile
 
 
-class ModuleTileGrid(QScrollArea):
+class ModuleTileGrid(LazyThemeMixin, QScrollArea):
     """
     Grid layout for module tiles with filtering and sorting capabilities.
     """
@@ -22,6 +23,7 @@ class ModuleTileGrid(QScrollArea):
         super().__init__(parent)
 
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self.tiles: Dict[str, ModuleTile] = {}
         self.current_section_filter = ""  # "" means show all
         self.current_search_filter = ""   # "" means no search filtering
@@ -30,9 +32,14 @@ class ModuleTileGrid(QScrollArea):
         self._create_all_tiles()
         self._layout_tiles()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
         self._apply_theme()
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Setup the scroll area and grid."""

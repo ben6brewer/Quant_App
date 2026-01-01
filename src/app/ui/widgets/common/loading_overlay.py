@@ -90,8 +90,9 @@ class LoadingOverlay(QWidget):
             self.setGeometry(self.parent().rect())
 
     def _on_theme_changed(self) -> None:
-        """Handle theme changes."""
-        self.update()
+        """Handle theme changes - only update if visible."""
+        if self.isVisible():
+            self.update()
 
     def resizeEvent(self, event) -> None:
         """Handle parent resize."""

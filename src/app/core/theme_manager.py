@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Callable
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import QPushButton
 
 
@@ -41,18 +41,32 @@ class ThemeManager(QObject):
 
         self._current_theme = theme
 
-        # Update all tracked buttons with new theme styling
-        universal_style = self._get_universal_button_style()
-        for button in self._styled_buttons:
-            if button:  # Check button still exists
-                button.setStyleSheet(universal_style)
-
+        # Emit signal immediately so UI can respond
         self.theme_changed.emit(theme)
+
+        # Defer button updates to avoid blocking the UI thread
+        QTimer.singleShot(0, self._update_styled_buttons)
 
         # Save preference to disk
         if save_preference:
             from app.services.preferences_service import PreferencesService
             PreferencesService.set_theme(theme)
+
+    def _update_styled_buttons(self) -> None:
+        """Apply current theme styling to all tracked buttons (deferred)."""
+        universal_style = self._get_universal_button_style()
+        # Filter out destroyed buttons and update valid ones
+        valid_buttons = []
+        for button in self._styled_buttons:
+            try:
+                # Try to access the button - will raise if deleted
+                if button and button.isVisible is not None:
+                    button.setStyleSheet(universal_style)
+                    valid_buttons.append(button)
+            except RuntimeError:
+                # Button was deleted, skip it
+                pass
+        self._styled_buttons = valid_buttons
 
     def register_listener(self, callback: Callable[[str], None]) -> None:
         """

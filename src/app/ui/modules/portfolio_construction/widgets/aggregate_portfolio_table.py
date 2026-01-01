@@ -7,10 +7,11 @@ from PySide6.QtGui import QColor, QFont
 
 from app.core.theme_manager import ThemeManager
 from app.services.theme_stylesheet_service import ThemeStylesheetService
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from ..services.portfolio_service import PortfolioService
 
 
-class AggregatePortfolioTable(QTableWidget):
+class AggregatePortfolioTable(LazyThemeMixin, QTableWidget):
     """
     Read-only aggregate portfolio table (right side).
     Shows holdings grouped by ticker with totals.
@@ -31,6 +32,7 @@ class AggregatePortfolioTable(QTableWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._holdings_data: List[Dict[str, Any]] = []
         self._free_cash_summary: Dict[str, Any] = None  # FREE CASH summary data
         self._ticker_names: Dict[str, str] = {}  # ticker -> short name
@@ -40,7 +42,13 @@ class AggregatePortfolioTable(QTableWidget):
         self._setup_table()
         self._apply_theme()
 
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Lazy theme - only apply when visible
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_table(self):
         """Configure table structure."""

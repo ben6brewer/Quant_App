@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common import CustomMessageBox
 from app.ui.widgets.common.loading_overlay import LoadingOverlay
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 from .services import PortfolioService, PortfolioPersistence, PortfolioSettingsManager
 from .widgets import (
@@ -26,7 +27,7 @@ from .widgets import (
 from .widgets.portfolio_settings_dialog import PortfolioSettingsDialog
 
 
-class PortfolioConstructionModule(QWidget):
+class PortfolioConstructionModule(LazyThemeMixin, QWidget):
     """
     Main portfolio construction module.
     Orchestrates all widgets and services for portfolio management.
@@ -35,6 +36,7 @@ class PortfolioConstructionModule(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
 
         # Initialize services
         PortfolioPersistence.initialize()
@@ -69,8 +71,13 @@ class PortfolioConstructionModule(QWidget):
         # Set initial view mode (Transaction Log by default)
         self.controls.set_view_mode(is_transaction_view=True)
 
-        # Connect theme changes
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Connect theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self):
         """Setup main UI layout."""

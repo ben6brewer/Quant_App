@@ -8,9 +8,10 @@ from PySide6.QtGui import QPixmap, QMouseEvent
 from app.core.theme_manager import ThemeManager
 from app.services.favorites_service import FavoritesService
 from app.utils.screenshot_manager import ScreenshotManager
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
-class ModuleTile(QFrame):
+class ModuleTile(LazyThemeMixin, QFrame):
     """
     Individual tile widget for a module with screenshot preview and favorite star.
     """
@@ -32,14 +33,20 @@ class ModuleTile(QFrame):
         self.label = label
         self.section = section
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
 
         self._is_favorite = FavoritesService.is_favorite(module_id)
 
         self._setup_ui()
         self._apply_theme()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Setup the tile UI."""

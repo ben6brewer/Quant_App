@@ -8,6 +8,7 @@ from app.services.portfolio_data_service import PortfolioDataService
 from app.services.returns_data_service import ReturnsDataService
 from app.ui.widgets.common.custom_message_box import CustomMessageBox
 from app.ui.widgets.common.loading_overlay import LoadingOverlay
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 from .services.distribution_settings_manager import DistributionSettingsManager
 from .widgets.distribution_controls import DistributionControls
@@ -16,7 +17,7 @@ from .widgets.distribution_settings_dialog import DistributionSettingsDialog
 from .widgets.date_range_dialog import DateRangeDialog
 
 
-class ReturnDistributionModule(QWidget):
+class ReturnDistributionModule(LazyThemeMixin, QWidget):
     """
     Portfolio Return Distribution module.
 
@@ -40,6 +41,7 @@ class ReturnDistributionModule(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
 
         # Settings manager
         self.settings_manager = DistributionSettingsManager()
@@ -95,8 +97,8 @@ class ReturnDistributionModule(QWidget):
         self.controls.settings_clicked.connect(self._show_settings_dialog)
         self.controls.benchmark_changed.connect(self._on_benchmark_changed)
 
-        # Theme changes
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
 
     def _refresh_portfolio_list(self):
         """Refresh the portfolio dropdown and benchmark dropdown."""
@@ -594,6 +596,11 @@ class ReturnDistributionModule(QWidget):
             bg_color = "#1e1e1e"
 
         self.setStyleSheet(f"ReturnDistributionModule {{ background-color: {bg_color}; }}")
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _apply_initial_chart_settings(self):
         """Apply chart settings (background, gridlines) on initialization."""

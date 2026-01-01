@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QApplication,
 )
-from PySide6.QtCore import Qt, QPoint, QRect
+from PySide6.QtCore import Qt, QPoint, QRect, QTimer
 from PySide6.QtGui import QMouseEvent, QRegion
 
 from app.core.theme_manager import ThemeManager
@@ -325,8 +325,7 @@ class HubWindow(QMainWindow):
         # Add to stack
         self.main_stack.addWidget(container)
 
-        # Remove factory if it existed (module is now instantiated)
-        self._module_factories.pop(module_id, None)
+        # NOTE: We keep the factory for re-instantiation after module is destroyed
 
     def _create_module_container(self, module_widget: QWidget, has_own_home_button: bool = False) -> QWidget:
         """Create container with home button overlay for module."""
@@ -385,11 +384,24 @@ class HubWindow(QMainWindow):
 
     def open_module(self, module_id: str) -> None:
         """Open a module in full screen."""
-        # Check if module needs to be lazily instantiated
-        if module_id in self._module_factories:
-            factory = self._module_factories[module_id]
-            widget = factory()  # Instantiate the module now
-            self._instantiate_module(module_id, widget)
+        current = self.main_stack.currentWidget()
+
+        # Check if already viewing this module
+        if module_id in self.module_containers and current == self.module_containers[module_id]:
+            return  # Already viewing this module
+
+        # Destroy any currently open module (if not home screen)
+        if current != self.home_screen:
+            self._destroy_current_module()
+
+        # Check if module needs to be instantiated
+        if module_id not in self.modules:
+            if module_id in self._module_factories:
+                factory = self._module_factories[module_id]
+                widget = factory()  # Instantiate the module now
+                self._instantiate_module(module_id, widget)
+            else:
+                return  # No factory and not instantiated
 
         if module_id not in self.module_containers:
             return
@@ -397,10 +409,49 @@ class HubWindow(QMainWindow):
         container = self.module_containers[module_id]
         self.main_stack.setCurrentWidget(container)
 
+    def _destroy_current_module(self) -> None:
+        """Destroy the currently active module to free memory."""
+        current_container = self.main_stack.currentWidget()
+        if current_container != self.home_screen:
+            self._destroy_module_container(current_container)
+
+    def _destroy_module_container(self, container: QWidget) -> None:
+        """Destroy a specific module container to free memory."""
+        if container == self.home_screen:
+            return  # Don't destroy home screen
+
+        # Find the module_id for this container
+        module_id = None
+        for mid, cont in self.module_containers.items():
+            if cont == container:
+                module_id = mid
+                break
+
+        if module_id is None:
+            return
+
+        # Remove from stack first
+        self.main_stack.removeWidget(container)
+
+        # Remove from tracking dicts
+        self.modules.pop(module_id, None)
+        self.module_containers.pop(module_id, None)
+
+        # Schedule container (and its children including the module) for deletion
+        container.deleteLater()
+
     def show_home(self) -> None:
-        """Return to home screen."""
+        """Return to home screen, destroying the current module."""
+        # Get the module to destroy BEFORE switching (while it's still current)
+        current_container = self.main_stack.currentWidget()
+
+        # Switch to home screen first
         self.main_stack.setCurrentWidget(self.home_screen)
         self.home_screen.refresh()  # Reload favorites
+
+        # Now destroy the previous module (after we've switched away from it)
+        if current_container != self.home_screen:
+            self._destroy_module_container(current_container)
 
     def show_initial_screen(self) -> None:
         """Show home screen on startup."""
@@ -424,8 +475,8 @@ class HubWindow(QMainWindow):
         self.open_module("settings")
 
     def _on_theme_changed(self, theme: str) -> None:
-        """Handle theme change signal."""
-        self._apply_theme()
+        """Handle theme change signal - defer to avoid blocking UI."""
+        QTimer.singleShot(0, self._apply_theme)
 
     def _apply_theme(self) -> None:
         """Apply the current theme to the window."""

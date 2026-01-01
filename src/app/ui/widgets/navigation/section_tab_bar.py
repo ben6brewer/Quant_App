@@ -6,9 +6,10 @@ from PySide6.QtCore import Signal, Qt
 
 from app.core.theme_manager import ThemeManager
 from app.core.config import MODULE_SECTIONS
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
-class SectionTabBar(QWidget):
+class SectionTabBar(LazyThemeMixin, QWidget):
     """
     Horizontal tab bar for filtering modules by section.
     """
@@ -19,6 +20,7 @@ class SectionTabBar(QWidget):
         super().__init__(parent)
 
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self.buttons: Dict[str, QPushButton] = {}
         self.button_group: Optional[QButtonGroup] = None
         self.home_button: Optional[QPushButton] = None
@@ -26,8 +28,13 @@ class SectionTabBar(QWidget):
         self._setup_ui()
         self._apply_theme()
 
-        # Connect to theme changes
-        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        # Connect to theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self) -> None:
         """Setup the tab bar UI."""

@@ -7,6 +7,7 @@ from .validated_numeric_line_edit import ValidatedNumericLineEdit
 from .no_scroll_combobox import NoScrollComboBox
 from .themed_dialog import ThemedDialog
 from .editable_table_base import EditableTableBase
+from .lazy_theme_mixin import LazyThemeMixin
 
 __all__ = [
     'CustomMessageBox',
@@ -16,4 +17,5 @@ __all__ = [
     'NoScrollComboBox',
     'ThemedDialog',
     'EditableTableBase',
+    'LazyThemeMixin',
 ]

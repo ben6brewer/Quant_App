@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from app.core.theme_manager import ThemeManager
+from app.services.returns_data_service import ReturnsDataService
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
 
 # Qt PenStyle mapping
@@ -28,16 +30,23 @@ LINE_STYLES = {
 }
 
 
-class StatisticsPanel(QWidget):
+class StatisticsPanel(LazyThemeMixin, QWidget):
     """Panel displaying return distribution statistics in horizontal layout."""
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
         self._current_metric = "Returns"
         self._setup_ui()
         self._apply_theme()
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Lazy theme - only apply when visible
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self):
         """Setup the statistics panel UI with horizontal layout (metrics as columns)."""
@@ -313,7 +322,7 @@ class StatisticsPanel(QWidget):
         """)
 
 
-class DistributionChart(QWidget):
+class DistributionChart(LazyThemeMixin, QWidget):
     """
     Histogram visualization of portfolio returns with statistics panel.
     """
@@ -331,6 +340,7 @@ class DistributionChart(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
+        self._theme_dirty = False  # For lazy theme application
 
         # Store current returns for redraws
         self._current_returns: Optional[pd.Series] = None
@@ -361,7 +371,13 @@ class DistributionChart(QWidget):
         self._setup_ui()
         self._apply_theme()
 
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Lazy theme - only apply when visible
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def _setup_ui(self):
         """Setup the chart UI."""
@@ -903,16 +919,8 @@ class DistributionChart(QWidget):
                     )
 
     def _calculate_statistics(self, returns: pd.Series) -> Dict[str, float]:
-        """Calculate distribution statistics."""
-        return {
-            "mean": returns.mean(),
-            "std": returns.std(ddof=1),
-            "skew": returns.skew(),
-            "kurtosis": returns.kurtosis(),
-            "min": returns.min(),
-            "max": returns.max(),
-            "count": len(returns),
-        }
+        """Calculate distribution statistics using centralized service."""
+        return ReturnsDataService.get_distribution_statistics(returns)
 
     def show_placeholder(self, message: str):
         """Show placeholder message."""

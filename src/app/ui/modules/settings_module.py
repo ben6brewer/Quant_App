@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from app.core.theme_manager import ThemeManager
 
@@ -115,8 +115,10 @@ class SettingsModule(QWidget):
         # Set flag to skip redundant _apply_theme call from signal
         self._is_changing_theme = True
         self.theme_manager.set_theme(theme)
-        self._apply_theme()  # Apply once after setting theme
-        self._is_changing_theme = False
+        # Defer _apply_theme to avoid blocking the UI thread
+        QTimer.singleShot(0, self._apply_theme)
+        # Defer flag reset so external handlers still skip correctly
+        QTimer.singleShot(0, lambda: setattr(self, '_is_changing_theme', False))
 
     def _on_external_theme_change(self) -> None:
         """Handle theme changes from external sources (not our radio buttons)."""

@@ -18,11 +18,12 @@ from app.ui.widgets.common import (
     NoScrollComboBox,
     EditableTableBase,
 )
+from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 from ..services.portfolio_service import PortfolioService
 from .mixins import FieldRevertMixin, SortingMixin
 
 
-class TransactionLogTable(FieldRevertMixin, SortingMixin, EditableTableBase):
+class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, EditableTableBase):
     """
     Editable transaction log table (left side).
     Inline editing with date picker and dropdown.
@@ -108,15 +109,23 @@ class TransactionLogTable(FieldRevertMixin, SortingMixin, EditableTableBase):
         # Batch loading mode - skip FREE CASH summary updates during bulk operations
         self._batch_loading: bool = False
 
+        # For lazy theme application
+        self._theme_dirty = False
+
         self._setup_table()
         self._apply_theme()
 
-        # Connect theme changes
-        self.theme_manager.theme_changed.connect(self._apply_theme)
+        # Connect theme changes (lazy - only apply when visible)
+        self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
 
         # Connect internal signals for thread-safe auto-fill
         self._price_autofill_ready.connect(self._apply_autofill_price)
         self._name_autofill_ready.connect(self._apply_autofill_name)
+
+    def showEvent(self, event):
+        """Handle show event - apply pending theme if needed."""
+        super().showEvent(event)
+        self._check_theme_dirty()
 
     def begin_batch_loading(self):
         """
