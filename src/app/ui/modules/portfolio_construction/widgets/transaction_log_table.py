@@ -30,19 +30,21 @@ class TransactionLogTable(QTableWidget):
     transaction_modified = Signal(str, dict)   # (transaction_id, updated_transaction)
     transaction_deleted = Signal(str)          # (transaction_id)
     _price_autofill_ready = Signal(int, float) # (row, price) - internal signal for thread-safe UI update
+    _name_autofill_ready = Signal(int, str)    # (row, name) - internal signal for thread-safe name update
 
     # Columns
     COLUMNS = [
         "Date",                # col 0 - DateInputWidget
         "Ticker",              # col 1 - AutoSelectLineEdit
-        "Quantity",            # col 2 - ValidatedNumericLineEdit
-        "Execution Price",     # col 3 - ValidatedNumericLineEdit
-        "Fees",                # col 4 - ValidatedNumericLineEdit
-        "Type",                # col 5 - NoScrollComboBox (Buy/Sell)
-        "Daily Closing Price", # col 6 - Read-only (historical close on tx date)
-        "Live Price",          # col 7 - Read-only (last daily close)
-        "Principal",           # col 8 - Read-only (calculated)
-        "Market Value"         # col 9 - Read-only (calculated)
+        "Name",                # col 2 - Read-only (auto-populated from Yahoo Finance)
+        "Quantity",            # col 3 - ValidatedNumericLineEdit
+        "Execution Price",     # col 4 - ValidatedNumericLineEdit
+        "Fees",                # col 5 - ValidatedNumericLineEdit
+        "Type",                # col 6 - NoScrollComboBox (Buy/Sell)
+        "Daily Closing Price", # col 7 - Read-only (historical close on tx date)
+        "Live Price",          # col 8 - Read-only (last daily close)
+        "Principal",           # col 9 - Read-only (calculated)
+        "Market Value"         # col 10 - Read-only (calculated)
     ]
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
@@ -58,6 +60,7 @@ class TransactionLogTable(QTableWidget):
 
         self._current_prices: Dict[str, float] = {}  # Map ticker -> current_price
         self._historical_prices: Dict[str, Dict[str, float]] = {}  # Map ticker -> {date -> close_price}
+        self._cached_names: Dict[str, str] = {}  # Map ticker -> short name from Yahoo Finance
 
         # Track original values for existing rows (for revert on invalid)
         # Map transaction_id -> {"ticker": str, "date": str}
@@ -99,8 +102,9 @@ class TransactionLogTable(QTableWidget):
         # Connect theme changes
         self.theme_manager.theme_changed.connect(self._apply_theme)
 
-        # Connect internal signal for thread-safe price auto-fill
+        # Connect internal signals for thread-safe auto-fill
         self._price_autofill_ready.connect(self._apply_autofill_price)
+        self._name_autofill_ready.connect(self._apply_autofill_name)
 
     def _debug_set_original_values(self, tx_id: str, values: dict, caller: str):
         """Debug helper: log when _original_values is set."""
@@ -163,21 +167,23 @@ class TransactionLogTable(QTableWidget):
         header.setSectionResizeMode(0, QHeaderView.Interactive)  # Date
         self.setColumnWidth(0, 200)
         header.setSectionResizeMode(1, QHeaderView.Interactive)  # Ticker
-        self.setColumnWidth(1, 300)
-        header.setSectionResizeMode(2, QHeaderView.Interactive)  # Quantity
-        self.setColumnWidth(2, 125)
-        header.setSectionResizeMode(3, QHeaderView.Interactive)  # Execution Price
-        self.setColumnWidth(3, 175)
-        header.setSectionResizeMode(4, QHeaderView.Interactive)  # Fees
-        self.setColumnWidth(4, 125)
-        header.setSectionResizeMode(5, QHeaderView.Interactive)  # Type
-        self.setColumnWidth(5, 125)
-        header.setSectionResizeMode(6, QHeaderView.Interactive)  # Daily Closing Price
-        self.setColumnWidth(6, 175)
-        header.setSectionResizeMode(7, QHeaderView.Interactive)  # Live Price
+        self.setColumnWidth(1, 120)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)  # Name
+        self.setColumnWidth(2, 200)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)  # Quantity
+        self.setColumnWidth(3, 100)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)  # Execution Price
+        self.setColumnWidth(4, 150)
+        header.setSectionResizeMode(5, QHeaderView.Interactive)  # Fees
+        self.setColumnWidth(5, 100)
+        header.setSectionResizeMode(6, QHeaderView.Interactive)  # Type
+        self.setColumnWidth(6, 100)
+        header.setSectionResizeMode(7, QHeaderView.Interactive)  # Daily Closing Price
         self.setColumnWidth(7, 175)
-        header.setSectionResizeMode(8, QHeaderView.Stretch)  # Principal
-        header.setSectionResizeMode(9, QHeaderView.Stretch)  # Market Value
+        header.setSectionResizeMode(8, QHeaderView.Interactive)  # Live Price
+        self.setColumnWidth(8, 150)
+        header.setSectionResizeMode(9, QHeaderView.Stretch)  # Principal
+        header.setSectionResizeMode(10, QHeaderView.Stretch)  # Market Value
 
     def _set_corner_label(self, text: str):
         """Set text for table corner button."""
@@ -312,67 +318,75 @@ class TransactionLogTable(QTableWidget):
         ticker_container = self._wrap_widget_in_cell(ticker_edit)
         self.setCellWidget(0, 1, ticker_container)
 
-        # Quantity cell - column 2
+        # Name cell (read-only, styled like editable) - column 2
+        name_edit = AutoSelectLineEdit("")
+        name_edit.setReadOnly(True)
+        name_edit.setStyleSheet(widget_style)
+        self._set_widget_position(name_edit, 0, 2)
+        name_container = self._wrap_widget_in_cell(name_edit)
+        self.setCellWidget(0, 2, name_container)
+
+        # Quantity cell - column 3
         qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(blank_transaction["quantity"])
         qty_edit.setStyleSheet(widget_style)
         qty_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(qty_edit, 0, 2)
+        self._set_widget_position(qty_edit, 0, 3)
         qty_container = self._wrap_widget_in_cell(qty_edit)
-        self.setCellWidget(0, 2, qty_container)
+        self.setCellWidget(0, 3, qty_container)
 
-        # Execution Price cell - column 3
+        # Execution Price cell - column 4
         price_edit = ValidatedNumericLineEdit(min_value=0, max_value=1000000, decimals=2, prefix="", show_dash_for_zero=True)
         price_edit.setValue(blank_transaction["entry_price"])
         price_edit.setStyleSheet(widget_style)
         price_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(price_edit, 0, 3)
+        self._set_widget_position(price_edit, 0, 4)
         price_container = self._wrap_widget_in_cell(price_edit)
-        self.setCellWidget(0, 3, price_container)
+        self.setCellWidget(0, 4, price_container)
 
-        # Fees cell - column 4
+        # Fees cell - column 5
         fees_edit = ValidatedNumericLineEdit(min_value=0, max_value=10000, decimals=2, prefix="", show_dash_for_zero=True)
         fees_edit.setValue(blank_transaction["fees"])
         fees_edit.setStyleSheet(widget_style)
         fees_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(fees_edit, 0, 4)
+        self._set_widget_position(fees_edit, 0, 5)
         fees_container = self._wrap_widget_in_cell(fees_edit)
-        self.setCellWidget(0, 4, fees_container)
+        self.setCellWidget(0, 5, fees_container)
 
-        # Type cell - column 5
+        # Type cell - column 6
         type_combo = NoScrollComboBox()
         type_combo.addItems(["Buy", "Sell"])
         type_combo.setCurrentIndex(-1)  # No selection initially
         type_combo.setPlaceholderText("Buy/Sell")
         type_combo.currentTextChanged.connect(self._on_widget_changed)
         type_combo.setStyleSheet(combo_style)
-        self._set_widget_position(type_combo, 0, 5)
+        self._set_widget_position(type_combo, 0, 6)
         type_container = self._wrap_widget_in_cell(type_combo)
-        self.setCellWidget(0, 5, type_container)
+        self.setCellWidget(0, 6, type_container)
 
-        # Daily Closing Price cell (read-only) - column 6
+        # Daily Closing Price cell (read-only) - column 7
         daily_close_item = QTableWidgetItem("--")
         daily_close_item.setFlags(daily_close_item.flags() & ~Qt.ItemIsEditable)
         daily_close_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(0, 6, daily_close_item)
+        self.setItem(0, 7, daily_close_item)
 
-        # Live Price cell (read-only) - column 7
+        # Live Price cell (read-only) - column 8
         live_price_item = QTableWidgetItem("--")
         live_price_item.setFlags(live_price_item.flags() & ~Qt.ItemIsEditable)
         live_price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(0, 7, live_price_item)
+        self.setItem(0, 8, live_price_item)
 
-        # Principal cell (read-only) - column 8
+        # Principal cell (read-only) - column 9
         principal_item = QTableWidgetItem("--")
         principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
         principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(0, 8, principal_item)
+        self.setItem(0, 9, principal_item)
 
-        # Market Value cell (read-only) - column 9
+        # Market Value cell (read-only) - column 10
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
         market_value_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(0, 9, market_value_item)
+        self.setItem(0, 10, market_value_item)
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(0)
@@ -491,65 +505,71 @@ class TransactionLogTable(QTableWidget):
         self._transactions[1] = free_cash_summary
 
         # Create read-only cells (no editable widgets, no highlight)
-        # Date cell (empty)
+        # Date cell (empty) - col 0
         date_item = QTableWidgetItem("")
         date_item.setFlags(date_item.flags() & ~Qt.ItemIsEditable)
         date_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(1, 0, date_item)
 
-        # Ticker cell ("FREE CASH")
+        # Ticker cell ("FREE CASH") - col 1
         ticker_item = QTableWidgetItem("FREE CASH")
         ticker_item.setFlags(ticker_item.flags() & ~Qt.ItemIsEditable)
         ticker_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setItem(1, 1, ticker_item)
 
-        # Quantity cell (calculated)
+        # Name cell ("FREE CASH") - col 2
+        name_item = QTableWidgetItem("FREE CASH")
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+        name_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setItem(1, 2, name_item)
+
+        # Quantity cell (calculated) - col 3
         qty_item = QTableWidgetItem("--")
         qty_item.setFlags(qty_item.flags() & ~Qt.ItemIsEditable)
         qty_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 2, qty_item)
+        self.setItem(1, 3, qty_item)
 
-        # Execution Price cell (empty)
+        # Execution Price cell (empty) - col 4
         price_item = QTableWidgetItem("")
         price_item.setFlags(price_item.flags() & ~Qt.ItemIsEditable)
         price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 3, price_item)
+        self.setItem(1, 4, price_item)
 
-        # Fees cell (empty)
+        # Fees cell (empty) - col 5
         fees_item = QTableWidgetItem("")
         fees_item.setFlags(fees_item.flags() & ~Qt.ItemIsEditable)
         fees_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 4, fees_item)
+        self.setItem(1, 5, fees_item)
 
-        # Type cell (empty)
+        # Type cell (empty) - col 6
         type_item = QTableWidgetItem("")
         type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
         type_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 5, type_item)
+        self.setItem(1, 6, type_item)
 
-        # Daily Closing Price cell (empty)
+        # Daily Closing Price cell (empty) - col 7
         daily_item = QTableWidgetItem("")
         daily_item.setFlags(daily_item.flags() & ~Qt.ItemIsEditable)
         daily_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 6, daily_item)
+        self.setItem(1, 7, daily_item)
 
-        # Live Price cell (empty)
+        # Live Price cell (empty) - col 8
         live_item = QTableWidgetItem("")
         live_item.setFlags(live_item.flags() & ~Qt.ItemIsEditable)
         live_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 7, live_item)
+        self.setItem(1, 8, live_item)
 
-        # Principal cell (calculated)
+        # Principal cell (calculated) - col 9
         principal_item = QTableWidgetItem("--")
         principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
         principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 8, principal_item)
+        self.setItem(1, 9, principal_item)
 
-        # Market Value cell (calculated)
+        # Market Value cell (calculated) - col 10
         mv_item = QTableWidgetItem("--")
         mv_item.setFlags(mv_item.flags() & ~Qt.ItemIsEditable)
         mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(1, 9, mv_item)
+        self.setItem(1, 10, mv_item)
 
         # Update row positions for shifted rows (rows 2+)
         self._update_row_positions(2)
@@ -580,8 +600,8 @@ class TransactionLogTable(QTableWidget):
         # Calculate summary values
         summary = PortfolioService.calculate_free_cash_summary(transactions)
 
-        # Update Quantity (col 2)
-        qty_item = self.item(row, 2)
+        # Update Quantity (col 3)
+        qty_item = self.item(row, 3)
         if qty_item:
             qty = summary["quantity"]
             if qty != 0:
@@ -589,13 +609,13 @@ class TransactionLogTable(QTableWidget):
             else:
                 qty_item.setText("--")
 
-        # Principal (col 8) - leave blank for FREE CASH summary
-        principal_item = self.item(row, 8)
+        # Principal (col 9) - leave blank for FREE CASH summary
+        principal_item = self.item(row, 9)
         if principal_item:
             principal_item.setText("")
 
-        # Update Market Value (col 9)
-        mv_item = self.item(row, 9)
+        # Update Market Value (col 10)
+        mv_item = self.item(row, 10)
         if mv_item:
             mv = summary["market_value"]
             if mv != 0:
@@ -815,66 +835,79 @@ class TransactionLogTable(QTableWidget):
         ticker_container = self._wrap_widget_in_cell(ticker_edit)
         self.setCellWidget(row, 1, ticker_container)
 
-        # Quantity cell - column 2
+        # Name cell (read-only, styled like editable) - column 2
+        ticker = transaction["ticker"]
+        if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
+            name = "FREE CASH"
+        else:
+            name = self._cached_names.get(ticker, "")
+        name_edit = AutoSelectLineEdit(name)
+        name_edit.setReadOnly(True)
+        name_edit.setStyleSheet(widget_style)
+        self._set_widget_position(name_edit, row, 2)
+        name_container = self._wrap_widget_in_cell(name_edit)
+        self.setCellWidget(row, 2, name_container)
+
+        # Quantity cell - column 3
         qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(transaction["quantity"])
         qty_edit.setStyleSheet(widget_style)
         qty_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(qty_edit, row, 2)
+        self._set_widget_position(qty_edit, row, 3)
         qty_container = self._wrap_widget_in_cell(qty_edit)
-        self.setCellWidget(row, 2, qty_container)
+        self.setCellWidget(row, 3, qty_container)
 
-        # Execution Price cell - column 3
+        # Execution Price cell - column 4
         price_edit = ValidatedNumericLineEdit(min_value=0, max_value=1000000, decimals=2, prefix="", show_dash_for_zero=True)
         price_edit.setValue(transaction["entry_price"])
         price_edit.setStyleSheet(widget_style)
         price_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(price_edit, row, 3)
+        self._set_widget_position(price_edit, row, 4)
         price_container = self._wrap_widget_in_cell(price_edit)
-        self.setCellWidget(row, 3, price_container)
+        self.setCellWidget(row, 4, price_container)
 
-        # Fees cell - column 4
+        # Fees cell - column 5
         fees_edit = ValidatedNumericLineEdit(min_value=0, max_value=10000, decimals=2, prefix="", show_dash_for_zero=True)
         fees_edit.setValue(transaction["fees"])
         fees_edit.setStyleSheet(widget_style)
         fees_edit.textChanged.connect(self._on_widget_changed)
-        self._set_widget_position(fees_edit, row, 4)
+        self._set_widget_position(fees_edit, row, 5)
         fees_container = self._wrap_widget_in_cell(fees_edit)
-        self.setCellWidget(row, 4, fees_container)
+        self.setCellWidget(row, 5, fees_container)
 
-        # Type cell - column 5
+        # Type cell - column 6
         type_combo = NoScrollComboBox()
         type_combo.addItems(["Buy", "Sell"])
         type_combo.setCurrentText(transaction["transaction_type"])
         type_combo.currentTextChanged.connect(self._on_widget_changed)
         type_combo.setStyleSheet(combo_style)
-        self._set_widget_position(type_combo, row, 5)
+        self._set_widget_position(type_combo, row, 6)
         type_container = self._wrap_widget_in_cell(type_combo)
-        self.setCellWidget(row, 5, type_container)
+        self.setCellWidget(row, 6, type_container)
 
-        # Daily Closing Price cell (read-only) - column 6
+        # Daily Closing Price cell (read-only) - column 7
         daily_close_item = QTableWidgetItem("--")
         daily_close_item.setFlags(daily_close_item.flags() & ~Qt.ItemIsEditable)
         daily_close_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(row, 6, daily_close_item)
+        self.setItem(row, 7, daily_close_item)
 
-        # Live Price cell (read-only) - column 7
+        # Live Price cell (read-only) - column 8
         live_price_item = QTableWidgetItem("--")
         live_price_item.setFlags(live_price_item.flags() & ~Qt.ItemIsEditable)
         live_price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(row, 7, live_price_item)
+        self.setItem(row, 8, live_price_item)
 
-        # Principal cell (read-only) - column 8
+        # Principal cell (read-only) - column 9
         principal_item = QTableWidgetItem("--")
         principal_item.setFlags(principal_item.flags() & ~Qt.ItemIsEditable)
         principal_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(row, 8, principal_item)
+        self.setItem(row, 9, principal_item)
 
-        # Market Value cell (read-only) - column 9
+        # Market Value cell (read-only) - column 10
         market_value_item = QTableWidgetItem("--")
         market_value_item.setFlags(market_value_item.flags() & ~Qt.ItemIsEditable)
         market_value_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.setItem(row, 9, market_value_item)
+        self.setItem(row, 10, market_value_item)
 
         # Install focus watchers for auto-delete functionality
         self._install_focus_watcher(row)
@@ -944,11 +977,12 @@ class TransactionLogTable(QTableWidget):
             # Get inner widgets from cells (unwrap containers)
             date_edit = self._get_inner_widget(row, 0)
             ticker_edit = self._get_inner_widget(row, 1)
-            qty_spin = self._get_inner_widget(row, 2)
-            price_spin = self._get_inner_widget(row, 3)
-            fees_spin = self._get_inner_widget(row, 4)
-            type_combo = self._get_inner_widget(row, 5)
-            # Columns 6-9 are read-only items, not widgets
+            # Column 2 is Name (read-only)
+            qty_spin = self._get_inner_widget(row, 3)
+            price_spin = self._get_inner_widget(row, 4)
+            fees_spin = self._get_inner_widget(row, 5)
+            type_combo = self._get_inner_widget(row, 6)
+            # Columns 7-10 are read-only items, not widgets
 
             if not all([date_edit, ticker_edit, type_combo, qty_spin, price_spin, fees_spin]):
                 return None
@@ -1000,68 +1034,68 @@ class TransactionLogTable(QTableWidget):
         # Check if this is a FREE CASH transaction
         is_free_cash = ticker.upper() == PortfolioService.FREE_CASH_TICKER
 
-        # --- Daily Closing Price (col 6) ---
-        item_6 = self.item(row, 6)
-        if item_6:
-            if is_free_cash:
-                # FREE CASH: show blank (price is always $1, redundant to display)
-                item_6.setText("")
-            elif ticker and tx_date and ticker in self._historical_prices:
-                daily_close = self._historical_prices[ticker].get(tx_date)
-                if daily_close is not None:
-                    item_6.setText(f"${daily_close:,.2f}")
-                else:
-                    item_6.setText("--")
-            else:
-                item_6.setText("--")
-
-        # --- Live Price (col 7) ---
+        # --- Daily Closing Price (col 7) ---
         item_7 = self.item(row, 7)
         if item_7:
             if is_free_cash:
                 # FREE CASH: show blank (price is always $1, redundant to display)
                 item_7.setText("")
-            else:
-                live_price = self._current_prices.get(ticker)
-                if live_price is not None:
-                    item_7.setText(f"${live_price:,.2f}")
+            elif ticker and tx_date and ticker in self._historical_prices:
+                daily_close = self._historical_prices[ticker].get(tx_date)
+                if daily_close is not None:
+                    item_7.setText(f"${daily_close:,.2f}")
                 else:
                     item_7.setText("--")
+            else:
+                item_7.setText("--")
 
-        # --- Principal (col 8) ---
+        # --- Live Price (col 8) ---
         item_8 = self.item(row, 8)
         if item_8:
             if is_free_cash:
-                # FREE CASH: leave principal blank (not applicable)
+                # FREE CASH: show blank (price is always $1, redundant to display)
                 item_8.setText("")
+            else:
+                live_price = self._current_prices.get(ticker)
+                if live_price is not None:
+                    item_8.setText(f"${live_price:,.2f}")
+                else:
+                    item_8.setText("--")
+
+        # --- Principal (col 9) ---
+        item_9 = self.item(row, 9)
+        if item_9:
+            if is_free_cash:
+                # FREE CASH: leave principal blank (not applicable)
+                item_9.setText("")
             else:
                 principal = PortfolioService.calculate_principal(transaction)
 
                 if principal != 0:
                     # Format with sign: negative for buys, positive for sells
                     if principal < 0:
-                        item_8.setText(f"-${abs(principal):,.2f}")
+                        item_9.setText(f"-${abs(principal):,.2f}")
                     else:
-                        item_8.setText(f"${principal:,.2f}")
+                        item_9.setText(f"${principal:,.2f}")
                 else:
-                    item_8.setText("--")
+                    item_9.setText("--")
 
-        # --- Market Value (col 9) ---
-        item_9 = self.item(row, 9)
-        if item_9:
+        # --- Market Value (col 10) ---
+        item_10 = self.item(row, 10)
+        if item_10:
             if is_free_cash:
                 # FREE CASH: market value = quantity (since price is $1)
                 if quantity > 0:
-                    item_9.setText(f"${quantity:,.2f}")
+                    item_10.setText(f"${quantity:,.2f}")
                 else:
-                    item_9.setText("--")
+                    item_10.setText("--")
             else:
                 live_price = self._current_prices.get(ticker)
                 if live_price is not None and quantity > 0:
                     market_value = live_price * quantity
-                    item_9.setText(f"${market_value:,.2f}")
+                    item_10.setText(f"${market_value:,.2f}")
                 else:
-                    item_9.setText("--")
+                    item_10.setText("--")
 
     def update_current_prices(self, prices: Dict[str, float]):
         """
@@ -1276,7 +1310,7 @@ class TransactionLogTable(QTableWidget):
             start_row: First row to update
         """
         for row in range(start_row, self.rowCount()):
-            for col in range(6):  # Columns 0-5 have widgets
+            for col in range(7):  # Columns 0-6 have widgets
                 # Update inner widget position (signals are connected to inner widgets)
                 inner_widget = self._get_inner_widget(row, col)
                 if inner_widget:
@@ -1293,9 +1327,9 @@ class TransactionLogTable(QTableWidget):
 
         row, col = self._find_cell_for_widget(widget)
         if row is not None and col is not None:
-            # Track if user manually entered execution price (col 3)
+            # Track if user manually entered execution price (col 4)
             # This prevents auto-fill from overwriting user input
-            if col == 3:
+            if col == 4:
                 transaction = self._get_transaction_for_row(row)
                 if transaction and transaction.get("is_blank"):
                     self._user_entered_price_rows.add(row)
@@ -1320,8 +1354,8 @@ class TransactionLogTable(QTableWidget):
         """
         widgets = []
 
-        # Install event filters on all editable columns (0-5)
-        for col in range(6):
+        # Install event filters on all editable columns (0-6)
+        for col in range(7):
             container = self.cellWidget(row, col)
             if container:
                 # Get the inner widget (the actual editable widget, not the container)
@@ -1344,9 +1378,9 @@ class TransactionLogTable(QTableWidget):
         Args:
             row: Row index to set up tab order for
         """
-        # Get inner widgets for columns 0-5 (editable fields)
+        # Get inner widgets for columns 0-6 (editable fields)
         widgets = []
-        for col in range(6):
+        for col in range(7):
             inner = self._get_inner_widget(row, col)
             if inner:
                 widgets.append(inner)
@@ -1382,8 +1416,13 @@ class TransactionLogTable(QTableWidget):
             if row is not None and col == 1:  # Ticker column
                 transaction = self._get_transaction_for_row(row)
                 if transaction and transaction.get("is_blank"):
-                    # Defer to allow focus to settle, then auto-fill
+                    # Defer to allow focus to settle, then auto-fill price and name
                     QTimer.singleShot(0, lambda r=row: self._try_autofill_execution_price(r))
+                    ticker_widget = self._get_inner_widget(row, 1)
+                    if ticker_widget:
+                        ticker = ticker_widget.text().strip()
+                        if ticker:
+                            QTimer.singleShot(0, lambda r=row, t=ticker: self._try_autofill_name(r, t))
 
             # Focus left a widget - defer check to see if it left the row
             # Capture current generation so we can detect if a sort/edit invalidated this callback
@@ -1405,11 +1444,17 @@ class TransactionLogTable(QTableWidget):
                         # Determine direction: Tab = forward, Shift+Tab = backward
                         if key == Qt.Key_Backtab or (modifiers & Qt.ShiftModifier):
                             next_col = col - 1
+                            # Skip Name column (col 2) - it's read-only
+                            if next_col == 2:
+                                next_col = 1
                         else:
                             next_col = col + 1
+                            # Skip Name column (col 2) - it's read-only
+                            if next_col == 2:
+                                next_col = 3
 
-                        # Stay within editable columns (0-5)
-                        if 0 <= next_col <= 5:
+                        # Stay within editable columns (0-1, 3-6)
+                        if 0 <= next_col <= 6 and next_col != 2:
                             next_widget = self._get_inner_widget(row, next_col)
                             if next_widget:
                                 next_widget.setFocus()
@@ -1593,7 +1638,7 @@ class TransactionLogTable(QTableWidget):
                                     # For FREE CASH ticker, auto-set execution price to $1.00
                                     if ticker_upper == PortfolioService.FREE_CASH_TICKER:
                                         transaction["entry_price"] = 1.0
-                                        price_widget = self.cellWidget(row, 3)
+                                        price_widget = self.cellWidget(row, 4)
                                         if price_widget:
                                             inner_widget = price_widget.findChild(ValidatedNumericLineEdit)
                                             if inner_widget:
@@ -1737,8 +1782,11 @@ class TransactionLogTable(QTableWidget):
 
         # Check if this is blank row
         if transaction.get("is_blank"):
-            # Try to auto-fill execution price when date and ticker are filled
+            # Try to auto-fill execution price and name when date and ticker are filled
             self._try_autofill_execution_price(row)
+            ticker = transaction.get("ticker", "").strip()
+            if ticker:
+                self._try_autofill_name(row, ticker)
 
             # Check if it's complete, if so validate and transition to real
             if self._is_transaction_complete(transaction):
@@ -2027,7 +2075,7 @@ class TransactionLogTable(QTableWidget):
         if row in self._user_entered_price_rows:
             return
 
-        price_widget = self._get_inner_widget(row, 3)
+        price_widget = self._get_inner_widget(row, 4)
         if price_widget and isinstance(price_widget, ValidatedNumericLineEdit):
             price_widget.blockSignals(True)
             price_widget.setValue(price)
@@ -2038,6 +2086,92 @@ class TransactionLogTable(QTableWidget):
             self._transactions_by_id["BLANK_ROW"]["entry_price"] = price
             if row in self._transactions:
                 self._transactions[row]["entry_price"] = price
+
+    def _apply_autofill_name(self, row: int, name: str) -> None:
+        """
+        Apply auto-filled name to the name widget.
+
+        Called from signal handler (thread-safe).
+
+        Args:
+            row: Row index
+            name: Name to set
+        """
+        # Verify row still exists
+        if row >= self.rowCount():
+            return
+
+        name_widget = self._get_inner_widget(row, 2)
+        if name_widget and isinstance(name_widget, QLineEdit):
+            name_widget.blockSignals(True)
+            name_widget.setText(name)
+            name_widget.blockSignals(False)
+            name_widget.repaint()
+
+    def _try_autofill_name(self, row: int, ticker: str) -> None:
+        """
+        Auto-fill name for a row when ticker is set.
+
+        Fetches name in background thread to avoid UI lag.
+
+        Args:
+            row: Row index
+            ticker: Ticker symbol
+        """
+        if not ticker:
+            return
+
+        ticker_upper = ticker.upper()
+
+        # FREE CASH gets special name
+        if ticker_upper == PortfolioService.FREE_CASH_TICKER:
+            self._apply_autofill_name(row, "FREE CASH")
+            return
+
+        # Check cache first
+        if ticker_upper in self._cached_names:
+            self._apply_autofill_name(row, self._cached_names[ticker_upper])
+            return
+
+        # Fetch in background thread
+        import threading
+
+        def fetch_name():
+            """Background thread: fetch name, then emit signal for main thread."""
+            try:
+                names = PortfolioService.fetch_ticker_names([ticker_upper])
+                name = names.get(ticker_upper, "")
+                if name:
+                    # Cache the name
+                    self._cached_names[ticker_upper] = name
+                    # Emit signal to update UI from main thread
+                    self._name_autofill_ready.emit(row, name)
+            except Exception as e:
+                print(f"Error fetching name for {ticker_upper}: {e}")
+
+        thread = threading.Thread(target=fetch_name, daemon=True)
+        thread.start()
+
+    def update_ticker_names(self, names: Dict[str, str]):
+        """
+        Update cached ticker names from external source and refresh Name cells.
+
+        Args:
+            names: Dict mapping ticker -> name
+        """
+        self._cached_names.update(names)
+
+        # Update Name cells for all existing rows
+        for row in range(self.rowCount()):
+            # Get ticker from column 1
+            ticker_widget = self._get_inner_widget(row, 1)
+            if ticker_widget and isinstance(ticker_widget, QLineEdit):
+                ticker = ticker_widget.text().strip().upper()
+                if ticker and ticker in self._cached_names:
+                    name = self._cached_names[ticker]
+                    name_widget = self._get_inner_widget(row, 2)
+                    if name_widget and isinstance(name_widget, QLineEdit):
+                        name_widget.setText(name)
 
     def _revert_ticker(self, row: int, original_ticker: str):
         """
@@ -2091,7 +2225,7 @@ class TransactionLogTable(QTableWidget):
             row: Row index
             original_quantity: Original quantity value to restore
         """
-        qty_widget = self._get_inner_widget(row, 2)
+        qty_widget = self._get_inner_widget(row, 3)
         if qty_widget and isinstance(qty_widget, ValidatedNumericLineEdit):
             qty_widget.blockSignals(True)
             qty_widget.setValue(original_quantity)
@@ -2113,7 +2247,7 @@ class TransactionLogTable(QTableWidget):
             row: Row index
             original_price: Original price value to restore
         """
-        price_widget = self._get_inner_widget(row, 3)
+        price_widget = self._get_inner_widget(row, 4)
         if price_widget and isinstance(price_widget, ValidatedNumericLineEdit):
             price_widget.blockSignals(True)
             price_widget.setValue(original_price)
@@ -2135,7 +2269,7 @@ class TransactionLogTable(QTableWidget):
             row: Row index
             original_fees: Original fees value to restore
         """
-        fees_widget = self._get_inner_widget(row, 4)
+        fees_widget = self._get_inner_widget(row, 5)
         if fees_widget and isinstance(fees_widget, ValidatedNumericLineEdit):
             fees_widget.blockSignals(True)
             fees_widget.setValue(original_fees)
@@ -2157,7 +2291,7 @@ class TransactionLogTable(QTableWidget):
             row: Row index
             original_type: Original transaction type ("Buy" or "Sell")
         """
-        type_widget = self._get_inner_widget(row, 5)
+        type_widget = self._get_inner_widget(row, 6)
         if type_widget and isinstance(type_widget, QComboBox):
             type_widget.blockSignals(True)
             type_widget.setCurrentText(original_type)
@@ -2320,8 +2454,8 @@ class TransactionLogTable(QTableWidget):
             self._current_sort_order = Qt.AscendingOrder
 
         # Define sort key functions based on column
-        # Columns 0-5: Editable fields stored in transaction dict
-        # Columns 6-9: Calculated/read-only fields
+        # Columns 0-6: Editable fields stored in transaction dict
+        # Columns 7-10: Calculated/read-only fields
         def get_sort_key(tx: Dict[str, Any]):
             ticker = tx.get("ticker", "")
             tx_date = tx.get("date", "")
@@ -2335,23 +2469,25 @@ class TransactionLogTable(QTableWidget):
                 return (tx_date, -priority, -sequence)
             elif column == 1:  # Ticker
                 return ticker.lower()
-            elif column == 2:  # Quantity
+            elif column == 2:  # Name (auto-populated, sort by cached name)
+                return (self._cached_names.get(ticker) or "").lower()
+            elif column == 3:  # Quantity
                 return tx.get("quantity", 0.0)
-            elif column == 3:  # Execution Price
+            elif column == 4:  # Execution Price
                 return tx.get("entry_price", 0.0)
-            elif column == 4:  # Fees
+            elif column == 5:  # Fees
                 return tx.get("fees", 0.0)
-            elif column == 5:  # Type
+            elif column == 6:  # Type
                 return tx.get("transaction_type", "").lower()
-            elif column == 6:  # Daily Closing Price
+            elif column == 7:  # Daily Closing Price
                 if ticker and tx_date and ticker in self._historical_prices:
                     return self._historical_prices[ticker].get(tx_date, 0.0) or 0.0
                 return 0.0
-            elif column == 7:  # Live Price
+            elif column == 8:  # Live Price
                 return self._current_prices.get(ticker, 0.0) or 0.0
-            elif column == 8:  # Principal
+            elif column == 9:  # Principal
                 return PortfolioService.calculate_principal(tx)
-            elif column == 9:  # Market Value
+            elif column == 10:  # Market Value
                 live_price = self._current_prices.get(ticker, 0.0) or 0.0
                 quantity = tx.get("quantity", 0.0)
                 return live_price * quantity
@@ -2561,8 +2697,8 @@ class TransactionLogTable(QTableWidget):
         combo_style = self._get_combo_stylesheet()
 
         for row in range(self.rowCount()):
-            # Columns 0-5 have container widgets with inner widgets
-            for col in range(6):
+            # Columns 0-6 have container widgets with inner widgets
+            for col in range(7):
                 container = self.cellWidget(row, col)
                 if container:
                     # Update container background
@@ -2571,7 +2707,7 @@ class TransactionLogTable(QTableWidget):
                     # Update inner widget style
                     inner = container.property("_inner_widget")
                     if inner:
-                        if col == 5:  # Combo box
+                        if col == 6:  # Combo box (Type column)
                             inner.setStyleSheet(combo_style)
                         else:  # QLineEdit-based widgets
                             inner.setStyleSheet(widget_stylesheet)

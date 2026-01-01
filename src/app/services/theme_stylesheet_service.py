@@ -70,7 +70,7 @@ class ThemeStylesheetService:
                 font-size: 14px;
             }}
             QTableWidget::item {{
-                padding: 0px;
+                padding: 4px 8px;
             }}
             QTableWidget::item:selected {{
                 background-color: {c['accent']};

@@ -42,6 +42,9 @@ class PortfolioConstructionModule(QWidget):
         self._cached_prices = {}  # ticker -> price
         self._cached_tickers = set()  # Set of tickers we've fetched prices for
 
+        # Name cache - ticker short names from Yahoo Finance
+        self._cached_names = {}  # ticker -> short name
+
         # Settings manager (handles persistence)
         self._settings_manager = PortfolioSettingsManager()
 
@@ -198,11 +201,13 @@ class PortfolioConstructionModule(QWidget):
                 # Only fetch prices for NEW tickers (not already cached)
                 tickers_to_fetch = [t for t in tickers if t not in self._cached_tickers]
 
-            # Fetch prices only for tickers that need it
+            # Fetch prices and names only for tickers that need it
             if tickers_to_fetch:
                 new_prices = PortfolioService.fetch_current_prices(tickers_to_fetch)
-                # Update cache
+                new_names = PortfolioService.fetch_ticker_names(tickers_to_fetch)
+                # Update caches
                 self._cached_prices.update(new_prices)
+                self._cached_names.update(new_names)
                 self._cached_tickers.update(tickers_to_fetch)
 
             # Remove cached tickers that are no longer in use
@@ -210,12 +215,17 @@ class PortfolioConstructionModule(QWidget):
             for ticker in removed_tickers:
                 self._cached_tickers.discard(ticker)
                 self._cached_prices.pop(ticker, None)
+                self._cached_names.pop(ticker, None)
 
         # Use cached prices for calculations
         current_prices = {t: self._cached_prices.get(t) for t in tickers}
 
-        # Update transaction table with current prices
+        # Use cached names for display
+        ticker_names = {t: self._cached_names.get(t) for t in tickers}
+
+        # Update transaction table with current prices and names
         self.transaction_table.update_current_prices(current_prices)
+        self.transaction_table.update_ticker_names(ticker_names)
 
         # Also fetch historical prices for new ticker/date combinations
         # (batch fetch handles caching internally)
@@ -227,13 +237,14 @@ class PortfolioConstructionModule(QWidget):
         # Calculate FREE CASH summary
         free_cash_summary = PortfolioService.calculate_free_cash_summary(transactions)
 
-        # Update aggregate table with holdings AND FREE CASH
-        self.aggregate_table.update_holdings(holdings, free_cash_summary)
+        # Update aggregate table with holdings, FREE CASH, and ticker names
+        self.aggregate_table.update_holdings(holdings, free_cash_summary, ticker_names)
 
     def _refresh_prices(self):
-        """Manually refresh current prices."""
-        # Clear cache and force fetch all prices
+        """Manually refresh current prices and names."""
+        # Clear caches and force fetch all
         self._cached_prices.clear()
+        self._cached_names.clear()
         self._cached_tickers.clear()
         self._update_aggregate_table(force_fetch=True)
         CustomMessageBox.information(
@@ -319,8 +330,9 @@ class PortfolioConstructionModule(QWidget):
             )
             return
 
-        # Clear price cache when loading new portfolio
+        # Clear caches when loading new portfolio
         self._cached_prices.clear()
+        self._cached_names.clear()
         self._cached_tickers.clear()
 
         self.current_portfolio = portfolio
@@ -364,10 +376,11 @@ class PortfolioConstructionModule(QWidget):
             self.current_portfolio = PortfolioPersistence.create_new_portfolio(name)
             PortfolioPersistence.save_portfolio(self.current_portfolio)
 
-            # Clear tables and price cache
+            # Clear tables and caches
             self.transaction_table.clear_all_transactions()
             self.aggregate_table.setRowCount(0)
             self._cached_prices.clear()
+            self._cached_names.clear()
             self._cached_tickers.clear()
 
             # Ensure blank row exists for immediate editing

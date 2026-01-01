@@ -19,12 +19,13 @@ class AggregatePortfolioTable(QTableWidget):
     # Columns
     COLUMNS = [
         "Ticker",
-        "Total Quantity",
+        "Name",
+        "Quantity",
         "Avg Cost Basis",
         "Current Price",
         "Market Value",
         "P&L",
-        "Weight %"
+        "Weight"
     ]
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
@@ -32,6 +33,7 @@ class AggregatePortfolioTable(QTableWidget):
         self.theme_manager = theme_manager
         self._holdings_data: List[Dict[str, Any]] = []
         self._free_cash_summary: Dict[str, Any] = None  # FREE CASH summary data
+        self._ticker_names: Dict[str, str] = {}  # ticker -> short name
         self._current_sort_column: int = -1
         self._current_sort_order: Qt.SortOrder = Qt.DescendingOrder
 
@@ -45,10 +47,24 @@ class AggregatePortfolioTable(QTableWidget):
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
 
-        # All columns stretch
+        # Column sizing: Ticker narrow, Name wide, others stretch equally
         header = self.horizontalHeader()
-        for i in range(len(self.COLUMNS)):
-            header.setSectionResizeMode(i, QHeaderView.Stretch)
+        # Ticker - fixed narrow width
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        self.setColumnWidth(0, 100)
+        # Name - stretch with higher weight (takes extra space)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        self.setColumnWidth(1, 300)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.setColumnWidth(2, 100)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.setColumnWidth(3, 175)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.setColumnWidth(4, 175)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)
+        header.setSectionResizeMode(7, QHeaderView.Stretch)
+        # Other columns stretch equally
 
         # Left-align column headers
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -87,17 +103,19 @@ class AggregatePortfolioTable(QTableWidget):
             corner_button.setText(text)
             corner_button.setEnabled(False)
 
-    def update_holdings(self, holdings: List[Dict[str, Any]], free_cash_summary: Dict[str, Any] = None):
+    def update_holdings(self, holdings: List[Dict[str, Any]], free_cash_summary: Dict[str, Any] = None, ticker_names: Dict[str, str] = None):
         """
         Update table with aggregate holdings.
 
         Args:
             holdings: List of holding dicts from PortfolioService
             free_cash_summary: Optional FREE CASH summary dict with quantity, principal, market_value
+            ticker_names: Optional dict mapping ticker -> short name
         """
         # Store holdings data for sorting
         self._holdings_data = holdings.copy() if holdings else []
         self._free_cash_summary = free_cash_summary
+        self._ticker_names = ticker_names or {}
 
         # Calculate total market value including FREE CASH
         holdings_market_value = sum(
@@ -154,13 +172,20 @@ class AggregatePortfolioTable(QTableWidget):
             self.setVerticalHeaderItem(row, row_header)
 
             is_free_cash = holding.get("_is_free_cash", False)
+            ticker = holding["ticker"]
 
             # Ticker
-            ticker_item = QTableWidgetItem(holding["ticker"])
+            ticker_item = QTableWidgetItem(ticker)
             ticker_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.setItem(row, 0, ticker_item)
 
-            # Total Quantity - format as dollar amount for FREE CASH
+            # Name
+            name = self._ticker_names.get(ticker, "") or ""
+            name_item = QTableWidgetItem(name)
+            name_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.setItem(row, 1, name_item)
+
+            # Quantity - format as dollar amount for FREE CASH, otherwise 2 decimals without trailing zeroes
             if is_free_cash:
                 qty = holding['total_quantity']
                 if qty != 0:
@@ -168,14 +193,16 @@ class AggregatePortfolioTable(QTableWidget):
                 else:
                     qty_item = QTableWidgetItem("--")
             else:
-                qty_item = QTableWidgetItem(f"{holding['total_quantity']:.4f}")
+                # Format to 2 decimals, strip trailing zeroes and trailing decimal point
+                qty_str = f"{holding['total_quantity']:.2f}".rstrip('0').rstrip('.')
+                qty_item = QTableWidgetItem(qty_str)
             qty_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 1, qty_item)
+            self.setItem(row, 2, qty_item)
 
             # Avg Cost Basis
             cost_item = QTableWidgetItem(f"${holding['avg_cost_basis']:.2f}")
             cost_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 2, cost_item)
+            self.setItem(row, 3, cost_item)
 
             # Current Price
             price = holding.get("current_price")
@@ -184,7 +211,7 @@ class AggregatePortfolioTable(QTableWidget):
             else:
                 price_item = QTableWidgetItem("N/A")
             price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 3, price_item)
+            self.setItem(row, 4, price_item)
 
             # Market Value
             market_value = holding.get("market_value")
@@ -193,7 +220,7 @@ class AggregatePortfolioTable(QTableWidget):
             else:
                 mv_item = QTableWidgetItem("N/A")
             mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 4, mv_item)
+            self.setItem(row, 5, mv_item)
 
             # P&L - FREE CASH always shows "--"
             if is_free_cash:
@@ -213,12 +240,12 @@ class AggregatePortfolioTable(QTableWidget):
                 else:
                     pnl_item = QTableWidgetItem("N/A")
             pnl_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 5, pnl_item)
+            self.setItem(row, 6, pnl_item)
 
             # Weight %
             weight_item = QTableWidgetItem(f"{holding['weight_pct']:.2f}%")
             weight_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.setItem(row, 6, weight_item)
+            self.setItem(row, 7, weight_item)
 
     def _add_totals_row(self, holdings: List[Dict[str, Any]], free_cash_summary: Dict[str, Any] = None):
         """
@@ -262,8 +289,8 @@ class AggregatePortfolioTable(QTableWidget):
         total_label.setFont(font)
         self.setItem(row, 0, total_label)
 
-        # Empty cells for qty, avg cost, current price
-        for col in [1, 2, 3]:
+        # Empty cells for name, qty, avg cost, current price
+        for col in [1, 2, 3, 4]:
             empty_item = QTableWidgetItem("")
             self.setItem(row, col, empty_item)
 
@@ -273,7 +300,7 @@ class AggregatePortfolioTable(QTableWidget):
         font = QFont()
         font.setBold(True)
         mv_item.setFont(font)
-        self.setItem(row, 4, mv_item)
+        self.setItem(row, 5, mv_item)
 
         # Total P&L (FREE CASH has no P&L, so just use holdings P&L)
         total_pnl = totals['total_pnl']
@@ -290,7 +317,7 @@ class AggregatePortfolioTable(QTableWidget):
         font = QFont()
         font.setBold(True)
         pnl_item.setFont(font)
-        self.setItem(row, 5, pnl_item)
+        self.setItem(row, 6, pnl_item)
 
         # Weight is always 100%
         weight_item = QTableWidgetItem("100.00%")
@@ -298,7 +325,7 @@ class AggregatePortfolioTable(QTableWidget):
         font = QFont()
         font.setBold(True)
         weight_item.setFont(font)
-        self.setItem(row, 6, weight_item)
+        self.setItem(row, 7, weight_item)
 
     def _on_header_clicked(self, column: int):
         """
@@ -324,12 +351,13 @@ class AggregatePortfolioTable(QTableWidget):
         # Define sort key based on column
         sort_keys = {
             0: lambda h: h["ticker"].lower(),
-            1: lambda h: h["total_quantity"],
-            2: lambda h: h["avg_cost_basis"],
-            3: lambda h: h.get("current_price") or 0,
-            4: lambda h: h.get("market_value") or 0,
-            5: lambda h: h.get("total_pnl") or 0,
-            6: lambda h: h["weight_pct"],
+            1: lambda h: (self._ticker_names.get(h["ticker"]) or "").lower(),
+            2: lambda h: h["total_quantity"],
+            3: lambda h: h["avg_cost_basis"],
+            4: lambda h: h.get("current_price") or 0,
+            5: lambda h: h.get("market_value") or 0,
+            6: lambda h: h.get("total_pnl") or 0,
+            7: lambda h: h["weight_pct"],
         }
 
         key_func = sort_keys.get(column, lambda h: 0)

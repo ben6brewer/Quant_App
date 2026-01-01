@@ -4,6 +4,8 @@ import uuid
 from typing import Dict, List, Any, Tuple, Optional
 from collections import defaultdict
 
+import yfinance as yf
+
 from app.services.market_data import fetch_price_history
 
 
@@ -304,6 +306,39 @@ class PortfolioService:
                 prices[ticker] = None
 
         return prices
+
+    @staticmethod
+    def fetch_ticker_names(tickers: List[str]) -> Dict[str, Optional[str]]:
+        """
+        Fetch short names for tickers from Yahoo Finance.
+
+        Args:
+            tickers: List of ticker symbols
+
+        Returns:
+            Dict mapping ticker -> short name (or None if fetch failed)
+        """
+        names = {}
+
+        for ticker in tickers:
+            if not ticker:
+                continue
+
+            # FREE CASH doesn't have a Yahoo Finance name
+            if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
+                names[ticker] = None
+                continue
+
+            try:
+                info = yf.Ticker(ticker).info
+                # Try shortName first, fall back to longName
+                name = info.get("shortName") or info.get("longName")
+                names[ticker] = name
+            except Exception as e:
+                print(f"Error fetching name for {ticker}: {e}")
+                names[ticker] = None
+
+        return names
 
     @staticmethod
     def is_valid_ticker(ticker: str) -> Tuple[bool, Optional[str]]:
