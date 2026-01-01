@@ -360,12 +360,12 @@ class PortfolioConstructionModule(QWidget):
             # Hide loading overlay
             self._hide_loading_overlay()
 
-    def _show_loading_overlay(self):
+    def _show_loading_overlay(self, message: str = "Loading Portfolio..."):
         """Show loading overlay over the tab bar and table area."""
         if self._loading_overlay is None:
             # Parent to self (the module) to cover both tab bar and tables
             self._loading_overlay = LoadingOverlay(
-                self, self.theme_manager, "Loading Portfolio..."
+                self, self.theme_manager, message
             )
 
         # Calculate rect that covers view_tab_bar + table_stack
@@ -586,22 +586,29 @@ class PortfolioConstructionModule(QWidget):
             )
             return
 
-        # Add to current portfolio using batch mode for O(N) performance
-        self.transaction_table.begin_batch_loading()
-        for tx in new_txs:
-            self.transaction_table.add_transaction_row(tx)
-        self.transaction_table.end_batch_loading()
+        # Show loading overlay during import
+        self._show_loading_overlay("Importing Transactions...")
 
-        # Sort to maintain date-descending order after import
-        self.transaction_table.sort_by_date_descending()
+        try:
+            # Add to current portfolio using batch mode for O(N) performance
+            self.transaction_table.begin_batch_loading()
+            for tx in new_txs:
+                self.transaction_table.add_transaction_row(tx)
+            self.transaction_table.end_batch_loading()
 
-        self.unsaved_changes = True
+            # Sort to maintain date-descending order after import
+            self.transaction_table.sort_by_date_descending()
 
-        # Update aggregate table
-        self._update_aggregate_table()
+            self.unsaved_changes = True
 
-        # Fetch historical prices for new transactions
-        self.transaction_table.fetch_historical_prices_batch()
+            # Update aggregate table
+            self._update_aggregate_table()
+
+            # Fetch historical prices for new transactions
+            self.transaction_table.fetch_historical_prices_batch()
+        finally:
+            # Hide loading overlay
+            self._hide_loading_overlay()
 
         # Show success message
         count = len(new_txs)
