@@ -745,8 +745,10 @@ class TransactionLogTable(QTableWidget):
         # Create new blank row at top (also ensures FREE CASH summary at row 1)
         self._ensure_blank_row()
 
-        # Add the new transaction at the end (after blank and FREE CASH summary)
-        self.add_transaction_row(transaction)
+        # Use binary insertion to add transaction at correct sorted position
+        # This avoids full table rebuild - O(log n) search + O(1) widget creation
+        insertion_pos = self._find_insertion_position(transaction)
+        self._insert_transaction_at_position(transaction, insertion_pos)
 
         # Emit signal
         self.transaction_added.emit(transaction)
@@ -754,8 +756,9 @@ class TransactionLogTable(QTableWidget):
         # Update FREE CASH summary row
         self._update_free_cash_summary_row()
 
-        # Re-sort to default order (date descending, sequence descending)
-        self.sort_by_date_descending()
+        # Increment focus generation to invalidate pending deferred callbacks
+        # (same as sort_by_date_descending would do)
+        self._focus_generation += 1
 
         return True  # Transition succeeded
 
@@ -807,6 +810,26 @@ class TransactionLogTable(QTableWidget):
             print(f"[ORIGINAL_VALUES] add_transaction_row: SKIPPED tx_id={tx_id[:8]}... "
                   f"(already tracked with date={self._original_values[tx_id].get('date')})")
 
+        # Create widgets using shared helper
+        self._create_transaction_row_widgets(row, transaction)
+
+        # Update FREE CASH summary - all transactions affect cash balance
+        # (Buy costs cash, Sell adds cash, FREE CASH deposits/withdrawals)
+        self._update_free_cash_summary_row()
+
+        return row
+
+    def _create_transaction_row_widgets(self, row: int, transaction: Dict[str, Any]):
+        """
+        Create all widgets for a transaction row.
+
+        This is the widget creation logic extracted from add_transaction_row() for reuse
+        by both add_transaction_row() and _insert_transaction_at_position().
+
+        Args:
+            row: Row index
+            transaction: Transaction dict
+        """
         # Get current theme stylesheets
         widget_style = self._get_current_widget_stylesheet()
         combo_style = self._get_combo_stylesheet()
@@ -902,11 +925,140 @@ class TransactionLogTable(QTableWidget):
         # Set up tab order for keyboard navigation
         self._setup_tab_order(row)
 
-        # Update FREE CASH summary - all transactions affect cash balance
-        # (Buy costs cash, Sell adds cash, FREE CASH deposits/withdrawals)
-        self._update_free_cash_summary_row()
+    def _find_insertion_position(self, transaction: Dict[str, Any]) -> int:
+        """
+        Find the correct insertion position for a new transaction using binary search.
 
-        return row
+        The table is sorted by date descending, then priority ascending, then sequence ascending.
+        Returns the row index where the transaction should be inserted (after blank row at 0
+        and FREE CASH summary at 1).
+
+        Args:
+            transaction: Transaction dict with date, ticker, transaction_type, sequence
+
+        Returns:
+            Row index for insertion (minimum 2, since rows 0-1 are pinned)
+        """
+        tx_date = transaction.get("date", "")
+        ticker = transaction.get("ticker", "")
+        tx_type = transaction.get("transaction_type", "Buy")
+        sequence = transaction.get("sequence", 0)
+
+        # Calculate sort key for new transaction (negated for descending order)
+        priority = PortfolioService.get_transaction_priority(ticker, tx_type)
+        new_key = (tx_date, -priority, -sequence)
+
+        # Binary search on rows 2 to rowCount-1 (skip blank row and FREE CASH summary)
+        left = 2
+        right = self.rowCount()
+
+        while left < right:
+            mid = (left + right) // 2
+
+            # Extract sort key from row at mid
+            mid_tx = self._get_transaction_for_row(mid)
+            if mid_tx:
+                mid_date = mid_tx.get("date", "")
+                mid_ticker = mid_tx.get("ticker", "")
+                mid_type = mid_tx.get("transaction_type", "Buy")
+                mid_seq = mid_tx.get("sequence", 0)
+                mid_priority = PortfolioService.get_transaction_priority(mid_ticker, mid_type)
+                mid_key = (mid_date, -mid_priority, -mid_seq)
+
+                # For descending order: if new_key > mid_key, insert before mid
+                if new_key > mid_key:
+                    right = mid
+                else:
+                    left = mid + 1
+            else:
+                # Safety fallback - shouldn't happen
+                left = mid + 1
+
+        return left
+
+    def _insert_transaction_at_position(self, transaction: Dict[str, Any], pos: int) -> int:
+        """
+        Insert a transaction at a specific row position without rebuilding the table.
+
+        This is O(n) for mapping shifts but O(1) for widget operations.
+
+        Args:
+            transaction: Transaction dict to insert
+            pos: Row index to insert at
+
+        Returns:
+            The actual row index where transaction was inserted
+        """
+        tx_id = transaction["id"]
+
+        # 1. Shift all mappings for rows >= pos BEFORE inserting
+        # This must happen before insertRow() because Qt shifts visual rows automatically
+        new_row_to_id = {}
+        new_transactions = {}
+        new_row_widgets_map = {}
+
+        for old_row in sorted(self._row_to_id.keys(), reverse=True):
+            if old_row >= pos:
+                new_row_to_id[old_row + 1] = self._row_to_id[old_row]
+            else:
+                new_row_to_id[old_row] = self._row_to_id[old_row]
+
+        for old_row in sorted(self._transactions.keys(), reverse=True):
+            if old_row >= pos:
+                new_transactions[old_row + 1] = self._transactions[old_row]
+            else:
+                new_transactions[old_row] = self._transactions[old_row]
+
+        for old_row in sorted(self._row_widgets_map.keys(), reverse=True):
+            if old_row >= pos:
+                new_row_widgets_map[old_row + 1] = self._row_widgets_map[old_row]
+            else:
+                new_row_widgets_map[old_row] = self._row_widgets_map[old_row]
+
+        self._row_to_id = new_row_to_id
+        self._transactions = new_transactions
+        self._row_widgets_map = new_row_widgets_map
+
+        # 2. Insert the row in Qt table
+        self.setSortingEnabled(False)
+        self.insertRow(pos)
+        self.setRowHeight(pos, 48)
+
+        # 3. Set row header (row number excludes blank row at 0 and FREE CASH summary at 1)
+        row_header = QTableWidgetItem(str(pos - 1))
+        self.setVerticalHeaderItem(pos, row_header)
+
+        # 4. Store transaction in mappings
+        self._transactions_by_id[tx_id] = transaction
+        self._row_to_id[pos] = tx_id
+        self._transactions[pos] = transaction
+
+        # 5. Store original values for revert on invalid edit
+        if tx_id not in self._original_values:
+            self._debug_set_original_values(tx_id, {
+                "ticker": transaction.get("ticker", ""),
+                "date": transaction.get("date", ""),
+                "quantity": transaction.get("quantity", 0.0),
+                "entry_price": transaction.get("entry_price", 0.0),
+                "fees": transaction.get("fees", 0.0),
+                "transaction_type": transaction.get("transaction_type", "Buy"),
+                "sequence": transaction.get("sequence", 0)
+            }, "_insert_transaction_at_position")
+
+        # 6. Create widgets using shared helper
+        self._create_transaction_row_widgets(pos, transaction)
+
+        # 7. Update calculated cells for this row
+        self._update_calculated_cells(pos)
+
+        # 8. Update row headers for shifted rows (pos+1 onwards)
+        for row in range(pos + 1, self.rowCount()):
+            tx = self._get_transaction_for_row(row)
+            if tx and not tx.get("is_blank") and not tx.get("is_free_cash_summary"):
+                header_item = QTableWidgetItem(str(row - 1))
+                self.setVerticalHeaderItem(row, header_item)
+
+        return pos
 
     def _on_cell_changed(self, row: int, col: int):
         """Handle cell value change."""
