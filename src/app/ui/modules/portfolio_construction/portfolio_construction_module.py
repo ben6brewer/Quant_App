@@ -1,11 +1,12 @@
 """Portfolio Construction Module - Main Orchestrator"""
 
 from datetime import datetime
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QApplication
 from PySide6.QtCore import Qt
 
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common import CustomMessageBox
+from app.ui.widgets.common.loading_overlay import LoadingOverlay
 
 from .services import PortfolioService, PortfolioPersistence, PortfolioSettingsManager
 from .widgets import (
@@ -47,6 +48,9 @@ class PortfolioConstructionModule(QWidget):
 
         # Settings manager (handles persistence)
         self._settings_manager = PortfolioSettingsManager()
+
+        # Loading overlay (created on demand)
+        self._loading_overlay = None
 
         self._setup_ui()
 
@@ -151,9 +155,7 @@ class PortfolioConstructionModule(QWidget):
         # Sort by date descending (most recent first) with sequence for same-day ordering
         self.transaction_table.sort_by_date_descending()
 
-        # Fetch historical prices for all transactions in batch
-        self.transaction_table.fetch_historical_prices_batch()
-
+        # Historical prices fetched in _update_aggregate_table() to avoid duplicate calls
         self.unsaved_changes = False
 
     def _on_transaction_changed(self, *args):
@@ -330,23 +332,59 @@ class PortfolioConstructionModule(QWidget):
             )
             return
 
-        # Clear caches when loading new portfolio
-        self._cached_prices.clear()
-        self._cached_names.clear()
-        self._cached_tickers.clear()
+        # Show loading overlay
+        self._show_loading_overlay()
 
-        self.current_portfolio = portfolio
-        self._populate_transaction_table()
-        # Force fetch all prices on portfolio load
-        self._update_aggregate_table(force_fetch=True)
+        try:
+            # Clear caches when loading new portfolio
+            self._cached_prices.clear()
+            self._cached_names.clear()
+            self._cached_tickers.clear()
 
-        # Record visit for recent ordering
-        PortfolioPersistence.record_visit(name)
+            self.current_portfolio = portfolio
+            self._populate_transaction_table()
+            # Force fetch all prices on portfolio load
+            self._update_aggregate_table(force_fetch=True)
 
-        # Update controls and enable buttons (with recent ordering)
-        portfolios = PortfolioPersistence.list_portfolios_by_recent()
-        self.controls.update_portfolio_list(portfolios, name)
-        self.controls._update_button_states(True)
+            # Record visit for recent ordering
+            PortfolioPersistence.record_visit(name)
+
+            # Update controls and enable buttons (with recent ordering)
+            portfolios = PortfolioPersistence.list_portfolios_by_recent()
+            self.controls.update_portfolio_list(portfolios, name)
+            self.controls._update_button_states(True)
+        finally:
+            # Hide loading overlay
+            self._hide_loading_overlay()
+
+    def _show_loading_overlay(self):
+        """Show loading overlay over the tab bar and table area."""
+        if self._loading_overlay is None:
+            # Parent to self (the module) to cover both tab bar and tables
+            self._loading_overlay = LoadingOverlay(
+                self, self.theme_manager, "Loading Portfolio..."
+            )
+
+        # Calculate rect that covers view_tab_bar + table_stack
+        # Get positions relative to self
+        tab_bar_top = self.view_tab_bar.geometry().top()
+        table_bottom = self.table_stack.geometry().bottom()
+        content_rect = self.rect()
+        content_rect.setTop(tab_bar_top)
+        content_rect.setBottom(table_bottom)
+
+        self._loading_overlay.setGeometry(content_rect)
+        self._loading_overlay.show()
+        self._loading_overlay.raise_()
+        # Force UI update to render overlay before heavy work
+        QApplication.processEvents()
+
+    def _hide_loading_overlay(self):
+        """Hide and cleanup loading overlay."""
+        if self._loading_overlay is not None:
+            self._loading_overlay.hide()
+            self._loading_overlay.deleteLater()
+            self._loading_overlay = None
 
     def _new_portfolio_dialog(self):
         """Open new portfolio dialog."""

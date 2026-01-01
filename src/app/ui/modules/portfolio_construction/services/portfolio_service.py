@@ -3,10 +3,12 @@
 import uuid
 from typing import Dict, List, Any, Tuple, Optional
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yfinance as yf
 
 from app.services.market_data import fetch_price_history
+from app.services.ticker_name_cache import TickerNameCache
 
 
 class PortfolioService:
@@ -269,11 +271,12 @@ class PortfolioService:
     @staticmethod
     def fetch_current_prices(tickers: List[str]) -> Dict[str, Optional[float]]:
         """
-        Fetch current prices for tickers using MarketDataService.
+        Fetch current prices for tickers using MarketDataService with parallel fetching.
 
         Uses period="max" to leverage parquet caching for efficiency.
         Cache stored at ~/.quant_terminal/cache/{TICKER}.parquet
         FREE CASH ticker always returns $1.00 (no Yahoo fetch).
+        Fetches multiple tickers in parallel using ThreadPoolExecutor.
 
         Args:
             tickers: List of ticker symbols
@@ -281,36 +284,49 @@ class PortfolioService:
         Returns:
             Dict mapping ticker -> price (or None if fetch failed)
         """
+        if not tickers:
+            return {}
+
         prices = {}
 
+        # Filter out empty tickers and handle FREE CASH separately
+        real_tickers = []
         for ticker in tickers:
             if not ticker:
                 continue
-
-            # FREE CASH is always $1.00 per unit
-            if ticker == PortfolioService.FREE_CASH_TICKER:
+            if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
                 prices[ticker] = 1.0
-                continue
+            else:
+                real_tickers.append(ticker)
 
+        if not real_tickers:
+            return prices
+
+        def fetch_single_price(ticker: str) -> Tuple[str, Optional[float]]:
             try:
-                # Fetch full history (uses cache if current)
                 df = fetch_price_history(ticker, period="max", interval="1d")
-
                 if df is not None and not df.empty:
-                    # Get last close price
-                    prices[ticker] = float(df["Close"].iloc[-1])
-                else:
-                    prices[ticker] = None
+                    return ticker, float(df["Close"].iloc[-1])
             except Exception as e:
                 print(f"Error fetching price for {ticker}: {e}")
-                prices[ticker] = None
+            return ticker, None
+
+        # Parallel fetch using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(fetch_single_price, t) for t in real_tickers]
+            for future in as_completed(futures):
+                ticker, price = future.result()
+                prices[ticker] = price
 
         return prices
 
     @staticmethod
     def fetch_ticker_names(tickers: List[str]) -> Dict[str, Optional[str]]:
         """
-        Fetch short names for tickers from Yahoo Finance.
+        Fetch short names for tickers, using persistent cache for efficiency.
+
+        Uses TickerNameCache to avoid refetching names that rarely change.
+        Missing names are fetched in parallel using ThreadPoolExecutor.
 
         Args:
             tickers: List of ticker symbols
@@ -318,27 +334,74 @@ class PortfolioService:
         Returns:
             Dict mapping ticker -> short name (or None if fetch failed)
         """
-        names = {}
+        if not tickers:
+            return {}
 
-        for ticker in tickers:
-            if not ticker:
-                continue
+        # Filter out empty and FREE CASH tickers
+        valid_tickers = [
+            t for t in tickers
+            if t and t.upper() != PortfolioService.FREE_CASH_TICKER
+        ]
 
-            # FREE CASH doesn't have a Yahoo Finance name
-            if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
-                names[ticker] = None
-                continue
+        # Check persistent cache first
+        cached_names = TickerNameCache.get_names(valid_tickers)
 
+        # Find tickers not in cache
+        missing_tickers = [
+            t for t in valid_tickers
+            if cached_names.get(t.upper()) is None
+        ]
+
+        # If all names are cached, return immediately
+        if not missing_tickers:
+            # Build result dict with original case
+            result = {t: cached_names.get(t.upper()) for t in valid_tickers}
+            # Add None for FREE CASH if it was in original list
+            for t in tickers:
+                if t and t.upper() == PortfolioService.FREE_CASH_TICKER:
+                    result[t] = None
+            return result
+
+        # Fetch missing names in parallel
+        def fetch_single_name(ticker: str) -> Tuple[str, Optional[str]]:
             try:
                 info = yf.Ticker(ticker).info
-                # Try shortName first, fall back to longName
                 name = info.get("shortName") or info.get("longName")
-                names[ticker] = name
+                return ticker, name
             except Exception as e:
                 print(f"Error fetching name for {ticker}: {e}")
-                names[ticker] = None
+                return ticker, None
 
-        return names
+        new_names = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(fetch_single_name, t): t
+                for t in missing_tickers
+            }
+            for future in as_completed(futures):
+                ticker, name = future.result()
+                new_names[ticker] = name
+
+        # Update persistent cache with newly fetched names
+        names_to_cache = {t: n for t, n in new_names.items() if n is not None}
+        if names_to_cache:
+            TickerNameCache.update_names(names_to_cache)
+
+        # Build final result
+        result = {}
+        for t in valid_tickers:
+            upper_t = t.upper()
+            if upper_t in new_names:
+                result[t] = new_names[upper_t]
+            else:
+                result[t] = cached_names.get(upper_t)
+
+        # Add None for FREE CASH if it was in original list
+        for t in tickers:
+            if t and t.upper() == PortfolioService.FREE_CASH_TICKER:
+                result[t] = None
+
+        return result
 
     @staticmethod
     def is_valid_ticker(ticker: str) -> Tuple[bool, Optional[str]]:
@@ -507,6 +570,7 @@ class PortfolioService:
         """
         Batch fetch historical closing prices for multiple ticker/date pairs.
         FREE CASH ticker always returns $1.00 for any date.
+        Fetches multiple tickers in parallel using ThreadPoolExecutor.
 
         Args:
             ticker_dates: List of (ticker, date_str) tuples
@@ -515,6 +579,9 @@ class PortfolioService:
             Dict of ticker -> {date -> close_price}
         """
         import pandas as pd
+
+        if not ticker_dates:
+            return {}
 
         results: Dict[str, Dict[str, Optional[float]]] = {}
 
@@ -526,42 +593,56 @@ class PortfolioService:
             if date_str not in ticker_groups[ticker]:
                 ticker_groups[ticker].append(date_str)
 
-        # Fetch each ticker once and extract all needed dates
+        # Handle FREE CASH separately (no API call needed)
+        real_ticker_groups: Dict[str, List[str]] = {}
         for ticker, dates in ticker_groups.items():
-            if ticker not in results:
-                results[ticker] = {}
-
-            # FREE CASH is always $1.00 per unit
             if ticker.upper() == PortfolioService.FREE_CASH_TICKER:
-                for date_str in dates:
-                    results[ticker][date_str] = 1.0
-                continue
+                results[ticker] = {d: 1.0 for d in dates}
+            else:
+                real_ticker_groups[ticker] = dates
 
+        if not real_ticker_groups:
+            return results
+
+        def fetch_ticker_dates(
+            ticker: str, dates: List[str]
+        ) -> Tuple[str, Dict[str, Optional[float]]]:
+            """Fetch all needed dates for a single ticker."""
+            date_prices: Dict[str, Optional[float]] = {}
             try:
                 df = fetch_price_history(ticker, period="max", interval="1d")
 
                 if df is None or df.empty:
-                    for date_str in dates:
-                        results[ticker][date_str] = None
-                    continue
+                    return ticker, {d: None for d in dates}
 
                 for date_str in dates:
                     target_date = pd.to_datetime(date_str)
 
                     if target_date in df.index:
-                        results[ticker][date_str] = float(df.loc[target_date, "Close"])
+                        date_prices[date_str] = float(df.loc[target_date, "Close"])
                     else:
                         prior_dates = df.index[df.index <= target_date]
                         if len(prior_dates) > 0:
                             closest_date = prior_dates.max()
-                            results[ticker][date_str] = float(df.loc[closest_date, "Close"])
+                            date_prices[date_str] = float(df.loc[closest_date, "Close"])
                         else:
-                            results[ticker][date_str] = None
+                            date_prices[date_str] = None
 
             except Exception as e:
                 print(f"Error fetching historical prices for {ticker}: {e}")
-                for date_str in dates:
-                    results[ticker][date_str] = None
+                return ticker, {d: None for d in dates}
+
+            return ticker, date_prices
+
+        # Parallel fetch using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_ticker_dates, ticker, dates)
+                for ticker, dates in real_ticker_groups.items()
+            ]
+            for future in as_completed(futures):
+                ticker, date_prices = future.result()
+                results[ticker] = date_prices
 
         return results
 
