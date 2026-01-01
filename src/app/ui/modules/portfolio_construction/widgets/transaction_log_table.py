@@ -79,6 +79,9 @@ class TransactionLogTable(QTableWidget):
         # Highlight editable fields setting (default True)
         self._highlight_editable = True
 
+        # Hide FREE CASH summary row setting (default False - show it)
+        self._hide_free_cash_summary = False
+
         # Custom sorting state (blank row always stays at top)
         self._current_sort_column: int = -1
         self._current_sort_order: Qt.SortOrder = Qt.AscendingOrder
@@ -464,6 +467,9 @@ class TransactionLogTable(QTableWidget):
 
             # Update calculated values
             self._update_free_cash_summary_row()
+
+            # Apply hidden state if setting is enabled
+            self.setRowHidden(actual_row, self._hide_free_cash_summary)
             return
 
         # No summary row found in table - clean up any stale data and create new one
@@ -593,6 +599,9 @@ class TransactionLogTable(QTableWidget):
 
         # Update calculated values
         self._update_free_cash_summary_row()
+
+        # Apply hidden state if setting is enabled
+        self.setRowHidden(1, self._hide_free_cash_summary)
 
     def _update_free_cash_summary_row(self):
         """Update FREE CASH summary row with calculated values."""
@@ -2909,9 +2918,25 @@ class TransactionLogTable(QTableWidget):
         Args:
             enabled: True to show colored backgrounds on editable fields
         """
+        if self._highlight_editable == enabled:
+            return  # No change, skip expensive theme re-application
         self._highlight_editable = enabled
         # Re-apply theme to update all widget styles
         self._apply_theme()
+
+    def set_hide_free_cash_summary(self, hidden: bool):
+        """
+        Show or hide the FREE CASH summary row.
+
+        Args:
+            hidden: True to hide the FREE CASH summary row, False to show it
+        """
+        if self._hide_free_cash_summary == hidden:
+            return  # No change
+        self._hide_free_cash_summary = hidden
+        # Apply visibility to row 1 (FREE CASH summary row is always at index 1)
+        if self.rowCount() > 1:
+            self.setRowHidden(1, hidden)
 
     def _wrap_widget_in_cell(self, widget: QWidget) -> QWidget:
         """Wrap a widget in a container that fills the cell with themed background."""

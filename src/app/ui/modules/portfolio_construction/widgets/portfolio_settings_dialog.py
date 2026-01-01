@@ -135,13 +135,30 @@ class PortfolioSettingsDialog(QDialog):
         )
         layout.addWidget(self.highlight_editable_check)
 
-        info_label = QLabel(
+        highlight_info = QLabel(
             "When enabled, editable cells in the transaction log\n"
             "will have a colored background matching the theme."
         )
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #888888; font-style: italic; font-size: 11px;")
-        layout.addWidget(info_label)
+        highlight_info.setWordWrap(True)
+        highlight_info.setStyleSheet("color: #888888; font-style: italic; font-size: 11px;")
+        layout.addWidget(highlight_info)
+
+        layout.addSpacing(10)
+
+        # Hide FREE CASH summary checkbox
+        self.hide_free_cash_check = QCheckBox("Hide FREE CASH summary")
+        self.hide_free_cash_check.setChecked(
+            self.current_settings.get("hide_free_cash_summary", False)
+        )
+        layout.addWidget(self.hide_free_cash_check)
+
+        free_cash_info = QLabel(
+            "When enabled, the FREE CASH summary row in the\n"
+            "transaction log will be hidden from view."
+        )
+        free_cash_info.setWordWrap(True)
+        free_cash_info.setStyleSheet("color: #888888; font-style: italic; font-size: 11px;")
+        layout.addWidget(free_cash_info)
 
         group.setLayout(layout)
         return group
@@ -151,11 +168,15 @@ class PortfolioSettingsDialog(QDialog):
         self.highlight_editable_check.setChecked(
             self.current_settings.get("highlight_editable_fields", True)
         )
+        self.hide_free_cash_check.setChecked(
+            self.current_settings.get("hide_free_cash_summary", False)
+        )
 
     def _save_settings(self):
         """Save the settings and close."""
         self.result = {
             "highlight_editable_fields": self.highlight_editable_check.isChecked(),
+            "hide_free_cash_summary": self.hide_free_cash_check.isChecked(),
         }
         self.accept()
 

@@ -19,6 +19,7 @@ class PortfolioSettingsManager(BaseSettingsManager):
         """Default portfolio settings."""
         return {
             "highlight_editable_fields": True,
+            "hide_free_cash_summary": False,
         }
 
     @property

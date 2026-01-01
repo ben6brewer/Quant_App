@@ -708,6 +708,9 @@ class PortfolioConstructionModule(QWidget):
         self.transaction_table.set_highlight_editable(
             self._settings_manager.get_setting("highlight_editable_fields")
         )
+        self.transaction_table.set_hide_free_cash_summary(
+            self._settings_manager.get_setting("hide_free_cash_summary")
+        )
 
     # ========== Export Methods ==========
 
