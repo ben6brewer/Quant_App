@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -10,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from app.ui.modules.chart.widgets import (
     PriceChart,
@@ -59,6 +61,7 @@ class ChartModule(LazyThemeMixin, QWidget):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self._theme_dirty = False  # For lazy theme application
+        self._indicator_init_started = False  # Track background init
         self.equation_parser = TickerEquationParser()
         self.indicator_service = IndicatorService()
 
@@ -86,6 +89,20 @@ class ChartModule(LazyThemeMixin, QWidget):
         """Handle show event - apply pending theme if needed."""
         super().showEvent(event)
         self._check_theme_dirty()
+
+        # Start background indicator initialization after UI is visible
+        if not self._indicator_init_started:
+            self._indicator_init_started = True
+            # Use QTimer to defer to next event loop iteration, then run in thread
+            QTimer.singleShot(0, self._start_background_indicator_init)
+
+    def _start_background_indicator_init(self):
+        """Start indicator initialization in background thread."""
+        thread = threading.Thread(
+            target=IndicatorService.initialize,
+            daemon=True
+        )
+        thread.start()
 
     def _apply_theme(self) -> None:
         """Apply theme to chart and depth panel."""
