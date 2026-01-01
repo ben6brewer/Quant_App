@@ -146,8 +146,11 @@ class PortfolioConstructionModule(QWidget):
         # Initialize sequence counter from existing transactions
         self.transaction_table._initialize_sequence_counter(transactions)
 
+        # Use batch loading mode to avoid O(N²) FREE CASH updates
+        self.transaction_table.begin_batch_loading()
         for transaction in transactions:
             self.transaction_table.add_transaction_row(transaction)
+        self.transaction_table.end_batch_loading()
 
         # Ensure blank row exists for adding new transactions
         self.transaction_table._ensure_blank_row()
@@ -583,9 +586,14 @@ class PortfolioConstructionModule(QWidget):
             )
             return
 
-        # Add to current portfolio
+        # Add to current portfolio using batch mode for O(N) performance
+        self.transaction_table.begin_batch_loading()
         for tx in new_txs:
             self.transaction_table.add_transaction_row(tx)
+        self.transaction_table.end_batch_loading()
+
+        # Sort to maintain date-descending order after import
+        self.transaction_table.sort_by_date_descending()
 
         self.unsaved_changes = True
 

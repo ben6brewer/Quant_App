@@ -97,6 +97,9 @@ class TransactionLogTable(QTableWidget):
         # Set of row indices - if row is in this set, don't auto-fill the price
         self._user_entered_price_rows: set = set()
 
+        # Batch loading mode - skip FREE CASH summary updates during bulk operations
+        self._batch_loading: bool = False
+
         self._setup_table()
         self._apply_theme()
 
@@ -106,6 +109,26 @@ class TransactionLogTable(QTableWidget):
         # Connect internal signals for thread-safe auto-fill
         self._price_autofill_ready.connect(self._apply_autofill_price)
         self._name_autofill_ready.connect(self._apply_autofill_name)
+
+    def begin_batch_loading(self):
+        """
+        Begin batch loading mode.
+
+        In this mode, FREE CASH summary updates are skipped during add_transaction_row()
+        to avoid O(N²) performance when loading many transactions. Call end_batch_loading()
+        when done to update the FREE CASH summary once.
+        """
+        self._batch_loading = True
+
+    def end_batch_loading(self):
+        """
+        End batch loading mode and update FREE CASH summary.
+
+        This updates the FREE CASH summary row once after all transactions have been added,
+        reducing O(N²) to O(N) for batch loading operations.
+        """
+        self._batch_loading = False
+        self._update_free_cash_summary_row()
 
     def _debug_set_original_values(self, tx_id: str, values: dict, caller: str):
         """Debug helper: log when _original_values is set."""
@@ -815,7 +838,9 @@ class TransactionLogTable(QTableWidget):
 
         # Update FREE CASH summary - all transactions affect cash balance
         # (Buy costs cash, Sell adds cash, FREE CASH deposits/withdrawals)
-        self._update_free_cash_summary_row()
+        # Skip during batch loading to avoid O(N²) performance - will update once at end
+        if not self._batch_loading:
+            self._update_free_cash_summary_row()
 
         return row
 
@@ -2793,9 +2818,11 @@ class TransactionLogTable(QTableWidget):
         if blank_transaction:
             self._ensure_blank_row()
 
-        # Add sorted transactions
+        # Add sorted transactions using batch mode to avoid O(N²) FREE CASH updates
+        self._batch_loading = True
         for tx in sorted_transactions:
             self.add_transaction_row(tx)
+        self._batch_loading = False
 
         # Update calculated cells
         for row in range(self.rowCount()):
