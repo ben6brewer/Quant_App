@@ -42,12 +42,19 @@ class HomeScreen(QWidget):
         self.tab_bar = SectionTabBar(self.theme_manager)
         top_bar_layout.addWidget(self.tab_bar)
 
-        # Settings button (right)
-        self.settings_btn = self.theme_manager.create_styled_button("Settings")
+        # Settings button (right) - styled with background to match module settings buttons
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.setObjectName("settingsBtn")
         self.settings_btn.setFixedSize(120, 40)
         self.settings_btn.setCursor(Qt.PointingHandCursor)
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         top_bar_layout.addWidget(self.settings_btn, alignment=Qt.AlignRight)
+
+        # Apply settings button styling
+        self._apply_settings_btn_styling()
+
+        # Connect theme changes for settings button
+        self.theme_manager.theme_changed.connect(self._on_settings_btn_theme_changed)
 
         layout.addWidget(top_bar)
 
@@ -146,6 +153,69 @@ class HomeScreen(QWidget):
     def _on_search_theme_changed(self, theme: str) -> None:
         """Handle theme change for search box."""
         self._apply_search_styling()
+
+    def _on_settings_btn_theme_changed(self, theme: str) -> None:
+        """Handle theme change for settings button."""
+        self._apply_settings_btn_styling()
+
+    def _apply_settings_btn_styling(self) -> None:
+        """Apply theme-specific styling to settings button (matches module settings buttons)."""
+        theme = self.theme_manager.current_theme
+
+        if theme == "dark":
+            self.settings_btn.setStyleSheet("""
+                #settingsBtn {
+                    background-color: #2d2d2d;
+                    color: #ffffff;
+                    border: 1px solid #3d3d3d;
+                    border-radius: 3px;
+                    padding: 6px 12px;
+                    font-size: 13px;
+                }
+                #settingsBtn:hover {
+                    background-color: #3d3d3d;
+                    border-color: #00d4ff;
+                }
+                #settingsBtn:pressed {
+                    background-color: #1a1a1a;
+                }
+            """)
+        elif theme == "bloomberg":
+            self.settings_btn.setStyleSheet("""
+                #settingsBtn {
+                    background-color: #0d1420;
+                    color: #e8e8e8;
+                    border: 1px solid #1a2838;
+                    border-radius: 3px;
+                    padding: 6px 12px;
+                    font-size: 13px;
+                }
+                #settingsBtn:hover {
+                    background-color: #1a2838;
+                    border-color: #FF8000;
+                }
+                #settingsBtn:pressed {
+                    background-color: #060a10;
+                }
+            """)
+        else:  # light theme
+            self.settings_btn.setStyleSheet("""
+                #settingsBtn {
+                    background-color: #f5f5f5;
+                    color: #000000;
+                    border: 1px solid #cccccc;
+                    border-radius: 3px;
+                    padding: 6px 12px;
+                    font-size: 13px;
+                }
+                #settingsBtn:hover {
+                    background-color: #e8e8e8;
+                    border-color: #0066cc;
+                }
+                #settingsBtn:pressed {
+                    background-color: #d0d0d0;
+                }
+            """)
 
     def _apply_search_styling(self) -> None:
         """Apply theme-specific styling to search box."""

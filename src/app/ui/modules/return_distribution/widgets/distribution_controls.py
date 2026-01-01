@@ -111,6 +111,7 @@ class DistributionControls(QWidget):
         self.portfolio_combo.setView(smooth_view)
         # Connect editing finished (Enter or focus out) and dropdown selection
         self.portfolio_combo.lineEdit().editingFinished.connect(self._on_portfolio_entered)
+        self.portfolio_combo.lineEdit().returnPressed.connect(self._on_portfolio_entered)
         self.portfolio_combo.currentIndexChanged.connect(self._on_portfolio_selected)
         layout.addWidget(self.portfolio_combo)
 
@@ -128,6 +129,7 @@ class DistributionControls(QWidget):
         # Don't add "None" as an item - just use placeholder text
         # Connect editing finished (Enter or focus out) and dropdown selection
         self.benchmark_combo.lineEdit().editingFinished.connect(self._on_benchmark_entered)
+        self.benchmark_combo.lineEdit().returnPressed.connect(self._on_benchmark_entered)
         self.benchmark_combo.currentIndexChanged.connect(self._on_benchmark_selected)
         layout.addWidget(self.benchmark_combo)
 
@@ -196,14 +198,35 @@ class DistributionControls(QWidget):
 
     def _on_portfolio_entered(self):
         """Handle Enter key or focus out in portfolio combo box."""
-        text = self.portfolio_combo.currentText().strip().upper()
-        # Prevent duplicate processing
-        if text == self._last_portfolio_text:
-            return
-        self._last_portfolio_text = text
+        text = self.portfolio_combo.currentText().strip()
+
+        # Check if this matches a portfolio name (case-insensitive)
+        # If so, use the portfolio name as-is; otherwise uppercase for ticker lookup
+        portfolio_match = None
+        for i in range(self.portfolio_combo.count()):
+            item = self.portfolio_combo.itemText(i)
+            if item.lower() == text.lower():
+                portfolio_match = item
+                break
+
+        if portfolio_match:
+            text = portfolio_match  # Use exact portfolio name
+        else:
+            text = text.upper()  # Uppercase for ticker lookup
+
+        # Always update display to show uppercase
         if text:
-            self.portfolio_combo.setCurrentText(text)
-            self.portfolio_changed.emit(text)
+            self.portfolio_combo.blockSignals(True)
+            self.portfolio_combo.lineEdit().blockSignals(True)
+            self.portfolio_combo.lineEdit().setText(text)
+            self.portfolio_combo.lineEdit().blockSignals(False)
+            self.portfolio_combo.blockSignals(False)
+
+        # Only emit signal if value actually changed
+        if text != self._last_portfolio_text:
+            self._last_portfolio_text = text
+            if text:
+                self.portfolio_changed.emit(text)
 
     def _on_portfolio_selected(self, index: int):
         """Handle dropdown selection in portfolio combo box."""
@@ -241,9 +264,7 @@ class DistributionControls(QWidget):
         self.interval_label.setVisible(show_interval)
         self.interval_combo.setVisible(show_interval)
 
-        # Show/hide benchmark dropdown (only for Returns)
-        self.benchmark_label.setVisible(show_interval)
-        self.benchmark_combo.setVisible(show_interval)
+        # Benchmark dropdown is always visible (works for all metrics)
 
         # Emit metric change signal
         self.metric_changed.emit(metric)
@@ -280,23 +301,46 @@ class DistributionControls(QWidget):
 
     def _on_benchmark_entered(self):
         """Handle Enter key or focus out in benchmark combo box."""
-        text = self.benchmark_combo.currentText().strip().upper()
+        text = self.benchmark_combo.currentText().strip()
+
         # Treat "NONE" or empty as no benchmark
-        if not text or text == "NONE":
+        if not text or text.upper() == "NONE":
             text = ""
-        # Prevent duplicate processing
-        if text == self._last_benchmark_text:
-            return
-        self._last_benchmark_text = text
-        if text:
-            # Set the uppercase text back
-            self.benchmark_combo.setCurrentText(text)
-            self.benchmark_changed.emit(text)
         else:
-            # Clear to show placeholder
-            self.benchmark_combo.lineEdit().clear()
-            self.benchmark_combo.setCurrentIndex(-1)
-            self.benchmark_changed.emit("")
+            # Check if this matches a portfolio in the dropdown (case-insensitive)
+            # Portfolios are listed as "[Portfolio] Name"
+            portfolio_match = None
+            for i in range(self.benchmark_combo.count()):
+                item = self.benchmark_combo.itemText(i)
+                if item.lower() == text.lower():
+                    portfolio_match = item
+                    break
+
+            if portfolio_match:
+                text = portfolio_match  # Use exact portfolio name
+            else:
+                text = text.upper()  # Uppercase for ticker lookup
+
+        # Always update display to show uppercase
+        if text:
+            self.benchmark_combo.blockSignals(True)
+            self.benchmark_combo.lineEdit().blockSignals(True)
+            self.benchmark_combo.lineEdit().setText(text)
+            self.benchmark_combo.lineEdit().blockSignals(False)
+            self.benchmark_combo.blockSignals(False)
+
+        # Only emit signal if value actually changed
+        if text != self._last_benchmark_text:
+            self._last_benchmark_text = text
+            if text:
+                self.benchmark_changed.emit(text)
+            else:
+                # Clear to show placeholder
+                self.benchmark_combo.blockSignals(True)
+                self.benchmark_combo.lineEdit().clear()
+                self.benchmark_combo.setCurrentIndex(-1)
+                self.benchmark_combo.blockSignals(False)
+                self.benchmark_changed.emit("")
 
     def _on_benchmark_selected(self, index: int):
         """Handle benchmark selected from dropdown."""

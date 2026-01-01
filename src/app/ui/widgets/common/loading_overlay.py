@@ -39,8 +39,10 @@ class LoadingOverlay(QWidget):
         # Connect to theme changes
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
 
-        # Setup widget
+        # Setup widget - ensure it stacks above other widgets including QGraphicsView
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.setAutoFillBackground(False)
 
         # Cover parent completely
@@ -101,6 +103,12 @@ class LoadingOverlay(QWidget):
         super().showEvent(event)
         self._update_geometry()
         self.raise_()  # Bring to front
+        self.activateWindow()  # Ensure we have focus
+        # Force all siblings to stack under us
+        if self.parent():
+            for sibling in self.parent().children():
+                if sibling is not self and hasattr(sibling, 'stackUnder'):
+                    sibling.stackUnder(self)
 
     def paintEvent(self, event) -> None:
         """Paint the overlay with loading message."""

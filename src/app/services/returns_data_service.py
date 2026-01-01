@@ -716,6 +716,7 @@ class ReturnsDataService:
         return {
             "avg_cash_weight": avg_cash_weight,
             "cash_drag_bps": cash_drag_bps,
+            "cash_drag_annualized": cash_drag_bps / 10000,  # Decimal form for display
             "period_days": len(weights),
         }
 
@@ -965,3 +966,174 @@ class ReturnsDataService:
             returns = cls._resample_returns(returns, interval)
 
         return returns
+
+    @classmethod
+    def get_ticker_volatility(
+        cls,
+        ticker: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Calculate annualized volatility series for a single ticker.
+
+        Returns a series of rolling 21-day volatility values (annualized).
+
+        Args:
+            ticker: Ticker symbol (e.g., "SPY", "BTC-USD")
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+
+        Returns:
+            Series of annualized volatility values (as decimals, e.g., 0.20 = 20%)
+        """
+        returns = cls.get_ticker_returns(ticker, start_date, end_date, interval="daily")
+
+        if returns.empty or len(returns) < 21:
+            return pd.Series(dtype=float)
+
+        # Calculate rolling 21-day volatility, annualized
+        rolling_vol = returns.rolling(window=21).std() * np.sqrt(252)
+
+        return rolling_vol.dropna()
+
+    @classmethod
+    def get_ticker_rolling_volatility(
+        cls,
+        ticker: str,
+        window_days: int,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Calculate rolling volatility with specified window for a single ticker.
+
+        Args:
+            ticker: Ticker symbol (e.g., "SPY", "BTC-USD")
+            window_days: Rolling window in trading days (21=1m, 63=3m, 126=6m, 252=1y)
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+
+        Returns:
+            Series of annualized volatility values (as decimals)
+        """
+        returns = cls.get_ticker_returns(ticker, start_date, end_date, interval="daily")
+
+        if returns.empty or len(returns) < window_days:
+            return pd.Series(dtype=float)
+
+        # Calculate rolling volatility, annualized
+        rolling_vol = returns.rolling(window=window_days).std() * np.sqrt(252)
+
+        return rolling_vol.dropna()
+
+    @classmethod
+    def get_ticker_drawdowns(
+        cls,
+        ticker: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Calculate drawdown series for a single ticker.
+
+        Args:
+            ticker: Ticker symbol (e.g., "SPY", "BTC-USD")
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+
+        Returns:
+            Series of drawdown values (as negative decimals, e.g., -0.15 = -15%)
+        """
+        returns = cls.get_ticker_returns(ticker, start_date, end_date, interval="daily")
+
+        if returns.empty:
+            return pd.Series(dtype=float)
+
+        # Calculate cumulative returns (wealth index)
+        cumulative = (1 + returns).cumprod()
+
+        # Calculate running maximum
+        running_max = cumulative.cummax()
+
+        # Drawdown = current / peak - 1
+        drawdowns = cumulative / running_max - 1
+
+        return drawdowns
+
+    @classmethod
+    def get_ticker_rolling_returns(
+        cls,
+        ticker: str,
+        window_days: int,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Calculate rolling returns with specified window for a single ticker.
+
+        Args:
+            ticker: Ticker symbol (e.g., "SPY", "BTC-USD")
+            window_days: Rolling window in trading days (21=1m, 63=3m, 252=1y, etc.)
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+
+        Returns:
+            Series of rolling return values (as decimals, e.g., 0.10 = 10%)
+        """
+        returns = cls.get_ticker_returns(ticker, start_date, end_date, interval="daily")
+
+        if returns.empty or len(returns) < window_days:
+            return pd.Series(dtype=float)
+
+        # Calculate rolling compounded returns
+        def compound_return(window):
+            return (1 + window).prod() - 1
+
+        rolling_returns = returns.rolling(window=window_days).apply(
+            compound_return, raw=False
+        )
+
+        return rolling_returns.dropna()
+
+    @classmethod
+    def get_ticker_time_under_water(
+        cls,
+        ticker: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Calculate time under water for a single ticker.
+
+        Args:
+            ticker: Ticker symbol (e.g., "SPY", "BTC-USD")
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+
+        Returns:
+            Series of days under water (integer values)
+        """
+        returns = cls.get_ticker_returns(ticker, start_date, end_date, interval="daily")
+
+        if returns.empty:
+            return pd.Series(dtype=float)
+
+        # Calculate cumulative returns (wealth index)
+        cumulative = (1 + returns).cumprod()
+
+        # Calculate running maximum
+        running_max = cumulative.cummax()
+
+        # Track days under water
+        days_under_water = pd.Series(0, index=cumulative.index, dtype=int)
+
+        current_underwater_days = 0
+        for i, (cum, peak) in enumerate(zip(cumulative, running_max)):
+            if cum < peak:
+                current_underwater_days += 1
+            else:
+                current_underwater_days = 0
+            days_under_water.iloc[i] = current_underwater_days
+
+        return days_under_water

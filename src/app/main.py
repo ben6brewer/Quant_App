@@ -52,7 +52,7 @@ def main() -> int:
         has_own_home_button=True,
     )
     hub.add_module(
-        "return_distribution",
+        "distribution_metrics",
         lambda: ReturnDistributionModule(theme_manager),
         has_own_home_button=True,
     )
