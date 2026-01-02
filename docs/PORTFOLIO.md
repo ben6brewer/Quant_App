@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Portfolio section provides investment portfolio management, analysis, and tracking tools. All portfolio modules share a common data model via the Portfolio Construction module's export API.
+Portfolio section provides investment management, analysis, and tracking. All modules share data via PortfolioService API and use StatisticsService for calculations.
 
 ## Module Structure
 
@@ -16,18 +16,8 @@ src/app/ui/modules/portfolio_construction/
 └── widgets/
     ├── transaction_log_table.py       # Editable transactions
     ├── aggregate_portfolio_table.py   # Read-only holdings
-    ├── portfolio_controls.py          # Top control bar
-    ├── portfolio_dialogs.py           # Uses ThemedDialog base class
-    └── view_tab_bar.py                # Transaction/Holdings toggle
+    └── portfolio_dialogs.py           # Uses ThemedDialog base class
 ```
-
-## Portfolio Construction Module
-
-**Purpose**: Transaction tracking and portfolio data entry
-- Side-by-side view: Transaction Log + Aggregate Holdings
-- Multiple portfolio support with save/load
-- Real-time P&L calculations using yfinance prices
-- Export API for other modules
 
 ---
 
@@ -45,18 +35,16 @@ transactions = PortfolioService.get_transaction_history("My Portfolio")
 total_value = PortfolioService.get_portfolio_value("My Portfolio")
 ```
 
-### Data Structures
+### Using Statistics
 
-**Holdings:**
 ```python
-{"ticker": str, "total_quantity": float, "avg_cost_basis": float,
- "current_price": float, "market_value": float, "total_pnl": float, "weight_pct": float}
-```
+from app.services import StatisticsService
 
-**Transactions:**
-```python
-{"id": str, "date": str, "ticker": str, "transaction_type": str,
- "quantity": float, "entry_price": float, "fees": float, "notes": str}
+# Get portfolio returns then calculate metrics
+sharpe = StatisticsService.get_sharpe_ratio(returns, risk_free_rate)
+vol = StatisticsService.get_annualized_volatility(returns)
+beta = StatisticsService.get_beta(portfolio_returns, benchmark_returns)
+tracking_error = StatisticsService.get_tracking_error(portfolio, benchmark)
 ```
 
 ---
@@ -65,25 +53,8 @@ total_value = PortfolioService.get_portfolio_value("My Portfolio")
 
 - Ticker "FREE CASH" tracks cash deposits/withdrawals
 - Bypasses Yahoo Finance validation, always $1.00/unit
-- Buy = Deposit (adds cash), Sell = Withdrawal (removes cash)
-- Included in portfolio weight calculations
-- Regular transactions affect cash: Buys decrease, Sells increase
-
----
-
-## Transaction Safeguards
-
-PortfolioService validates transactions won't create invalid states:
-- Can't sell more shares than owned at that date
-- Can't withdraw more cash than available
-- Validates entire transaction chain on edits/deletes
-
----
-
-## Import Modes
-
-- **Full History**: Clone transactions with original dates (maintains audit trail)
-- **Flat**: Consolidate to net positions dated today (clean slate)
+- Buy = Deposit, Sell = Withdrawal
+- Regular transactions affect cash automatically
 
 ---
 
@@ -92,6 +63,7 @@ PortfolioService validates transactions won't create invalid states:
 ```python
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from app.core.theme_manager import ThemeManager
+from app.services import StatisticsService
 from app.ui.modules.portfolio_construction.services import PortfolioService
 
 class PortfolioRiskModule(QWidget):
@@ -102,9 +74,7 @@ class PortfolioRiskModule(QWidget):
 
     def load_portfolio(self, portfolio_name: str = "Default"):
         holdings = PortfolioService.get_current_holdings_snapshot(portfolio_name)
-        for holding in holdings:
-            # Calculate risk metrics per holding
-            pass
+        # Use StatisticsService for risk calculations
 ```
 
 ---
@@ -112,22 +82,11 @@ class PortfolioRiskModule(QWidget):
 ## Module Integration Checklist
 
 - [ ] Register in `config.py` under `MODULE_SECTIONS["Portfolio"]`
-- [ ] Add to `main.py` with `hub.add_module(id, module)`
-- [ ] Pass `theme_manager` to constructor
+- [ ] Add to `main.py` with factory function
+- [ ] Use `StatisticsService` for financial calculations
+- [ ] Use `ThemedDialog` for dialogs
+- [ ] Keep module-specific services in `modules/{name}/services/`
 - [ ] Implement `_apply_theme()` method
-- [ ] Use PortfolioService API to access data
-- [ ] Use `ThemedDialog` for any dialogs
-- [ ] Keep services in `modules/{name}/services/`
-
----
-
-## Planned Modules
-
-- **Portfolio Risk Analysis**: VaR, Sharpe ratio, correlation matrix
-- **Tax Reporting**: Capital gains, cost basis tracking
-- **Performance Attribution**: Sector/security contribution
-- **Rebalancing Tools**: Target vs actual allocation
-- **Monte Carlo Simulation**: Portfolio outcome projections
 
 ---
 
@@ -143,10 +102,10 @@ Portfolios stored in `~/.quant_terminal/portfolios/`:
 ## Best Practices
 
 1. **Read-only access**: Don't modify portfolio data directly
-2. **Price caching**: Use PortfolioService for consistency
+2. **Use StatisticsService**: For all financial calculations
 3. **Error handling**: Portfolio may not exist, handle None
 4. **Theme-aware**: Respond to theme_changed signal
-5. **Use ThemedDialog**: For dialogs (frameless, themed)
+5. **Use ThemedDialog**: For all dialogs (frameless, themed)
 
 ---
 
@@ -165,7 +124,6 @@ def showEvent(self, event):
 ```python
 from app.services.market_data import fetch_price_history
 df = fetch_price_history("AAPL", period="1y", interval="1d")
-volatility = df["Close"].pct_change().std() * (252 ** 0.5)
 ```
 
 ---
@@ -173,8 +131,6 @@ volatility = df["Close"].pct_change().std() * (252 ** 0.5)
 ## Architecture Notes
 
 - **Composition over inheritance**: Portfolio modules are QWidgets
-- **Service-based**: Business logic in services, widgets for UI
+- **StatisticsService**: 25+ financial calculations (Sharpe, VaR, beta, etc.)
+- **ThemedDialog**: Base class for all dialogs
 - **Signal-based**: Use Qt signals for widget communication
-- **Stateless services**: PortfolioService uses static methods
-- **ThemedDialog**: Use for all dialogs (inherits title bar, theming)
-- **ThemeStylesheetService**: Use for consistent widget styling

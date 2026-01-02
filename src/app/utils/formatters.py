@@ -106,3 +106,86 @@ def format_large_number(value: float) -> str:
         return f"{sign}{abs_value/1e3:.2f}K"
     else:
         return f"{sign}{abs_value:.2f}"
+
+
+def format_metric_value(value, format_type: str, decimals: int = 2) -> str:
+    """
+    Format a financial metric value for display in tables.
+
+    Used by Performance Metrics, Tracking Error Volatility, and other modules
+    that display financial statistics in tabular form.
+
+    Args:
+        value: The value to format (float, tuple, or None)
+        format_type: One of:
+            - "percent": Multiply by 100, show as percentage (e.g., 0.15 → "15.00")
+            - "ratio": Show as ratio (e.g., 1.234 → "1.23")
+            - "decimal": Show as decimal (e.g., 0.567 → "0.57")
+            - "decimal4": Show with 4 decimal places (e.g., 0.5678 → "0.5678")
+            - "capture": Handle tuple (up_capture, down_capture) → ratio
+        decimals: Number of decimal places (default 2, ignored for decimal4)
+
+    Returns:
+        Formatted string:
+        - Empty string "" for None/NaN (missing data)
+        - "--" for zero values (indicates zero, not missing)
+        - Formatted number otherwise
+    """
+    # Return blank for None (missing data)
+    if value is None:
+        return ""
+
+    # Handle tuple for capture ratio
+    if format_type == "capture" and isinstance(value, tuple):
+        return _format_capture_ratio(value, decimals)
+
+    # Handle NaN (missing data) - show blank
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+
+    # Handle actual zero - show "--"
+    if value == 0:
+        return "--"
+
+    # Format by type
+    if format_type == "percent":
+        return f"{value * 100:.{decimals}f}"
+    elif format_type == "ratio":
+        return f"{value:.{decimals}f}"
+    elif format_type == "decimal":
+        return f"{value:.{decimals}f}"
+    elif format_type == "decimal4":
+        return f"{value:.4f}"
+    else:
+        return str(value)
+
+
+def _format_capture_ratio(value: tuple, decimals: int = 2) -> str:
+    """
+    Format capture ratio tuple (up_capture, down_capture) as a ratio.
+
+    Values > 1 indicate portfolio captures more upside than downside.
+
+    Args:
+        value: Tuple of (up_capture, down_capture) as percentages
+        decimals: Number of decimal places
+
+    Returns:
+        Formatted ratio string, or blank/-- for invalid data
+    """
+    if not isinstance(value, tuple) or len(value) != 2:
+        return ""
+
+    up, down = value
+
+    # Check for NaN
+    if (isinstance(up, float) and np.isnan(up)) or (
+        isinstance(down, float) and np.isnan(down)
+    ):
+        return ""
+
+    # Check for zero denominator
+    if down == 0:
+        return "--"
+
+    return f"{up / down:.{decimals}f}"
