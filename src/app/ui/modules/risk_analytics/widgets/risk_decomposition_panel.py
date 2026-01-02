@@ -97,7 +97,7 @@ class CTEVTable(QTableWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         # Value column fixed width
         header.setSectionResizeMode(1, QHeaderView.Fixed)
-        self.setColumnWidth(1, 45)  # Slightly narrower for CTEV values
+        self.setColumnWidth(1, 55)  # Width for xx.xx format
         # Bar column stretches
         header.setSectionResizeMode(2, QHeaderView.Stretch)
 
@@ -316,7 +316,7 @@ class RiskDecompositionPanel(LazyThemeMixin, QWidget):
                 padding: 10px;
             }
             QLabel#panel_title {
-                color: #00d4ff;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
@@ -360,7 +360,7 @@ class RiskDecompositionPanel(LazyThemeMixin, QWidget):
                 padding: 10px;
             }
             QLabel#panel_title {
-                color: #0066cc;
+                color: #000000;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
@@ -404,7 +404,7 @@ class RiskDecompositionPanel(LazyThemeMixin, QWidget):
                 padding: 10px;
             }
             QLabel#panel_title {
-                color: #FF8000;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;

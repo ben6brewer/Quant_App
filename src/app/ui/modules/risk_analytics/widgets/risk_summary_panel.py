@@ -2,62 +2,21 @@
 
 from typing import Dict, Optional
 
+from collections import OrderedDict
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QTableWidget,
-    QTableWidgetItem,
     QHeaderView,
     QFrame,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
 )
-from PySide6.QtCore import Qt, QRect
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtCore import Qt
 
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
-
-
-class BarDelegate(QStyledItemDelegate):
-    """Custom delegate to draw horizontal bars in table cells."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._bar_color = QColor("#00d4ff")
-        self._max_value = 100.0
-
-    def set_bar_color(self, color: str):
-        """Set the bar color."""
-        self._bar_color = QColor(color)
-
-    def set_max_value(self, max_val: float):
-        """Set the maximum value for scaling bars."""
-        self._max_value = max(max_val, 0.01)
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
-        """Paint the bar in the cell."""
-        value = index.data(Qt.UserRole)
-        if value is None or value == 0:
-            return
-
-        painter.save()
-
-        cell_rect = option.rect
-        bar_width = int((value / self._max_value) * (cell_rect.width() - 4))
-        bar_width = max(bar_width, 0)
-
-        bar_rect = QRect(
-            cell_rect.left() + 2,
-            cell_rect.top() + 4,
-            bar_width,
-            cell_rect.height() - 8
-        )
-
-        painter.fillRect(bar_rect, self._bar_color)
-        painter.restore()
+from .risk_decomposition_panel import CTEVTable
 
 
 class RiskSummaryPanel(LazyThemeMixin, QFrame):
@@ -74,7 +33,6 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         self._theme_dirty = False
 
         self.setObjectName("risk_summary_panel")
-        self._bar_delegate = BarDelegate(self)
         self._setup_ui()
         self._apply_theme()
 
@@ -97,10 +55,10 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         self.title_label.setAlignment(Qt.AlignLeft)
         layout.addWidget(self.title_label)
 
-        # Total Active Risk section (large display)
-        risk_container = QWidget()
-        risk_container.setObjectName("risk_container")
-        risk_layout = QVBoxLayout(risk_container)
+        # Total Active Risk section (large display) - hidden until data loaded
+        self.risk_container = QWidget()
+        self.risk_container.setObjectName("risk_container")
+        risk_layout = QVBoxLayout(self.risk_container)
         risk_layout.setContentsMargins(0, 4, 0, 4)
         risk_layout.setSpacing(2)
 
@@ -114,46 +72,29 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         self.risk_value_label.setAlignment(Qt.AlignCenter)
         risk_layout.addWidget(self.risk_value_label)
 
-        layout.addWidget(risk_container)
+        self.risk_container.hide()  # Hidden until data loaded
+        layout.addWidget(self.risk_container)
 
-        # Factor/Idiosyncratic table (2 rows with bars)
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["", "", ""])
-        self.table.horizontalHeader().setVisible(False)
-        self.table.setSelectionMode(QTableWidget.NoSelection)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setDefaultSectionSize(26)
+        # Factor/Idiosyncratic table (using CTEVTable for consistent row heights)
+        self.table = CTEVTable("", ["Label", "Value"])
 
-        # Hide scrollbars but keep scroll functionality
-        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        # Column sizing
+        # Customize column widths for Risk Summary layout
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 75)  # Label column
+        self.table.setColumnWidth(0, 100)  # Label column (fits "Idiosyncratic")
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         self.table.setColumnWidth(1, 55)  # Value column
-        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Bar column
-
-        self.table.setItemDelegateForColumn(2, self._bar_delegate)
-        self.table.setRowCount(2)
-        self._init_table_rows()
-        self.table.setFixedHeight(56)  # 2 rows * 26px + small margin
+        # Column 2 (bar) remains stretch from CTEVTable defaults
 
         layout.addWidget(self.table)
 
         # Stretch to push betas to bottom
         layout.addStretch()
 
-        # Beta values section (text labels) - at the very bottom
-        beta_container = QWidget()
-        beta_container.setObjectName("beta_container")
-        beta_layout = QVBoxLayout(beta_container)
+        # Beta values section (text labels) - hidden until data loaded
+        self.beta_container = QWidget()
+        self.beta_container.setObjectName("beta_container")
+        beta_layout = QVBoxLayout(self.beta_container)
         beta_layout.setContentsMargins(0, 0, 0, 0)
         beta_layout.setSpacing(2)
 
@@ -181,61 +122,44 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         post_row.addWidget(self.beta_post_value)
         beta_layout.addLayout(post_row)
 
-        layout.addWidget(beta_container)
-
-    def _init_table_rows(self):
-        """Initialize the Factor/Idiosyncratic table rows."""
-        rows = ["Factor", "Idiosyncratic"]
-
-        for row, label in enumerate(rows):
-            # Label column
-            label_item = QTableWidgetItem(label)
-            label_item.setFlags(label_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, label_item)
-
-            # Value column
-            value_item = QTableWidgetItem("--")
-            value_item.setFlags(value_item.flags() & ~Qt.ItemIsEditable)
-            value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.table.setItem(row, 1, value_item)
-
-            # Bar column
-            bar_item = QTableWidgetItem()
-            bar_item.setFlags(bar_item.flags() & ~Qt.ItemIsEditable)
-            bar_item.setData(Qt.UserRole, 0)
-            self.table.setItem(row, 2, bar_item)
+        self.beta_container.hide()  # Hidden until data loaded
+        layout.addWidget(self.beta_container)
 
     def set_bar_color(self, color: str):
         """Set the bar color for the visualization."""
-        self._bar_delegate.set_bar_color(color)
+        self.table.set_bar_color(color)
 
     def update_metrics(self, metrics: Optional[Dict[str, float]]):
         """Update displayed metric values."""
         if metrics is None:
-            self.risk_value_label.setText("--")
-            self.table.item(0, 1).setText("--")
-            self.table.item(0, 2).setData(Qt.UserRole, 0)
-            self.table.item(1, 1).setText("--")
-            self.table.item(1, 2).setData(Qt.UserRole, 0)
-            self.beta_ante_value.setText("--")
-            self.beta_post_value.setText("--")
+            self.clear_metrics()
             return
+
+        # Show containers
+        self.risk_container.show()
+        self.beta_container.show()
 
         # Total Active Risk (large display)
         total_risk = metrics.get("total_active_risk", 0)
         self.risk_value_label.setText(f"{total_risk:.2f}%")
 
-        # Factor risk (table row 0)
+        # Populate table with Factor and Idiosyncratic rows
         factor_risk = metrics.get("factor_risk_pct", 0)
-        self.table.item(0, 1).setText(f"{factor_risk:.1f}%")
-        self.table.item(0, 2).setData(Qt.UserRole, factor_risk)
-
-        # Idiosyncratic risk (table row 1)
         idio_risk = metrics.get("idio_risk_pct", 0)
-        self.table.item(1, 1).setText(f"{idio_risk:.1f}%")
-        self.table.item(1, 2).setData(Qt.UserRole, idio_risk)
 
-        self._bar_delegate.set_max_value(100.0)
+        # Use OrderedDict to preserve row order
+        data = OrderedDict([
+            ("Factor", factor_risk),
+            ("Idiosyncratic", idio_risk),
+        ])
+
+        # CTEVTable.set_data() handles row creation, bar scaling, and resizeRowsToContents()
+        self.table.set_data(data)
+
+        # Force row heights to 37px to match decomposition panels
+        # (resizeRowsToContents() calculates 31px here due to stylesheet differences)
+        for i in range(self.table.rowCount()):
+            self.table.setRowHeight(i, 37)
 
         # Beta values (text labels)
         beta_ante = metrics.get("ex_ante_beta", 1.0)
@@ -244,11 +168,11 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         beta_post = metrics.get("ex_post_beta", 1.0)
         self.beta_post_value.setText(f"{beta_post:.2f}")
 
-        self.table.viewport().update()
-
     def clear_metrics(self):
-        """Clear all displayed values to placeholder."""
-        self.update_metrics(None)
+        """Clear all displayed values and hide data containers."""
+        self.risk_container.hide()
+        self.beta_container.hide()
+        self.table.clear_data()
 
     def _apply_theme(self):
         """Apply theme-specific styling."""
@@ -276,10 +200,11 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 border-radius: 6px;
             }
             QLabel#panel_title {
-                color: #00d4ff;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
+                padding: 4px;
             }
             QWidget#risk_container {
                 background: transparent;
@@ -302,7 +227,7 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 font-size: 12px;
             }
             QTableWidget::item {
-                padding: 4px 6px;
+                padding: 6px 8px;
                 border-bottom: 1px solid #3d3d3d;
             }
             QTableWidget::item:alternate {
@@ -333,10 +258,11 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 border-radius: 6px;
             }
             QLabel#panel_title {
-                color: #0066cc;
+                color: #000000;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
+                padding: 4px;
             }
             QWidget#risk_container {
                 background: transparent;
@@ -359,7 +285,7 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 font-size: 12px;
             }
             QTableWidget::item {
-                padding: 4px 6px;
+                padding: 6px 8px;
                 border-bottom: 1px solid #e0e0e0;
             }
             QTableWidget::item:alternate {
@@ -390,10 +316,11 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 border-radius: 6px;
             }
             QLabel#panel_title {
-                color: #FF8000;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
+                padding: 4px;
             }
             QWidget#risk_container {
                 background: transparent;
@@ -416,7 +343,7 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
                 font-size: 12px;
             }
             QTableWidget::item {
-                padding: 4px 6px;
+                padding: 6px 8px;
                 border-bottom: 1px solid #1a2838;
             }
             QTableWidget::item:alternate {

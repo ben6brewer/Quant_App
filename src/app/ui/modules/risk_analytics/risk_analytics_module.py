@@ -171,8 +171,16 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
     def _show_settings_dialog(self):
         """Show the settings dialog."""
         current_settings = self.settings_manager.get_all_settings()
+
+        # Get current portfolio tickers for validation
+        portfolio_tickers = []
+        if self._current_portfolio:
+            portfolio_tickers = [
+                t.upper() for t in PortfolioDataService.get_tickers(self._current_portfolio)
+            ]
+
         dialog = RiskAnalyticsSettingsDialog(
-            self.theme_manager, current_settings, self
+            self.theme_manager, current_settings, portfolio_tickers, self
         )
         dialog.settings_saved.connect(self._on_settings_saved)
         dialog.exec()
@@ -180,7 +188,9 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
     def _on_settings_saved(self, settings: Dict[str, Any]):
         """Handle settings saved from dialog."""
         self.settings_manager.update_settings(settings)
-        # Settings saved - user can click Analyze to apply new settings
+        # Auto-reanalyze if we have already run analysis
+        if self._current_portfolio:
+            self._update_risk_analysis()
 
     def _update_risk_analysis(self):
         """Run risk analysis and update all displays."""
@@ -404,7 +414,13 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self.summary_panel.update_metrics(analysis.get("summary"))
 
         # Decomposition panels
-        self.decomposition_panel.update_factor_ctev(analysis.get("ctev_by_factor"))
+        # Filter out Currency factor if setting is disabled
+        ctev_by_factor = analysis.get("ctev_by_factor", {})
+        show_currency = self.settings_manager.get_setting("show_currency_factor")
+        if not show_currency and "Currency" in ctev_by_factor:
+            ctev_by_factor = {k: v for k, v in ctev_by_factor.items() if k != "Currency"}
+
+        self.decomposition_panel.update_factor_ctev(ctev_by_factor)
         self.decomposition_panel.update_sector_ctev(analysis.get("ctev_by_sector"))
         self.decomposition_panel.update_security_ctev(analysis.get("top_securities"))
 

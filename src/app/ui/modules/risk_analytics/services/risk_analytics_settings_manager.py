@@ -19,9 +19,6 @@ class RiskAnalyticsSettingsManager(BaseSettingsManager):
         return {
             # Benchmark settings
             "default_benchmark": "SPY",
-            # Risk-free rate settings
-            "risk_free_source": "irx",  # "irx" (^IRX 3-month T-bill) or "manual"
-            "manual_risk_free_rate": 0.05,  # 5% default manual rate
             # Analysis settings
             "lookback_days": 252,  # 1 year default (trading days)
             "show_currency_factor": True,  # Show currency in factor decomposition

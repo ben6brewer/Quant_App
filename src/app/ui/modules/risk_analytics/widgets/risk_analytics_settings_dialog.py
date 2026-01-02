@@ -7,10 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
-    QDoubleSpinBox,
     QGroupBox,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QLineEdit,
@@ -31,7 +28,6 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
     Settings dialog for Risk Analytics module.
 
     Allows configuration of:
-    - Risk-free rate source (3-month T-bill or manual)
     - Analysis settings (lookback period, currency factor)
     - Sector classification overrides
     """
@@ -42,6 +38,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self,
         theme_manager: ThemeManager,
         current_settings: Dict[str, Any],
+        portfolio_tickers: List[str] = None,
         parent=None,
     ):
         """
@@ -50,64 +47,21 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         Args:
             theme_manager: Application theme manager
             current_settings: Current settings values
+            portfolio_tickers: List of tickers in current portfolio (for validation)
             parent: Parent widget
         """
         self.current_settings = current_settings
-        self._current_irx_rate = self._fetch_irx_rate()
+        self.portfolio_tickers = set(t.upper() for t in (portfolio_tickers or []))
         super().__init__(
             theme_manager,
             "Risk Analytics Settings",
             parent,
-            min_width=550,
-            min_height=500,
+            min_width=620,
+            min_height=450,
         )
-
-    def _fetch_irx_rate(self) -> float:
-        """Fetch current ^IRX rate."""
-        try:
-            from app.services import StatisticsService
-            return StatisticsService.get_risk_free_rate()
-        except Exception:
-            return 0.05
 
     def _setup_content(self, layout: QVBoxLayout):
         """Setup dialog content."""
-        # Risk-Free Rate section
-        rf_group = QGroupBox("Risk-Free Rate")
-        rf_layout = QVBoxLayout()
-
-        # Radio button group
-        self.rf_button_group = QButtonGroup(self)
-
-        # Option 1: Use ^IRX (3-month T-bill)
-        irx_rate_pct = self._current_irx_rate * 100
-        self.irx_radio = QRadioButton(
-            f"Use 3-Month Treasury Bill (^IRX: {irx_rate_pct:.2f}%)"
-        )
-        self.irx_radio.setObjectName("settingsRadio")
-        self.rf_button_group.addButton(self.irx_radio)
-        rf_layout.addWidget(self.irx_radio)
-
-        # Option 2: Manual rate
-        manual_row = QHBoxLayout()
-        self.manual_radio = QRadioButton("Manual Rate:")
-        self.manual_radio.setObjectName("settingsRadio")
-        self.rf_button_group.addButton(self.manual_radio)
-        manual_row.addWidget(self.manual_radio)
-
-        self.manual_rate_spin = QDoubleSpinBox()
-        self.manual_rate_spin.setRange(0.0, 20.0)
-        self.manual_rate_spin.setDecimals(2)
-        self.manual_rate_spin.setSuffix("%")
-        self.manual_rate_spin.setSingleStep(0.25)
-        self.manual_rate_spin.setFixedWidth(100)
-        manual_row.addWidget(self.manual_rate_spin)
-        manual_row.addStretch()
-        rf_layout.addLayout(manual_row)
-
-        rf_group.setLayout(rf_layout)
-        layout.addWidget(rf_group)
-
         # Analysis Settings section
         analysis_group = QGroupBox("Analysis Settings")
         analysis_layout = QVBoxLayout()
@@ -157,7 +111,8 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self.ticker_input = QLineEdit()
         self.ticker_input.setPlaceholderText("e.g., COIN")
         self.ticker_input.setFixedWidth(100)
-        self.ticker_input.textChanged.connect(self._on_ticker_input_changed)
+        self.ticker_input.textChanged.connect(self._on_ticker_text_changed)
+        self.ticker_input.editingFinished.connect(self._on_ticker_editing_finished)
         add_row.addWidget(self.ticker_input)
 
         # Sector dropdown
@@ -170,7 +125,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         # Add button
         self.add_override_btn = QPushButton("Add Override")
-        self.add_override_btn.setFixedWidth(100)
+        self.add_override_btn.setFixedWidth(120)
         self.add_override_btn.clicked.connect(self._add_override)
         self.add_override_btn.setEnabled(False)
         add_row.addWidget(self.add_override_btn)
@@ -187,15 +142,22 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self.overrides_list.setMaximumHeight(120)
         override_layout.addWidget(self.overrides_list)
 
-        # Remove button
-        remove_row = QHBoxLayout()
-        remove_row.addStretch()
+        # Edit and Remove buttons
+        action_row = QHBoxLayout()
+        action_row.addStretch()
+
+        self.edit_btn = QPushButton("Edit Selected")
+        self.edit_btn.setFixedWidth(130)
+        self.edit_btn.clicked.connect(self._edit_override)
+        self.edit_btn.setEnabled(False)
+        action_row.addWidget(self.edit_btn)
+
         self.remove_btn = QPushButton("Remove Selected")
-        self.remove_btn.setFixedWidth(120)
+        self.remove_btn.setFixedWidth(130)
         self.remove_btn.clicked.connect(self._remove_override)
         self.remove_btn.setEnabled(False)
-        remove_row.addWidget(self.remove_btn)
-        override_layout.addLayout(remove_row)
+        action_row.addWidget(self.remove_btn)
+        override_layout.addLayout(action_row)
 
         # Connect list selection
         self.overrides_list.itemSelectionChanged.connect(self._on_override_selected)
@@ -227,13 +189,32 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         layout.addLayout(button_layout)
 
-    def _on_ticker_input_changed(self, text: str):
+    def _on_ticker_text_changed(self, text: str):
         """Enable/disable add button based on ticker input."""
         self.add_override_btn.setEnabled(len(text.strip()) > 0)
 
+    def _on_ticker_editing_finished(self):
+        """Validate ticker when user finishes editing (tab, enter, or click away)."""
+        from app.ui.widgets.common.custom_message_box import CustomMessageBox
+
+        ticker = self.ticker_input.text().strip().upper()
+
+        # Only validate if there's text and we have portfolio tickers to check against
+        if ticker and self.portfolio_tickers and ticker not in self.portfolio_tickers:
+            CustomMessageBox.warning(
+                self.theme_manager,
+                self,
+                "Ticker Not Found",
+                f"'{ticker}' was not found in the current portfolio.\n\n"
+                f"Make sure you're using the ticker symbol (e.g., 'AFRM') "
+                f"not the company name (e.g., 'Affirm').",
+            )
+
     def _on_override_selected(self):
-        """Enable/disable remove button based on list selection."""
-        self.remove_btn.setEnabled(len(self.overrides_list.selectedItems()) > 0)
+        """Enable/disable edit and remove buttons based on list selection."""
+        has_selection = len(self.overrides_list.selectedItems()) > 0
+        self.edit_btn.setEnabled(has_selection)
+        self.remove_btn.setEnabled(has_selection)
 
     def _add_override(self):
         """Add a new sector override."""
@@ -251,6 +232,30 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         # Clear input
         self.ticker_input.clear()
+
+    def _edit_override(self):
+        """Edit the selected override by loading it into the input fields."""
+        selected = self.overrides_list.selectedItems()
+        if not selected:
+            return
+
+        item = selected[0]
+        ticker = item.data(Qt.UserRole)
+        if not ticker:
+            return
+
+        # Get current sector for this ticker
+        override = SectorOverrideService.get_override(ticker)
+        if override:
+            sector = override.get("sector", "")
+
+            # Load into input fields
+            self.ticker_input.setText(ticker)
+
+            # Set the sector combo to the current sector
+            index = self.sector_combo.findText(sector)
+            if index >= 0:
+                self.sector_combo.setCurrentIndex(index)
 
     def _remove_override(self):
         """Remove selected override."""
@@ -277,19 +282,11 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
             item.setData(Qt.UserRole, ticker)
             self.overrides_list.addItem(item)
 
+        self.edit_btn.setEnabled(False)
         self.remove_btn.setEnabled(False)
 
     def _load_settings(self):
         """Load current settings into UI."""
-        # Risk-free rate source
-        if self.current_settings.get("risk_free_source") == "manual":
-            self.manual_radio.setChecked(True)
-            manual_rate = self.current_settings.get("manual_risk_free_rate", 0.05)
-            self.manual_rate_spin.setValue(manual_rate * 100)
-        else:
-            self.irx_radio.setChecked(True)
-            self.manual_rate_spin.setValue(self._current_irx_rate * 100)
-
         # Lookback period
         lookback_days = self.current_settings.get("lookback_days", 252)
         lookback_map = {63: 0, 126: 1, 252: 2, 504: 3, 756: 4}
@@ -307,8 +304,6 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         lookback_days = lookback_map.get(self.lookback_combo.currentIndex(), 252)
 
         settings = {
-            "risk_free_source": "manual" if self.manual_radio.isChecked() else "irx",
-            "manual_risk_free_rate": self.manual_rate_spin.value() / 100,
             "lookback_days": lookback_days,
             "show_currency_factor": self.currency_check.isChecked(),
         }
@@ -323,8 +318,6 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         lookback_days = lookback_map.get(self.lookback_combo.currentIndex(), 252)
 
         return {
-            "risk_free_source": "manual" if self.manual_radio.isChecked() else "irx",
-            "manual_risk_free_rate": self.manual_rate_spin.value() / 100,
             "lookback_days": lookback_days,
             "show_currency_factor": self.currency_check.isChecked(),
         }
@@ -336,7 +329,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         theme = self.theme_manager.current_theme
         colors = ThemeStylesheetService.get_colors(theme)
 
-        # Additional styling for group boxes, radio buttons, etc.
+        # Additional styling for group boxes, inputs, etc.
         additional_style = f"""
             QGroupBox {{
                 font-weight: bold;
@@ -352,22 +345,14 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
                 padding: 0 5px;
                 color: {colors['text']};
             }}
-            QRadioButton {{
-                color: {colors['text']};
-                spacing: 8px;
-            }}
-            QRadioButton::indicator {{
-                width: 16px;
-                height: 16px;
-            }}
-            QDoubleSpinBox, QComboBox {{
+            QComboBox {{
                 background-color: {colors['bg_alt']};
                 color: {colors['text']};
                 border: 1px solid {colors['border']};
                 border-radius: 3px;
                 padding: 4px 8px;
             }}
-            QDoubleSpinBox:focus, QComboBox:focus {{
+            QComboBox:focus {{
                 border-color: {colors['accent']};
             }}
             QLineEdit {{

@@ -366,7 +366,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
                 background-color: transparent;
             }
             QLabel#section_title {
-                color: #00d4ff;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
@@ -404,7 +404,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
                 background-color: transparent;
             }
             QLabel#section_title {
-                color: #0066cc;
+                color: #000000;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
@@ -442,7 +442,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
                 background-color: transparent;
             }
             QLabel#section_title {
-                color: #FF8000;
+                color: #ffffff;
                 font-size: 15px;
                 font-weight: bold;
                 background: transparent;
