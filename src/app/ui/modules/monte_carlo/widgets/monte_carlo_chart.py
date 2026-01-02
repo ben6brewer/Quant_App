@@ -37,12 +37,15 @@ class StatisticsPanel(QFrame):
         layout.setSpacing(12)
 
         # Column headers (row 0)
-        headers = ["", "Median", "Mean", "CAGR", "P(Gain)", "P(Loss>10%)", "VaR 95%", "CVaR 95%"]
+        # P(Beat) header will be shown/hidden with benchmark
+        headers = ["", "Median", "Mean", "CAGR", "Ann. Vol", "Max DD", "P(Gain)", "P(Loss>10%)", "VaR 95%", "CVaR 95%", "P(Beat)"]
+        self._header_labels = []
         for col, header in enumerate(headers):
             label = QLabel(header)
             label.setObjectName("stat_header")
             label.setAlignment(Qt.AlignCenter)
             layout.addWidget(label, 0, col)
+            self._header_labels.append(label)
 
         # Row 1: Portfolio
         self.portfolio_name_label = QLabel("Portfolio")
@@ -51,7 +54,7 @@ class StatisticsPanel(QFrame):
         layout.addWidget(self.portfolio_name_label, 1, 0)
 
         self.portfolio_labels = {}
-        stat_keys = ["median", "mean", "cagr", "prob_positive", "prob_loss_10", "var_95", "cvar_95"]
+        stat_keys = ["median", "mean", "cagr", "ann_vol", "max_dd", "prob_positive", "prob_loss_10", "var_95", "cvar_95", "prob_beat"]
         for col, key in enumerate(stat_keys, start=1):
             label = QLabel("--")
             label.setObjectName("stat_value")
@@ -76,7 +79,15 @@ class StatisticsPanel(QFrame):
         # Store benchmark widgets for visibility toggling
         self._benchmark_widgets = [self.benchmark_name_label] + list(self.benchmark_labels.values())
 
-        # Hide benchmark row by default
+        # P(Beat) column - header and both row values (hidden when no benchmark)
+        self._pbeat_header = self._header_labels[-1]  # Last header is P(Beat)
+        self._pbeat_widgets = [
+            self._pbeat_header,
+            self.portfolio_labels["prob_beat"],
+            self.benchmark_labels["prob_beat"],
+        ]
+
+        # Hide benchmark row and P(Beat) column by default
         self.set_benchmark_visible(False)
 
     def set_portfolio_name(self, name: str):
@@ -84,13 +95,18 @@ class StatisticsPanel(QFrame):
         self.portfolio_name_label.setText(name if name else "Portfolio")
 
     def set_benchmark_visible(self, visible: bool, name: str = ""):
-        """Show or hide the benchmark statistics row."""
+        """Show or hide the benchmark statistics row and P(Beat) column."""
         if name:
             self.benchmark_name_label.setText(name)
         else:
             self.benchmark_name_label.setText("Benchmark")
 
+        # Show/hide benchmark row
         for widget in self._benchmark_widgets:
+            widget.setVisible(visible)
+
+        # Show/hide P(Beat) column (only relevant when benchmark is visible)
+        for widget in self._pbeat_widgets:
             widget.setVisible(visible)
 
     def update_statistics(
@@ -98,18 +114,24 @@ class StatisticsPanel(QFrame):
         result: SimulationResult,
         var_cvar: Dict[str, Dict[str, float]],
         probabilities: Dict[str, float],
+        ann_vol: float = 0.0,
+        max_dd: Dict[str, float] = None,
+        prob_beat: Optional[float] = None,
     ):
         """Update portfolio statistics from simulation result."""
-        self._update_row(self.portfolio_labels, result, var_cvar, probabilities)
+        self._update_row(self.portfolio_labels, result, var_cvar, probabilities, ann_vol, max_dd, prob_beat)
 
     def update_benchmark_statistics(
         self,
         result: SimulationResult,
         var_cvar: Dict[str, Dict[str, float]],
         probabilities: Dict[str, float],
+        ann_vol: float = 0.0,
+        max_dd: Dict[str, float] = None,
+        prob_beat: Optional[float] = None,
     ):
         """Update benchmark statistics from simulation result."""
-        self._update_row(self.benchmark_labels, result, var_cvar, probabilities)
+        self._update_row(self.benchmark_labels, result, var_cvar, probabilities, ann_vol, max_dd, prob_beat)
 
     def _update_row(
         self,
@@ -117,6 +139,9 @@ class StatisticsPanel(QFrame):
         result: SimulationResult,
         var_cvar: Dict[str, Dict[str, float]],
         probabilities: Dict[str, float],
+        ann_vol: float = 0.0,
+        max_dd: Dict[str, float] = None,
+        prob_beat: Optional[float] = None,
     ):
         """Update a row of statistics."""
         # Terminal values as percentage change from initial
@@ -131,6 +156,16 @@ class StatisticsPanel(QFrame):
             labels["cagr"].setText(f"{cagr * 100:+.1f}%")
         else:
             labels["cagr"].setText("--")
+
+        # Annualized Volatility
+        labels["ann_vol"].setText(f"{ann_vol * 100:.1f}%")
+
+        # Max Drawdown (median)
+        if max_dd:
+            mdd = max_dd.get("median_mdd", 0)
+            labels["max_dd"].setText(f"{mdd:.1f}%")
+        else:
+            labels["max_dd"].setText("--")
 
         # Probabilities
         prob_pos = probabilities.get("prob_positive", 0)
@@ -148,6 +183,12 @@ class StatisticsPanel(QFrame):
         else:
             labels["var_95"].setText("--")
             labels["cvar_95"].setText("--")
+
+        # P(Beat) - probability of beating the other
+        if prob_beat is not None:
+            labels["prob_beat"].setText(f"{prob_beat * 100:.1f}%")
+        else:
+            labels["prob_beat"].setText("--")
 
     def clear(self):
         """Clear all statistics."""
@@ -395,9 +436,10 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
         probabilities = MonteCarloService.calculate_probability_metrics(
             result.terminal_values, result.initial_value
         )
-        self.stats_panel.update_statistics(result, var_cvar, probabilities)
+        ann_vol = MonteCarloService.calculate_annualized_volatility(result.paths)
+        max_dd = MonteCarloService.calculate_max_drawdown(result.paths)
 
-        # Benchmark statistics
+        # Benchmark statistics and outperformance probabilities
         if benchmark_result is not None:
             bench_var_cvar = MonteCarloService.calculate_var_cvar(
                 benchmark_result.terminal_values, benchmark_result.initial_value
@@ -405,11 +447,30 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
             bench_probabilities = MonteCarloService.calculate_probability_metrics(
                 benchmark_result.terminal_values, benchmark_result.initial_value
             )
+            bench_ann_vol = MonteCarloService.calculate_annualized_volatility(benchmark_result.paths)
+            bench_max_dd = MonteCarloService.calculate_max_drawdown(benchmark_result.paths)
+
+            # Calculate outperformance probabilities
+            outperformance = MonteCarloService.calculate_outperformance_probability(
+                result.terminal_values, benchmark_result.terminal_values
+            )
+            port_beats_bench = outperformance["portfolio_beats_benchmark"]
+            bench_beats_port = outperformance["benchmark_beats_portfolio"]
+
+            # Update portfolio stats with P(Beat) = P(Portfolio beats Benchmark)
+            self.stats_panel.update_statistics(
+                result, var_cvar, probabilities, ann_vol, max_dd, port_beats_bench
+            )
+
+            # Update benchmark stats with P(Beat) = P(Benchmark beats Portfolio)
             self.stats_panel.set_benchmark_visible(True, benchmark_name)
             self.stats_panel.update_benchmark_statistics(
-                benchmark_result, bench_var_cvar, bench_probabilities
+                benchmark_result, bench_var_cvar, bench_probabilities,
+                bench_ann_vol, bench_max_dd, bench_beats_port
             )
         else:
+            # No benchmark - update portfolio without P(Beat)
+            self.stats_panel.update_statistics(result, var_cvar, probabilities, ann_vol, max_dd)
             self.stats_panel.set_benchmark_visible(False)
 
     def _clear_plot(self):

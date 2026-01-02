@@ -364,3 +364,86 @@ class MonteCarloService:
                 results[key] = float((returns > threshold).sum() / n_sims)
 
         return results
+
+    @staticmethod
+    def calculate_annualized_volatility(
+        paths: Any,  # np.ndarray
+    ) -> float:
+        """
+        Calculate annualized volatility from simulation paths.
+
+        Args:
+            paths: Simulated portfolio value paths, shape (n_simulations, n_periods + 1)
+
+        Returns:
+            Annualized volatility as a decimal (e.g., 0.20 = 20%)
+        """
+        import numpy as np
+
+        # Calculate daily returns for each path
+        daily_returns = paths[:, 1:] / paths[:, :-1] - 1
+
+        # Calculate mean daily volatility across all simulations
+        daily_vol = np.std(daily_returns)
+
+        # Annualize (assuming 252 trading days)
+        annualized_vol = daily_vol * np.sqrt(252)
+
+        return float(annualized_vol)
+
+    @staticmethod
+    def calculate_max_drawdown(
+        paths: Any,  # np.ndarray
+    ) -> Dict[str, float]:
+        """
+        Calculate max drawdown statistics from simulation paths.
+
+        Args:
+            paths: Simulated portfolio value paths, shape (n_simulations, n_periods + 1)
+
+        Returns:
+            Dict with median and mean max drawdown as percentages
+        """
+        import numpy as np
+
+        n_sims = paths.shape[0]
+        max_drawdowns = np.zeros(n_sims)
+
+        for i in range(n_sims):
+            path = paths[i]
+            running_max = np.maximum.accumulate(path)
+            drawdown = (path - running_max) / running_max
+            max_drawdowns[i] = drawdown.min()  # Most negative = worst drawdown
+
+        return {
+            "median_mdd": float(np.median(max_drawdowns) * 100),
+            "mean_mdd": float(np.mean(max_drawdowns) * 100),
+        }
+
+    @staticmethod
+    def calculate_outperformance_probability(
+        portfolio_terminal: Any,  # np.ndarray
+        benchmark_terminal: Any,  # np.ndarray
+    ) -> Dict[str, float]:
+        """
+        Calculate probability of portfolio outperforming benchmark.
+
+        Args:
+            portfolio_terminal: Terminal values from portfolio simulation
+            benchmark_terminal: Terminal values from benchmark simulation
+
+        Returns:
+            Dict with probabilities for both directions
+        """
+        import numpy as np
+
+        n_sims = len(portfolio_terminal)
+        port_beats_bench = (portfolio_terminal > benchmark_terminal).sum()
+
+        prob_port_beats = float(port_beats_bench / n_sims)
+        prob_bench_beats = 1.0 - prob_port_beats
+
+        return {
+            "portfolio_beats_benchmark": prob_port_beats,
+            "benchmark_beats_portfolio": prob_bench_beats,
+        }
