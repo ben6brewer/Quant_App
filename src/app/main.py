@@ -41,6 +41,11 @@ def _create_performance_metrics_module(theme_manager):
     return PerformanceMetricsModule(theme_manager)
 
 
+def _create_risk_analytics_module(theme_manager):
+    from app.ui.modules.risk_analytics import RiskAnalyticsModule
+    return RiskAnalyticsModule(theme_manager)
+
+
 def _create_placeholder_module(class_name):
     from app.ui.modules.placeholder_modules import (
         AnalysisModule,
@@ -94,6 +99,11 @@ def main() -> int:
     hub.add_module(
         "performance_metrics",
         lambda: _create_performance_metrics_module(theme_manager),
+        has_own_home_button=True,
+    )
+    hub.add_module(
+        "risk_analytics",
+        lambda: _create_risk_analytics_module(theme_manager),
         has_own_home_button=True,
     )
     hub.add_module(

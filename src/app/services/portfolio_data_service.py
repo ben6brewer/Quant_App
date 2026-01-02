@@ -193,16 +193,21 @@ class PortfolioDataService:
         # Convert to Holding dataclasses
         holdings = []
         for h in raw_holdings:
+            # calculate_aggregate_holdings uses "weight_pct" (0-100) and "total_quantity"
+            # Convert to decimal weight (0-1) for calculations
+            weight_pct = h.get("weight_pct", 0)
+            weight_decimal = weight_pct / 100.0 if weight_pct else None
+
             holdings.append(
                 Holding(
                     ticker=h.get("ticker", ""),
-                    quantity=h.get("quantity", 0),
+                    quantity=h.get("total_quantity", h.get("quantity", 0)),
                     avg_cost_basis=h.get("avg_cost_basis", 0),
                     total_cost=h.get("total_cost", 0),
                     current_price=h.get("current_price"),
                     market_value=h.get("market_value"),
-                    pnl=h.get("pnl"),
-                    weight=h.get("weight"),
+                    pnl=h.get("total_pnl", h.get("pnl")),
+                    weight=weight_decimal,
                 )
             )
 
