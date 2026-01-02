@@ -36,6 +36,11 @@ def _create_monte_carlo_module(theme_manager):
     return MonteCarloModule(theme_manager)
 
 
+def _create_performance_metrics_module(theme_manager):
+    from app.ui.modules.performance_metrics import PerformanceMetricsModule
+    return PerformanceMetricsModule(theme_manager)
+
+
 def _create_placeholder_module(class_name):
     from app.ui.modules.placeholder_modules import (
         AnalysisModule,
@@ -84,6 +89,11 @@ def main() -> int:
     hub.add_module(
         "portfolio_construction",
         lambda: _create_portfolio_construction_module(theme_manager),
+        has_own_home_button=True,
+    )
+    hub.add_module(
+        "performance_metrics",
+        lambda: _create_performance_metrics_module(theme_manager),
         has_own_home_button=True,
     )
     hub.add_module(
