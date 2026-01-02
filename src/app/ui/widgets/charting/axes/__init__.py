@@ -3,5 +3,13 @@
 from .draggable_axis import DraggableAxisItem
 from .price_axis import DraggablePriceAxisItem
 from .date_index_axis import DraggableIndexDateAxisItem
+from .percentage_axis import DraggablePercentageAxisItem
+from .trading_day_axis import DraggableTradingDayAxisItem
 
-__all__ = ['DraggableAxisItem', 'DraggablePriceAxisItem', 'DraggableIndexDateAxisItem']
+__all__ = [
+    'DraggableAxisItem',
+    'DraggablePriceAxisItem',
+    'DraggableIndexDateAxisItem',
+    'DraggablePercentageAxisItem',
+    'DraggableTradingDayAxisItem',
+]

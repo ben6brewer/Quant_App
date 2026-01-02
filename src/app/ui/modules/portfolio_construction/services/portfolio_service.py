@@ -646,6 +646,25 @@ class PortfolioService:
         return results
 
     @staticmethod
+    def get_first_available_date(ticker: str) -> Optional[str]:
+        """
+        Get the first available date for a ticker's price history.
+
+        Args:
+            ticker: Ticker symbol
+
+        Returns:
+            Date string in YYYY-MM-DD format, or None if no data available
+        """
+        try:
+            df = fetch_price_history(ticker, period="max", interval="1d")
+            if df is None or df.empty:
+                return None
+            return df.index.min().strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+    @staticmethod
     def calculate_principal(transaction: Dict[str, Any]) -> float:
         """
         Calculate principal for a transaction.

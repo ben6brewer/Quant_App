@@ -222,10 +222,12 @@ class ThemeStylesheetService:
             QLabel {{
                 color: {c['text_muted']};
                 font-size: 13px;
+                background-color: transparent;
             }}
             QLabel#descriptionLabel {{
                 color: {text_desc};
                 font-size: 12px;
+                background-color: transparent;
             }}
             QLineEdit {{
                 background-color: {c['bg_header']};
@@ -286,6 +288,7 @@ class ThemeStylesheetService:
                 color: {c['text']};
                 font-size: 13px;
                 spacing: 8px;
+                background-color: transparent;
             }}
             QRadioButton::indicator {{
                 width: 16px;
@@ -305,6 +308,7 @@ class ThemeStylesheetService:
                 color: {c['text']};
                 font-size: 13px;
                 spacing: 8px;
+                background-color: transparent;
             }}
             QCheckBox::indicator {{
                 width: 16px;
@@ -341,5 +345,90 @@ class ThemeStylesheetService:
             }}
             QPushButton:pressed {{
                 background-color: {bg_pressed};
+            }}
+            QPushButton#defaultButton {{
+                background-color: {c['accent']};
+                color: {c['text_on_accent']};
+                border: 1px solid {c['accent']};
+                font-weight: 600;
+            }}
+            QPushButton#defaultButton:hover {{
+                background-color: {c['accent_hover']};
+                border-color: {c['accent_hover']};
+            }}
+            QPushButton#defaultButton:pressed {{
+                background-color: {c['accent']};
+            }}
+            QLabel#noteLabel {{
+                color: {text_desc};
+                font-style: italic;
+                font-size: 11px;
+                background-color: transparent;
+            }}
+            QGroupBox {{
+                color: {c['text']};
+                background-color: {c['bg']};
+                border: 2px solid {c['border']};
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 5px;
+                background-color: {c['bg']};
+            }}
+            QSpinBox {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
+                border-radius: 3px;
+                padding: 5px 8px;
+                font-size: 13px;
+            }}
+            QSpinBox:hover {{
+                border-color: {c['accent']};
+            }}
+            QSpinBox:focus {{
+                border-color: {c['accent']};
+            }}
+            QScrollArea {{
+                border: none;
+                background-color: {c['bg']};
+            }}
+            QScrollBar:vertical {{
+                background-color: {c['bg']};
+                width: 12px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {bg_hover};
+                border-radius: 6px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {c['border']};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar:horizontal {{
+                background-color: {c['bg']};
+                height: 12px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {bg_hover};
+                border-radius: 6px;
+                min-width: 20px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {c['border']};
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
             }}
         """
