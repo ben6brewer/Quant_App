@@ -39,6 +39,46 @@ def _set_memory_cache(ticker: str, df: "pd.DataFrame") -> None:
         _memory_cache[ticker] = df
 
 
+def _load_btc_historical_csv() -> "pd.DataFrame":
+    """Load historical BTC data from CSV for pre-Yahoo-Finance dates."""
+    import pandas as pd
+    from pathlib import Path
+
+    csv_path = Path(__file__).parent / "bitcoin_historical_prices.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(csv_path, parse_dates=["date"], index_col="date")
+    # Capitalize column names to match yfinance format
+    df.columns = [c.capitalize() for c in df.columns]
+    df.index.name = None
+    df.sort_index(inplace=True)
+    return df
+
+
+def _prepend_btc_historical(yf_df: "pd.DataFrame") -> "pd.DataFrame":
+    """Prepend historical CSV data to BTC-USD Yahoo Finance data."""
+    import pandas as pd
+
+    csv_df = _load_btc_historical_csv()
+    if csv_df.empty:
+        return yf_df
+
+    # Get first date from Yahoo Finance data
+    first_yf_date = yf_df.index.min()
+
+    # Filter CSV to dates BEFORE Yahoo Finance starts
+    csv_before = csv_df[csv_df.index < first_yf_date]
+
+    if csv_before.empty:
+        return yf_df
+
+    # Concatenate: CSV first, then Yahoo Finance
+    combined = pd.concat([csv_before, yf_df])
+    combined.sort_index(inplace=True)
+    return combined
+
+
 def fetch_price_history(
     ticker: str,
     period: str = DEFAULT_PERIOD,
@@ -145,6 +185,10 @@ def fetch_price_history(
         df = df.copy()
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+
+        # Prepend historical CSV data for BTC-USD
+        if ticker == "BTC-USD":
+            df = _prepend_btc_historical(df)
 
         # Cache the daily data (both disk and memory)
         _cache.save_to_cache(ticker, df)

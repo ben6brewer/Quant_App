@@ -149,29 +149,35 @@ class MonteCarloService:
                 n_periods=n_periods,
             )
 
-        # Generate simulated returns using block bootstrap
+        # Generate simulated returns using vectorized block bootstrap
         n_blocks = (n_periods + block_size - 1) // block_size
-        simulated_returns = np.zeros((n_simulations, n_periods))
 
-        for sim in range(n_simulations):
-            # Randomly select block starting points
-            block_starts = np.random.randint(0, n_returns - block_size + 1, n_blocks)
+        # Vectorized block bootstrap:
+        # Generate all block starting points at once
+        all_block_starts = np.random.randint(
+            0, n_returns - block_size + 1, size=(n_simulations, n_blocks)
+        )
 
-            # Build return sequence from blocks
-            returns_seq = []
-            for start in block_starts:
-                returns_seq.extend(clean_returns[start : start + block_size])
+        # Create offset array for block indices [0, 1, 2, ..., block_size-1]
+        offsets = np.arange(block_size)
 
-            # Trim to exact number of periods needed
-            simulated_returns[sim, :] = returns_seq[:n_periods]
+        # Build all indices using broadcasting
+        # Shape: (n_simulations, n_blocks, block_size)
+        block_indices = all_block_starts[:, :, np.newaxis] + offsets
 
-        # Convert returns to portfolio values
+        # Flatten blocks and slice to n_periods
+        # Shape: (n_simulations, n_blocks * block_size) -> (n_simulations, n_periods)
+        block_indices = block_indices.reshape(n_simulations, -1)[:, :n_periods]
+
+        # Extract all returns at once using advanced indexing
+        simulated_returns = clean_returns[block_indices]
+
+        # Convert returns to portfolio values using vectorized cumprod
         # paths[i, j] = portfolio value at time j for simulation i
+        cumulative_returns = np.cumprod(1 + simulated_returns, axis=1)
         paths = np.zeros((n_simulations, n_periods + 1))
         paths[:, 0] = initial_value
-
-        for t in range(n_periods):
-            paths[:, t + 1] = paths[:, t] * (1 + simulated_returns[:, t])
+        paths[:, 1:] = initial_value * cumulative_returns
 
         # Extract terminal values
         terminal_values = paths[:, -1]
@@ -236,12 +242,11 @@ class MonteCarloService:
         # Generate random returns from normal distribution
         simulated_returns = np.random.normal(mean, std, (n_simulations, n_periods))
 
-        # Convert returns to portfolio values
+        # Convert returns to portfolio values using vectorized cumprod
+        cumulative_returns = np.cumprod(1 + simulated_returns, axis=1)
         paths = np.zeros((n_simulations, n_periods + 1))
         paths[:, 0] = initial_value
-
-        for t in range(n_periods):
-            paths[:, t + 1] = paths[:, t] * (1 + simulated_returns[:, t])
+        paths[:, 1:] = initial_value * cumulative_returns
 
         # Extract terminal values
         terminal_values = paths[:, -1]
@@ -406,14 +411,15 @@ class MonteCarloService:
         """
         import numpy as np
 
-        n_sims = paths.shape[0]
-        max_drawdowns = np.zeros(n_sims)
+        # Vectorized max drawdown calculation across all simulations
+        # Compute running maximum along each path (axis=1)
+        running_max = np.maximum.accumulate(paths, axis=1)
 
-        for i in range(n_sims):
-            path = paths[i]
-            running_max = np.maximum.accumulate(path)
-            drawdown = (path - running_max) / running_max
-            max_drawdowns[i] = drawdown.min()  # Most negative = worst drawdown
+        # Compute drawdown at each point (negative values indicate drawdown)
+        drawdown = (paths - running_max) / running_max
+
+        # Get max drawdown (most negative value) for each simulation
+        max_drawdowns = drawdown.min(axis=1)
 
         return {
             "median_mdd": float(np.median(max_drawdowns) * 100),

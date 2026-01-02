@@ -11,8 +11,13 @@ from app.services.returns_data_service import ReturnsDataService
 from app.ui.widgets.common.loading_overlay import LoadingOverlay
 from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
 
-from .services.monte_carlo_service import MonteCarloService, SimulationResult
+from .services.monte_carlo_service import SimulationResult
 from .services.monte_carlo_settings_manager import MonteCarloSettingsManager
+from .services.simulation_worker import (
+    SimulationWorker,
+    SimulationParams,
+    SimulationResultBundle,
+)
 from .widgets.monte_carlo_controls import MonteCarloControls
 from .widgets.monte_carlo_chart import MonteCarloChart
 
@@ -48,6 +53,9 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
 
         # Loading overlay
         self._loading_overlay: Optional[LoadingOverlay] = None
+
+        # Background simulation worker
+        self._simulation_worker: Optional[SimulationWorker] = None
 
         self._setup_ui()
         self._connect_signals()
@@ -90,6 +98,11 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
         """Handle show event - apply pending theme if needed."""
         super().showEvent(event)
         self._check_theme_dirty()
+
+    def hideEvent(self, event):
+        """Handle hide event - cancel any running simulation."""
+        self._cancel_running_simulation()
+        super().hideEvent(event)
 
     def _load_settings(self):
         """Load saved settings."""
@@ -161,26 +174,36 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
         if self._loading_overlay:
             self._loading_overlay.hide()
 
+    def _cancel_running_simulation(self):
+        """Cancel any in-progress simulation."""
+        if self._simulation_worker is not None:
+            self._simulation_worker.request_cancellation()
+            self._simulation_worker.wait(1000)  # Wait up to 1 second
+            self._simulation_worker = None
+
     def _run_simulation(self):
-        """Run Monte Carlo simulation with current settings."""
+        """Run Monte Carlo simulation in background thread."""
         if not self._current_portfolio:
             self.chart.show_placeholder("Select a portfolio or ticker first")
             return
 
+        # Cancel any running simulation
+        self._cancel_running_simulation()
+
         self._show_loading("Running simulation...")
 
         try:
-            # Get historical returns for portfolio
+            # Get historical returns for portfolio (quick operation on main thread)
             if self._is_ticker_mode:
-                returns = ReturnsDataService.get_ticker_returns(
+                portfolio_returns = ReturnsDataService.get_ticker_returns(
                     self._current_portfolio, interval="daily"
                 )
             else:
-                returns = ReturnsDataService.get_time_varying_portfolio_returns(
+                portfolio_returns = ReturnsDataService.get_time_varying_portfolio_returns(
                     self._current_portfolio, include_cash=False, interval="daily"
                 )
 
-            if returns.empty or len(returns) < 30:
+            if portfolio_returns.empty or len(portfolio_returns) < 30:
                 self.chart.show_placeholder(
                     f"Insufficient data for {self._current_portfolio} "
                     "(need at least 30 trading days)"
@@ -188,93 +211,103 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
                 self._hide_loading()
                 return
 
-            # Simulation periods (already in trading days)
-            n_periods = self._current_horizon
-
-            # Get initial value from settings
-            initial_value = self.settings_manager.get_setting("initial_value")
-            block_size = self.settings_manager.get_setting("block_size")
-
-            # Run simulation for portfolio
-            if self._current_method == "bootstrap":
-                result = MonteCarloService.simulate_historical_bootstrap(
-                    returns=returns,
-                    n_simulations=self._current_simulations,
-                    n_periods=n_periods,
-                    initial_value=initial_value,
-                    block_size=block_size,
-                )
-            else:  # parametric
-                mean = returns.mean()
-                std = returns.std()
-                result = MonteCarloService.simulate_parametric(
-                    mean=mean,
-                    std=std,
-                    n_simulations=self._current_simulations,
-                    n_periods=n_periods,
-                    initial_value=initial_value,
-                )
-
-            self._last_result = result
-
-            # Run simulation for benchmark if selected
-            benchmark_result = None
+            # Get benchmark returns if selected
+            benchmark_returns = None
             if self._current_benchmark:
                 try:
-                    # Check if benchmark is a portfolio or ticker
                     is_benchmark_ticker = self._current_benchmark not in self._portfolio_list
                     if is_benchmark_ticker:
-                        bench_returns = ReturnsDataService.get_ticker_returns(
+                        benchmark_returns = ReturnsDataService.get_ticker_returns(
                             self._current_benchmark, interval="daily"
                         )
                     else:
-                        bench_returns = ReturnsDataService.get_time_varying_portfolio_returns(
+                        benchmark_returns = ReturnsDataService.get_time_varying_portfolio_returns(
                             self._current_benchmark, include_cash=False, interval="daily"
                         )
 
-                    if not bench_returns.empty and len(bench_returns) >= 30:
-                        if self._current_method == "bootstrap":
-                            benchmark_result = MonteCarloService.simulate_historical_bootstrap(
-                                returns=bench_returns,
-                                n_simulations=self._current_simulations,
-                                n_periods=n_periods,
-                                initial_value=initial_value,
-                                block_size=block_size,
-                            )
-                        else:  # parametric
-                            bench_mean = bench_returns.mean()
-                            bench_std = bench_returns.std()
-                            benchmark_result = MonteCarloService.simulate_parametric(
-                                mean=bench_mean,
-                                std=bench_std,
-                                n_simulations=self._current_simulations,
-                                n_periods=n_periods,
-                                initial_value=initial_value,
-                            )
+                    if benchmark_returns.empty or len(benchmark_returns) < 30:
+                        benchmark_returns = None
                 except Exception:
-                    # If benchmark fails, just show portfolio without benchmark
-                    benchmark_result = None
+                    benchmark_returns = None
 
-            # Display result
-            settings = self.settings_manager.get_all_settings()
-            self.chart.set_simulation_result(
-                result,
-                settings,
-                benchmark_result,
-                portfolio_name=self._current_portfolio,
-                benchmark_name=self._current_benchmark,
+            # Build simulation parameters
+            params = SimulationParams(
+                n_simulations=self._current_simulations,
+                n_periods=self._current_horizon,
+                initial_value=self.settings_manager.get_setting("initial_value"),
+                block_size=self.settings_manager.get_setting("block_size"),
+                method=self._current_method,
             )
+
+            # Create and start background worker
+            self._simulation_worker = SimulationWorker(
+                portfolio_returns=portfolio_returns,
+                params=params,
+                benchmark_returns=benchmark_returns,
+                parent=self,
+            )
+            self._simulation_worker.simulation_complete.connect(
+                self._on_simulation_complete
+            )
+            self._simulation_worker.simulation_error.connect(
+                self._on_simulation_error
+            )
+            self._simulation_worker.start()
 
         except Exception as e:
             self.chart.show_placeholder(f"Error: {str(e)}")
-
-        finally:
             self._hide_loading()
+
+    def _on_simulation_complete(self, bundle: SimulationResultBundle):
+        """Handle simulation completion (runs on main thread via signal)."""
+        self._last_result = bundle.portfolio_result
+
+        # Update chart with pre-computed statistics
+        settings = self.settings_manager.get_all_settings()
+        self.chart.set_simulation_result_with_stats(
+            bundle,
+            settings,
+            portfolio_name=self._current_portfolio,
+            benchmark_name=self._current_benchmark,
+        )
+
+        self._hide_loading()
+        self._simulation_worker = None
+
+    def _on_simulation_error(self, error_msg: str):
+        """Handle simulation error."""
+        self.chart.show_placeholder(f"Error: {error_msg}")
+        self._hide_loading()
+        self._simulation_worker = None
 
     def _show_settings_dialog(self):
         """Show settings dialog."""
-        # TODO: Implement settings dialog
-        pass
+        from .widgets.monte_carlo_settings_dialog import MonteCarloSettingsDialog
+
+        current_settings = self.settings_manager.get_all_settings()
+        has_benchmark = bool(self._current_benchmark)
+
+        dialog = MonteCarloSettingsDialog(
+            self.theme_manager,
+            current_settings,
+            parent=self,
+            has_benchmark=has_benchmark,
+        )
+
+        if dialog.exec():
+            new_settings = dialog.get_settings()
+            if new_settings:
+                self.settings_manager.update_settings(new_settings)
+                self.settings_manager.save_settings()
+
+                # Update chart with new settings (colors, display options)
+                self.chart.update_chart_settings(new_settings)
+
+                # Re-run simulation if we have a previous result
+                # This applies changes like initial_value, block_size
+                # Runs in background thread to keep UI responsive
+                if self._last_result is not None and self._current_portfolio:
+                    self._run_simulation()
 
     def _apply_theme(self):
         """Apply theme styling."""
