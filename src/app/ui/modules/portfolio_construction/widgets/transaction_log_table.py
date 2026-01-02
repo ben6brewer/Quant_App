@@ -35,6 +35,7 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
     transaction_deleted = Signal(str)          # (transaction_id)
     _price_autofill_ready = Signal(int, float) # (row, price) - internal signal for thread-safe UI update
     _name_autofill_ready = Signal(int, str)    # (row, name) - internal signal for thread-safe name update
+    _date_correction_needed = Signal(int, str, str)  # (row, first_available_date, ticker) - for date before history
 
     # Columns
     COLUMNS = [
@@ -112,6 +113,9 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         # For lazy theme application
         self._theme_dirty = False
 
+        # Prevent duplicate date correction dialogs from multiple autofill threads
+        self._date_correction_pending = False
+
         self._setup_table()
         self._apply_theme()
 
@@ -121,6 +125,7 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         # Connect internal signals for thread-safe auto-fill
         self._price_autofill_ready.connect(self._apply_autofill_price)
         self._name_autofill_ready.connect(self._apply_autofill_name)
+        self._date_correction_needed.connect(self._handle_date_correction)
 
     def showEvent(self, event):
         """Handle show event - apply pending theme if needed."""
@@ -342,7 +347,7 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         self._set_editable_cell_widget(0, 2, name_edit)
 
         # Quantity cell - column 3
-        qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
+        qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=999999999, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(blank_transaction["quantity"])
         qty_edit.setStyleSheet(widget_style)
         qty_edit.textChanged.connect(self._on_widget_changed)
@@ -888,7 +893,7 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         self._set_editable_cell_widget(row, 2, name_edit)
 
         # Quantity cell - column 3
-        qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=1000000, decimals=4, prefix="", show_dash_for_zero=True)
+        qty_edit = ValidatedNumericLineEdit(min_value=0.0001, max_value=999999999, decimals=4, prefix="", show_dash_for_zero=True)
         qty_edit.setValue(transaction["quantity"])
         qty_edit.setStyleSheet(widget_style)
         qty_edit.textChanged.connect(self._on_widget_changed)
@@ -1490,6 +1495,14 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
                         if ticker:
                             QTimer.singleShot(0, lambda r=row, t=ticker: self._try_autofill_name(r, t))
 
+            # Date column (col 0) lost focus - re-trigger auto-fill if ticker already filled
+            elif row is not None and col == 0:  # Date column
+                transaction = self._get_transaction_for_row(row)
+                if transaction and transaction.get("is_blank"):
+                    ticker = transaction.get("ticker", "").strip()
+                    if ticker:  # Only if ticker already entered
+                        QTimer.singleShot(0, lambda r=row: self._try_autofill_execution_price(r))
+
             # Focus left a widget - defer check to see if it left the row
             # Capture current generation so we can detect if a sort/edit invalidated this callback
             gen = self._focus_generation
@@ -2072,6 +2085,7 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         Auto-fill execution price for blank row when date and ticker are filled.
         Only fills if execution price was not manually entered by user.
         Fetches price in background thread to avoid UI lag.
+        Also validates date is within ticker's available history.
 
         Args:
             row: Row index (should be 0 for blank row)
@@ -2083,9 +2097,8 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
         if not transaction or not transaction.get("is_blank"):
             return
 
-        # Don't auto-fill if user manually entered a price
-        if row in self._user_entered_price_rows:
-            return
+        # Track if user manually entered price (still validate date even if they did)
+        user_entered_price = row in self._user_entered_price_rows
 
         # Get date and ticker values
         ticker = transaction.get("ticker", "").strip().upper()
@@ -2097,7 +2110,8 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
 
         # FREE CASH is always $1.00 - no network call needed
         if ticker == PortfolioService.FREE_CASH_TICKER:
-            self._apply_autofill_price(row, 1.0)
+            if not user_entered_price:
+                self._apply_autofill_price(row, 1.0)
             return
 
         # Determine if today or historical
@@ -2114,8 +2128,15 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
                     price = results.get(ticker, {}).get(tx_date)
 
                 if price is not None:
-                    # Emit signal to update UI on main thread (thread-safe)
-                    self._price_autofill_ready.emit(row, price)
+                    # Only auto-fill price if user didn't manually enter one
+                    if not user_entered_price:
+                        self._price_autofill_ready.emit(row, price)
+                else:
+                    # Price is None - check if date is before ticker history
+                    first_date = PortfolioService.get_first_available_date(ticker)
+                    if first_date and tx_date < first_date:
+                        # Emit signal for main thread to show dialog and correct date
+                        self._date_correction_needed.emit(row, first_date, ticker)
             except Exception:
                 pass  # Silently fail
 
@@ -2173,6 +2194,56 @@ class TransactionLogTable(LazyThemeMixin, FieldRevertMixin, SortingMixin, Editab
             name_widget.setText(name)
             name_widget.blockSignals(False)
             name_widget.repaint()
+
+    def _handle_date_correction(self, row: int, first_date: str, ticker: str) -> None:
+        """
+        Handle date correction when entered date is before ticker history.
+        Shows warning dialog and updates date to first available date.
+
+        Args:
+            row: Row index
+            first_date: First available date in YYYY-MM-DD format
+            ticker: Ticker symbol
+        """
+        # Prevent duplicate dialogs from multiple autofill threads
+        if self._date_correction_pending:
+            return
+        self._date_correction_pending = True
+
+        # Verify row is still the blank row
+        transaction = self._get_transaction_for_row(row)
+        if not transaction or not transaction.get("is_blank"):
+            self._date_correction_pending = False
+            return
+
+        # Show warning dialog
+        CustomMessageBox.warning(
+            self.theme_manager,
+            self,
+            "Date Before Ticker History",
+            f"The entered date is before the available price history for {ticker}.\n\n"
+            f"First available date: {first_date}\n\n"
+            f"The date has been automatically adjusted."
+        )
+
+        # Update date widget
+        date_widget = self._get_inner_widget(row, 0)
+        if date_widget and isinstance(date_widget, DateInputWidget):
+            date_widget.blockSignals(True)
+            date_widget.setDate(QDate.fromString(first_date, "yyyy-MM-dd"))
+            date_widget.blockSignals(False)
+
+            # Update stored transaction
+            transaction["date"] = first_date
+            self._transactions_by_id["BLANK_ROW"]["date"] = first_date
+            if row in self._transactions:
+                self._transactions[row]["date"] = first_date
+
+        # Re-trigger auto-fill with corrected date
+        QTimer.singleShot(0, lambda r=row: self._try_autofill_execution_price(r))
+
+        # Reset flag after correction is complete
+        self._date_correction_pending = False
 
     def _try_autofill_name(self, row: int, ticker: str) -> None:
         """
