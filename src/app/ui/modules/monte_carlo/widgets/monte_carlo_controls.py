@@ -18,9 +18,7 @@ from PySide6.QtCore import Signal, QDate
 from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
-from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
-from app.ui.widgets.common.themed_dialog import ThemedDialog
-from app.ui.widgets.common.date_input_widget import DateInputWidget
+from app.ui.widgets.common import LazyThemeMixin, ThemedDialog, DateInputWidget, NoScrollComboBox
 from app.services.theme_stylesheet_service import ThemeStylesheetService
 
 
@@ -38,13 +36,6 @@ class SmoothScrollListView(QListView):
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
         event.accept()
-
-
-class NoScrollComboBox(QComboBox):
-    """ComboBox that ignores scroll wheel events."""
-
-    def wheelEvent(self, event: QWheelEvent):
-        event.ignore()
 
 
 class HorizonComboBox(NoScrollComboBox):
@@ -181,8 +172,7 @@ class CustomHorizonDialog(ThemedDialog):
 
         # Info label
         info_label = QLabel("Date must be after today. Trading days will be calculated automatically.")
-        info_label.setObjectName("info_label")
-        info_label.setStyleSheet("color: #888888; font-size: 11px; font-style: italic;")
+        info_label.setObjectName("noteLabel")
         layout.addWidget(info_label)
 
         layout.addStretch()
@@ -198,7 +188,7 @@ class CustomHorizonDialog(ThemedDialog):
 
         ok_btn = QPushButton("OK")
         ok_btn.setFixedSize(100, 36)
-        ok_btn.setObjectName("primary_btn")
+        ok_btn.setObjectName("defaultButton")
         ok_btn.clicked.connect(self._on_ok_clicked)
         btn_row.addWidget(ok_btn)
 
@@ -245,42 +235,6 @@ class CustomHorizonDialog(ThemedDialog):
     def get_end_date(self) -> Optional[QDate]:
         """Get the selected end date."""
         return self._end_date
-
-    def _apply_theme(self):
-        """Apply theme styling."""
-        super()._apply_theme()
-        theme = self.theme_manager.current_theme
-
-        # Apply proper styling to date input with visible text
-        if theme == "dark":
-            bg = "#2d2d2d"
-            text = "#ffffff"
-            border = "#3d3d3d"
-            placeholder = "#888888"
-        elif theme == "light":
-            bg = "#ffffff"
-            text = "#000000"
-            border = "#cccccc"
-            placeholder = "#888888"
-        else:  # bloomberg
-            bg = "#0d1420"
-            text = "#e8e8e8"
-            border = "#1a2838"
-            placeholder = "#888888"
-
-        self.date_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {bg};
-                color: {text};
-                border: 1px solid {border};
-                border-radius: 3px;
-                padding: 6px 10px;
-                font-size: 14px;
-            }}
-            QLineEdit::placeholder {{
-                color: {placeholder};
-            }}
-        """)
 
 
 class MonteCarloControls(LazyThemeMixin, QWidget):
@@ -603,281 +557,106 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         return self.sims_combo.currentData() or 1000
 
     def _apply_theme(self):
-        """Apply theme-specific styling."""
-        theme = self.theme_manager.current_theme
+        """Apply theme-specific styling using centralized colors."""
+        c = ThemeStylesheetService.get_colors(self.theme_manager.current_theme)
 
-        if theme == "light":
-            stylesheet = self._get_light_stylesheet()
-        elif theme == "bloomberg":
-            stylesheet = self._get_bloomberg_stylesheet()
-        else:
-            stylesheet = self._get_dark_stylesheet()
+        # Compute hover colors based on theme
+        if self.theme_manager.current_theme == "dark":
+            bg_hover = "#3d3d3d"
+            run_hover = "#00bfe6"
+            run_pressed = "#00a6c7"
+        elif self.theme_manager.current_theme == "light":
+            bg_hover = "#e8e8e8"
+            run_hover = "#0055aa"
+            run_pressed = "#004488"
+        else:  # bloomberg
+            bg_hover = "#1a2838"
+            run_hover = "#e67300"
+            run_pressed = "#cc6600"
 
-        self.setStyleSheet(stylesheet)
-
-    def _get_dark_stylesheet(self) -> str:
-        """Dark theme stylesheet."""
-        return """
-            QWidget {
-                background-color: #1e1e1e;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #cccccc;
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {c['bg']};
+                color: {c['text']};
+            }}
+            QLabel {{
+                color: {c['text_muted']};
                 font-size: 13px;
-            }
-            QLabel#control_label {
-                color: #ffffff;
+            }}
+            QLabel#control_label {{
+                color: {c['text']};
                 font-size: 14px;
                 font-weight: 500;
                 background: transparent;
-            }
-            QComboBox {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #3d3d3d;
+            }}
+            QComboBox {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
                 border-radius: 3px;
                 padding: 8px 12px;
                 font-size: 14px;
-            }
-            QComboBox:hover {
-                border-color: #00d4ff;
-            }
-            QComboBox::drop-down {
+            }}
+            QComboBox:hover {{
+                border-color: {c['accent']};
+            }}
+            QComboBox::drop-down {{
                 border: none;
                 width: 24px;
-            }
-            QComboBox::down-arrow {
+            }}
+            QComboBox::down-arrow {{
                 image: none;
                 border-left: 6px solid transparent;
                 border-right: 6px solid transparent;
-                border-top: 7px solid #ffffff;
+                border-top: 7px solid {c['text']};
                 margin-right: 10px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                selection-background-color: #00d4ff;
-                selection-color: #000000;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                selection-background-color: {c['accent']};
+                selection-color: {c['text_on_accent']};
                 font-size: 14px;
                 padding: 4px;
                 outline: none;
-            }
-            QComboBox QAbstractItemView::item {
+            }}
+            QComboBox QAbstractItemView::item {{
                 padding: 8px 12px;
                 min-height: 24px;
-            }
-            QComboBox QAbstractItemView::item:alternate {
-                background-color: #252525;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #00d4ff;
-                color: #000000;
-            }
-            QPushButton {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #3d3d3d;
+            }}
+            QComboBox QAbstractItemView::item:alternate {{
+                background-color: {c['bg_alt']};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: {c['accent']};
+                color: {c['text_on_accent']};
+            }}
+            QPushButton {{
+                background-color: {c['bg_header']};
+                color: {c['text']};
+                border: 1px solid {c['border']};
                 border-radius: 3px;
                 padding: 6px 12px;
                 font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #3d3d3d;
-                border-color: #00d4ff;
-            }
-            QPushButton:pressed {
-                background-color: #1a1a1a;
-            }
-            QPushButton#run_btn {
-                background-color: #00d4ff;
-                color: #000000;
+            }}
+            QPushButton:hover {{
+                background-color: {bg_hover};
+                border-color: {c['accent']};
+            }}
+            QPushButton:pressed {{
+                background-color: {c['bg']};
+            }}
+            QPushButton#run_btn {{
+                background-color: {c['accent']};
+                color: {c['text_on_accent']};
                 font-weight: bold;
-                border: 1px solid #00d4ff;
-            }
-            QPushButton#run_btn:hover {
-                background-color: #00bfe6;
-                border-color: #00bfe6;
-            }
-            QPushButton#run_btn:pressed {
-                background-color: #00a6c7;
-            }
-        """
-
-    def _get_light_stylesheet(self) -> str:
-        """Light theme stylesheet."""
-        return """
-            QWidget {
-                background-color: #ffffff;
-                color: #000000;
-            }
-            QLabel {
-                color: #333333;
-                font-size: 13px;
-            }
-            QLabel#control_label {
-                color: #000000;
-                font-size: 14px;
-                font-weight: 500;
-                background: transparent;
-            }
-            QComboBox {
-                background-color: #f5f5f5;
-                color: #000000;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 8px 12px;
-                font-size: 14px;
-            }
-            QComboBox:hover {
-                border-color: #0066cc;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 6px solid transparent;
-                border-right: 6px solid transparent;
-                border-top: 7px solid #000000;
-                margin-right: 10px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #f5f5f5;
-                color: #000000;
-                selection-background-color: #0066cc;
-                selection-color: #ffffff;
-                font-size: 14px;
-                padding: 4px;
-                outline: none;
-            }
-            QComboBox QAbstractItemView::item {
-                padding: 8px 12px;
-                min-height: 24px;
-            }
-            QComboBox QAbstractItemView::item:alternate {
-                background-color: #e8e8e8;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #0066cc;
-                color: #ffffff;
-            }
-            QPushButton {
-                background-color: #f5f5f5;
-                color: #000000;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 12px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #e8e8e8;
-                border-color: #0066cc;
-            }
-            QPushButton:pressed {
-                background-color: #d0d0d0;
-            }
-            QPushButton#run_btn {
-                background-color: #0066cc;
-                color: #ffffff;
-                font-weight: bold;
-                border: 1px solid #0066cc;
-            }
-            QPushButton#run_btn:hover {
-                background-color: #0055aa;
-                border-color: #0055aa;
-            }
-            QPushButton#run_btn:pressed {
-                background-color: #004488;
-            }
-        """
-
-    def _get_bloomberg_stylesheet(self) -> str:
-        """Bloomberg theme stylesheet."""
-        return """
-            QWidget {
-                background-color: #000814;
-                color: #e8e8e8;
-            }
-            QLabel {
-                color: #a8a8a8;
-                font-size: 13px;
-            }
-            QLabel#control_label {
-                color: #e8e8e8;
-                font-size: 14px;
-                font-weight: 500;
-                background: transparent;
-            }
-            QComboBox {
-                background-color: #0d1420;
-                color: #e8e8e8;
-                border: 1px solid #1a2838;
-                border-radius: 3px;
-                padding: 8px 12px;
-                font-size: 14px;
-            }
-            QComboBox:hover {
-                border-color: #FF8000;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 6px solid transparent;
-                border-right: 6px solid transparent;
-                border-top: 7px solid #e8e8e8;
-                margin-right: 10px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #0d1420;
-                color: #e8e8e8;
-                selection-background-color: #FF8000;
-                selection-color: #000000;
-                font-size: 14px;
-                padding: 4px;
-                outline: none;
-            }
-            QComboBox QAbstractItemView::item {
-                padding: 8px 12px;
-                min-height: 24px;
-            }
-            QComboBox QAbstractItemView::item:alternate {
-                background-color: #0a1018;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #FF8000;
-                color: #000000;
-            }
-            QPushButton {
-                background-color: #0d1420;
-                color: #e8e8e8;
-                border: 1px solid #1a2838;
-                border-radius: 3px;
-                padding: 6px 12px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #1a2838;
-                border-color: #FF8000;
-            }
-            QPushButton:pressed {
-                background-color: #060a10;
-            }
-            QPushButton#run_btn {
-                background-color: #FF8000;
-                color: #000000;
-                font-weight: bold;
-                border: 1px solid #FF8000;
-            }
-            QPushButton#run_btn:hover {
-                background-color: #e67300;
-                border-color: #e67300;
-            }
-            QPushButton#run_btn:pressed {
-                background-color: #cc6600;
-            }
-        """
+                border: 1px solid {c['accent']};
+            }}
+            QPushButton#run_btn:hover {{
+                background-color: {run_hover};
+                border-color: {run_hover};
+            }}
+            QPushButton#run_btn:pressed {{
+                background-color: {run_pressed};
+            }}
+        """)
