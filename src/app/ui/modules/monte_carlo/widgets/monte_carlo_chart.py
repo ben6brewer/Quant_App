@@ -38,7 +38,7 @@ class StatisticsPanel(QFrame):
 
         # Column headers (row 0)
         # P(Beat) header will be shown/hidden with benchmark
-        headers = ["", "Median", "Mean", "CAGR", "Ann. Vol", "Max DD", "P(Gain)", "P(Loss>10%)", "VaR 95%", "CVaR 95%", "P(Beat)"]
+        headers = ["", "Median", "Mean", "CAGR", "Cum. Ret", "Ann. Vol", "Max DD", "P(Gain)", "P(Loss>10%)", "VaR 95%", "CVaR 95%", "P(Beat)"]
         self._header_labels = []
         for col, header in enumerate(headers):
             label = QLabel(header)
@@ -54,7 +54,7 @@ class StatisticsPanel(QFrame):
         layout.addWidget(self.portfolio_name_label, 1, 0)
 
         self.portfolio_labels = {}
-        stat_keys = ["median", "mean", "cagr", "ann_vol", "max_dd", "prob_positive", "prob_loss_10", "var_95", "cvar_95", "prob_beat"]
+        stat_keys = ["median", "mean", "cagr", "cum_ret", "ann_vol", "max_dd", "prob_positive", "prob_loss_10", "var_95", "cvar_95", "prob_beat"]
         for col, key in enumerate(stat_keys, start=1):
             label = QLabel("--")
             label.setObjectName("stat_value")
@@ -156,6 +156,10 @@ class StatisticsPanel(QFrame):
             labels["cagr"].setText(f"{cagr * 100:+.1f}%")
         else:
             labels["cagr"].setText("--")
+
+        # Cumulative Return (median terminal return)
+        cum_ret = (result.median_terminal / result.initial_value - 1) * 100
+        labels["cum_ret"].setText(f"{cum_ret:+.1f}%")
 
         # Annualized Volatility
         labels["ann_vol"].setText(f"{ann_vol * 100:.1f}%")
@@ -286,6 +290,10 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
         self.plot_item.setLabel("left", "Return (%)")
         self.plot_item.setLabel("bottom", "Trading Days")
 
+        # Add legend in top-left
+        self.legend = self.plot_item.addLegend(offset=(60, 5))
+        self.legend.setParentItem(self.plot_item.graphicsItem())
+
         # Store plot items for clearing
         self._plot_items: List = []
 
@@ -361,18 +369,19 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
                 self.plot_item.addItem(fill)
                 self._plot_items.append(fill)
 
-            # Draw benchmark median line
+            # Draw benchmark median line (add to legend with benchmark name)
             if settings.get("show_median", True):
                 median = to_pct(benchmark_result.median_path, bench_initial)
                 pen = pg.mkPen(color=benchmark_median_color, width=2, style=Qt.SolidLine)
-                line = self.plot_item.plot(x, median, pen=pen, name="Benchmark Median")
+                bench_label = benchmark_name if benchmark_name else "Benchmark"
+                line = self.plot_item.plot(x, median, pen=pen, name=bench_label)
                 self._plot_items.append(line)
 
-            # Draw benchmark mean line
+            # Draw benchmark mean line (no legend entry)
             if settings.get("show_mean", False):
                 mean = to_pct(benchmark_result.mean_path, bench_initial)
                 pen = pg.mkPen(color=(255, 180, 100), width=2, style=Qt.DashLine)
-                line = self.plot_item.plot(x, mean, pen=pen, name="Benchmark Mean")
+                line = self.plot_item.plot(x, mean, pen=pen)
                 self._plot_items.append(line)
 
         # Portfolio initial value for percentage conversion
@@ -402,19 +411,20 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
             self.plot_item.addItem(fill)
             self._plot_items.append(fill)
 
-        # Draw portfolio median line
+        # Draw portfolio median line (add to legend with portfolio name)
         if settings.get("show_median", True):
             median = to_pct(result.median_path, port_initial)
             pen = pg.mkPen(color=portfolio_median_color, width=2, style=Qt.SolidLine)
-            line = self.plot_item.plot(x, median, pen=pen, name="Portfolio Median")
+            port_label = portfolio_name if portfolio_name else "Portfolio"
+            line = self.plot_item.plot(x, median, pen=pen, name=port_label)
             self._plot_items.append(line)
 
-        # Draw portfolio mean line
+        # Draw portfolio mean line (no legend entry)
         if settings.get("show_mean", False):
             mean = to_pct(result.mean_path, port_initial)
             color = settings.get("mean_color", (255, 200, 0))
             pen = pg.mkPen(color=color, width=2, style=Qt.DashLine)
-            line = self.plot_item.plot(x, mean, pen=pen, name="Portfolio Mean")
+            line = self.plot_item.plot(x, mean, pen=pen)
             self._plot_items.append(line)
 
         # Draw 0% baseline
@@ -474,10 +484,13 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
             self.stats_panel.set_benchmark_visible(False)
 
     def _clear_plot(self):
-        """Clear all plot items."""
+        """Clear all plot items and legend."""
         for item in self._plot_items:
             self.plot_item.removeItem(item)
         self._plot_items.clear()
+
+        # Clear legend
+        self.legend.clear()
 
     def show_placeholder(self, message: str):
         """Show placeholder message."""
@@ -522,6 +535,11 @@ class MonteCarloChart(LazyThemeMixin, QWidget):
 
         # Apply gridlines
         self.plot_item.showGrid(x=True, y=True, alpha=0.3)
+
+        # Apply to legend (transparent background, no border)
+        self.legend.setLabelTextColor(text_color)
+        self.legend.setBrush(pg.mkBrush(None))  # Transparent background
+        self.legend.setPen(pg.mkPen(None))  # No border
 
         # Apply to statistics panel
         self.stats_panel.apply_theme(theme)
