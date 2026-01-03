@@ -35,23 +35,30 @@ class UnifiedOrderBookTable(QTableWidget):
         # First paint the volume bars
         painter = QPainter(self.viewport())
         painter.setRenderHint(QPainter.Antialiasing)
-        
+
+        # Theme-specific bar colors with reduced opacity for better text contrast
+        if self._theme == "dark":
+            ask_bar_color = QColor(80, 35, 45, 100)  # Darker red, less opacity
+            bid_bar_color = QColor(30, 70, 45, 100)  # Darker green, less opacity
+        elif self._theme == "bloomberg":
+            ask_bar_color = QColor(100, 40, 30, 90)  # Bloomberg red tone
+            bid_bar_color = QColor(30, 80, 50, 90)  # Bloomberg green tone
+        else:
+            ask_bar_color = QColor(255, 180, 180, 70)  # Light theme red
+            bid_bar_color = QColor(180, 255, 180, 70)  # Light theme green
+
         # Paint ask bars (rows 0 to spread_row-1)
-        ask_bar_color = QColor(59, 29, 34, 120) if self._theme == "dark" else QColor(255, 200, 200, 80)
-        
         for row, bar_width_percent in self._ask_volume_data.items():
             if bar_width_percent > 0 and row < self.rowCount():
                 self._paint_bar(painter, row, bar_width_percent, ask_bar_color, "ask")
-        
+
         # Paint bid bars (rows spread_row+1 to end)
-        bid_bar_color = QColor(25, 54, 38, 120) if self._theme == "dark" else QColor(200, 255, 200, 80)
-        
         for row, bar_width_percent in self._bid_volume_data.items():
             if bar_width_percent > 0 and row < self.rowCount():
                 self._paint_bar(painter, row, bar_width_percent, bid_bar_color, "bid")
-        
+
         painter.end()
-        
+
         # Now paint the normal table content on top
         super().paintEvent(event)
     
@@ -448,58 +455,71 @@ class OrderBookLadderWidget(QWidget):
         return cumulative
     
     def _create_ask_item(self, text: str) -> QTableWidgetItem:
-        """Create a table item for ask side with neutral text (now on right)."""
+        """Create a table item for ask side (now on right)."""
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # Left align (right side of table)
-        
+
         font = QFont()
         font.setPointSize(10)
+        font.setBold(True)
         item.setFont(font)
-        
+
+        # Use themed red tones that contrast well with the bar background
         if self._theme == "dark":
-            item.setForeground(QColor(171, 178, 191))
+            item.setForeground(QColor(255, 180, 180))  # Light red/pink
+        elif self._theme == "bloomberg":
+            item.setForeground(QColor(255, 160, 150))  # Warm light red
         else:
-            item.setForeground(QColor(80, 80, 80))
-        
+            item.setForeground(QColor(180, 60, 70))  # Dark red for light theme
+
         return item
-    
+
     def _create_bid_item(self, text: str) -> QTableWidgetItem:
-        """Create a table item for bid side with neutral text (now on left)."""
+        """Create a table item for bid side (now on left)."""
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)  # Right align (left side of table)
-        
+
         font = QFont()
         font.setPointSize(10)
+        font.setBold(True)
         item.setFont(font)
-        
+
+        # Use themed green tones that contrast well with the bar background
         if self._theme == "dark":
-            item.setForeground(QColor(171, 178, 191))
+            item.setForeground(QColor(160, 220, 170))  # Light green
+        elif self._theme == "bloomberg":
+            item.setForeground(QColor(140, 220, 160))  # Bloomberg green
         else:
-            item.setForeground(QColor(80, 80, 80))
-        
+            item.setForeground(QColor(40, 130, 60))  # Dark green for light theme
+
         return item
     
     def _create_price_item(self, text: str, is_ask: bool) -> QTableWidgetItem:
         """Create a price item (center column) with appropriate color."""
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignCenter)
-        
+
         font = QFont()
         font.setPointSize(11)
         font.setBold(True)
         item.setFont(font)
-        
+
         if self._theme == "dark":
             if is_ask:
                 item.setForeground(QColor(241, 108, 119))  # Red for asks
             else:
                 item.setForeground(QColor(106, 188, 127))  # Green for bids
+        elif self._theme == "bloomberg":
+            if is_ask:
+                item.setForeground(QColor(255, 100, 100))  # Bloomberg red
+            else:
+                item.setForeground(QColor(80, 200, 120))  # Bloomberg green
         else:
             if is_ask:
                 item.setForeground(QColor(200, 0, 0))
             else:
                 item.setForeground(QColor(0, 128, 0))
-        
+
         return item
     
     def clear_order_book(self):
