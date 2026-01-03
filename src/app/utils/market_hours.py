@@ -14,9 +14,13 @@ from zoneinfo import ZoneInfo
 # NYSE timezone
 NYSE_TZ = ZoneInfo("America/New_York")
 
-# NYSE market hours
+# NYSE market hours (regular session)
 NYSE_OPEN = time(9, 30)
 NYSE_CLOSE = time(16, 0)
+
+# Extended hours (pre-market and after-hours)
+PREMARKET_OPEN = time(4, 0)
+AFTERHOURS_CLOSE = time(20, 0)
 
 
 def is_crypto_ticker(ticker: str) -> bool:
@@ -24,12 +28,13 @@ def is_crypto_ticker(ticker: str) -> bool:
     Check if a ticker is a cryptocurrency (trades 24/7).
 
     Args:
-        ticker: Ticker symbol (e.g., "BTC-USD", "AAPL")
+        ticker: Ticker symbol (e.g., "BTC-USD", "ETH-USDT", "AAPL")
 
     Returns:
         True if crypto ticker, False otherwise
     """
-    return ticker.upper().endswith("-USD")
+    ticker = ticker.upper()
+    return ticker.endswith("-USD") or ticker.endswith("-USDT")
 
 
 def easter_date(year: int) -> date:
@@ -212,3 +217,28 @@ def is_stock_cache_current(last_cached_date: date) -> bool:
     """
     expected_date = get_last_expected_trading_date()
     return last_cached_date >= expected_date
+
+
+def is_market_open_extended() -> bool:
+    """
+    Check if NYSE is open (including extended hours).
+
+    Extended hours schedule:
+    - Pre-market: 4:00 AM - 9:30 AM ET
+    - Regular: 9:30 AM - 4:00 PM ET
+    - After-hours: 4:00 PM - 8:00 PM ET
+
+    Returns:
+        True if current time is within extended trading hours
+        AND today is a trading day (not weekend/holiday).
+    """
+    now_et = datetime.now(NYSE_TZ)
+    today = now_et.date()
+
+    # Check if today is a trading day
+    if not is_nyse_trading_day(today):
+        return False
+
+    # Check if current time is within extended hours (4am - 8pm ET)
+    current_time = now_et.time()
+    return PREMARKET_OPEN <= current_time <= AFTERHOURS_CLOSE

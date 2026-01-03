@@ -101,10 +101,12 @@ class MarketDataCache:
         # Get the last date in cache
         last_date = df.index.max().date()
 
-        # Crypto trades 24/7 - use simple today check
+        # Crypto trades 24/7, but daily bars are only complete at end of day
+        # So cache is current if we have yesterday's data (today's bar isn't complete yet)
         if is_crypto_ticker(ticker):
-            today = datetime.now().date()
-            return last_date >= today
+            from datetime import timedelta
+            yesterday = (datetime.now() - timedelta(days=1)).date()
+            return last_date >= yesterday
 
         # Stocks - use market-aware check
         return is_stock_cache_current(last_date)
