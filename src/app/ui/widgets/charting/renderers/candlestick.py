@@ -33,6 +33,49 @@ class CandlestickItem(pg.GraphicsObject):
         self._generate_picture()
         self.update()
 
+    def update_last_candle(self, o: float, c: float, lo: float, hi: float) -> None:
+        """
+        Update only the last candle's OHLC values.
+
+        This is used for incremental live updates to avoid full chart rebuild.
+        The QPicture is regenerated, but this is still faster than recreating
+        all chart objects via set_prices().
+
+        Args:
+            o: Open price
+            c: Close price
+            lo: Low price
+            hi: High price
+        """
+        if self.data.size == 0:
+            return
+        last_idx = len(self.data) - 1
+        x = self.data[last_idx, 0]
+        self.data[last_idx] = [x, o, c, lo, hi]
+        self._generate_picture()
+        self.update()
+
+    def append_candle(self, x: float, o: float, c: float, lo: float, hi: float) -> None:
+        """
+        Append a new candle to the data array.
+
+        Used when a new trading day starts during live updates.
+
+        Args:
+            x: X-coordinate (index position)
+            o: Open price
+            c: Close price
+            lo: Low price
+            hi: High price
+        """
+        new_row = np.array([[x, o, c, lo, hi]], dtype=float)
+        if self.data.size == 0:
+            self.data = new_row
+        else:
+            self.data = np.vstack([self.data, new_row])
+        self._generate_picture()
+        self.update()
+
     def _generate_picture(self):
         picture = QtGui.QPicture()
         p = QtGui.QPainter(picture)

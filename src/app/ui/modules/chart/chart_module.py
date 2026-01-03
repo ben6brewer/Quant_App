@@ -811,7 +811,11 @@ class ChartModule(LazyThemeMixin, QWidget):
         bar_close = today_bar.iloc[0]["Close"]
         bar_volume = today_bar.iloc[0].get("Volume", 0)
 
-        if bar_date > last_date:
+        # Store old close before updating (for change calculation and API)
+        old_close = df.iloc[-1, df.columns.get_loc("Close")]
+        is_new_day = bar_date > last_date
+
+        if is_new_day:
             # New day - append a new row
             new_row = pd.DataFrame(
                 [{
@@ -826,8 +830,7 @@ class ChartModule(LazyThemeMixin, QWidget):
             self.state["df"] = pd.concat([df, new_row])
             print(f"{ticker_type} {ticker}: New day {bar_date}, price ${bar_close:,.2f}")
         else:
-            # Same day - update last row
-            old_close = df.iloc[-1, df.columns.get_loc("Close")]
+            # Same day - update last row in-place
             df.iloc[-1, df.columns.get_loc("Open")] = bar_open
             df.iloc[-1, df.columns.get_loc("High")] = bar_high
             df.iloc[-1, df.columns.get_loc("Low")] = bar_low
@@ -841,8 +844,22 @@ class ChartModule(LazyThemeMixin, QWidget):
             arrow = "↑" if change > 0 else "↓" if change < 0 else "→"
             print(f"{ticker_type} {ticker}: ${bar_close:,.2f} {arrow} ({change:+,.2f}, {change_pct:+.2f}%)")
 
-        # Re-render chart
-        self.render_from_cache()
+        # INCREMENTAL UPDATE instead of full rebuild
+        # This preserves the user's view (zoom/scroll position)
+
+        # Update indicators if any are active
+        if self.state["indicators"]:
+            indicators = IndicatorService.calculate_multiple(
+                self.state["df"], self.state["indicators"]
+            )
+            self.chart.update_indicator_lines(indicators)
+
+        # Update chart incrementally (no view reset)
+        if is_new_day:
+            self.chart.append_new_bar(self.state["df"])
+        else:
+            self.chart.update_last_bar(self.state["df"], old_close)
+
         print(f"{ticker_type} poll: Chart updated for {ticker}")
 
     def _stop_live_updates(self) -> None:

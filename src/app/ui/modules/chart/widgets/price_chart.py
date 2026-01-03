@@ -114,6 +114,10 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self._oscillator_panes = {}  # Dict[indicator_name, OscillatorPane]
         self._next_pane_id = 0
 
+        # Indicator line tracking for incremental updates
+        # Dict[indicator_name, Dict[column_name, PlotCurveItem]]
+        self._indicator_lines = {}
+
         # Price label (rightmost visible price)
         self._price_label = None  # Will be created when enabled
         self.data = None  # Store original DataFrame for price lookup
@@ -1412,6 +1416,174 @@ class PriceChart(pg.GraphicsLayoutWidget):
             self._date_label_positioned = False
 
     # -------------------------
+    # Incremental Update Methods (for live price updates)
+    # -------------------------
+
+    def update_last_bar(self, df: pd.DataFrame, old_close: float) -> None:
+        """
+        Update only the last bar without full chart rebuild.
+
+        This preserves the user's view state completely - no Y-axis jump,
+        no visual flash. Used for live price updates every 60 seconds.
+
+        Args:
+            df: Full DataFrame with updated last row
+            old_close: Previous close price (unused, kept for API compatibility)
+        """
+        if df is None or df.empty:
+            return
+
+        # Store updated data
+        self.data = df
+
+        last_row = df.iloc[-1]
+
+        # Apply scale transform if needed
+        if self._scale_mode == "log":
+            o = np.log10(max(float(last_row["Open"]), 1e-12))
+            c = np.log10(max(float(last_row["Close"]), 1e-12))
+            lo = np.log10(max(float(last_row["Low"]), 1e-12))
+            hi = np.log10(max(float(last_row["High"]), 1e-12))
+        else:
+            o = float(last_row["Open"])
+            c = float(last_row["Close"])
+            lo = float(last_row["Low"])
+            hi = float(last_row["High"])
+
+        # Update candles or line chart
+        if self._candles is not None:
+            self._candles.update_last_candle(o, c, lo, hi)
+        elif self._line is not None:
+            # For line chart, update the full y-data (PyQtGraph handles efficiently)
+            y = df["Close"].astype(float).to_numpy()
+            if self._scale_mode == "log":
+                y = np.log10(np.clip(y, 1e-12, None))
+            x = np.arange(len(df), dtype=float)
+            self._line.setData(x, y)
+
+        # Update price label to show current close
+        self._update_price_label()
+
+        # Only expand Y-range if price goes outside visible area
+        self._maybe_expand_y_range(hi, lo)
+
+    def append_new_bar(self, df: pd.DataFrame) -> None:
+        """
+        Append a new day's bar to the chart.
+
+        Used when a new trading day starts during live updates.
+
+        Args:
+            df: Full DataFrame with new row appended
+        """
+        if df is None or df.empty:
+            return
+
+        # Store updated data
+        self.data = df
+
+        last_row = df.iloc[-1]
+        last_idx = len(df) - 1
+
+        # Update axis index mapping for the new bar
+        self.bottom_axis.set_index(df.index)
+        self.oscillator_bottom_axis.set_index(df.index)
+
+        # Apply scale transform if needed
+        if self._scale_mode == "log":
+            o = np.log10(max(float(last_row["Open"]), 1e-12))
+            c = np.log10(max(float(last_row["Close"]), 1e-12))
+            lo = np.log10(max(float(last_row["Low"]), 1e-12))
+            hi = np.log10(max(float(last_row["High"]), 1e-12))
+        else:
+            o = float(last_row["Open"])
+            c = float(last_row["Close"])
+            lo = float(last_row["Low"])
+            hi = float(last_row["High"])
+
+        # Append candle or update line chart
+        if self._candles is not None:
+            self._candles.append_candle(last_idx, o, c, lo, hi)
+        elif self._line is not None:
+            y = df["Close"].astype(float).to_numpy()
+            if self._scale_mode == "log":
+                y = np.log10(np.clip(y, 1e-12, None))
+            x = np.arange(len(df), dtype=float)
+            self._line.setData(x, y)
+
+        # Update price label
+        self._update_price_label()
+
+        # Expand Y-range if needed
+        self._maybe_expand_y_range(hi, lo)
+
+    def _maybe_expand_y_range(self, new_high: float, new_low: float) -> None:
+        """
+        Only expand Y-range if price exceeds current visible range.
+
+        This prevents Y-axis jumps when the price is still within view.
+        Only expands, never shrinks - shrinking would cause jumps.
+
+        Args:
+            new_high: New high price (already transformed if log scale)
+            new_low: New low price (already transformed if log scale)
+        """
+        _, (y_min, y_max) = self.price_vb.viewRange()
+
+        needs_update = False
+
+        if new_high > y_max:
+            # Price went above visible range - expand upward with 5% padding
+            padding = (y_max - y_min) * 0.05
+            y_max = new_high + padding
+            needs_update = True
+
+        if new_low < y_min:
+            # Price went below visible range - expand downward with 5% padding
+            padding = (y_max - y_min) * 0.05
+            y_min = new_low - padding
+            needs_update = True
+
+        if needs_update:
+            self.price_vb.setYRange(y_min, y_max, padding=0)
+
+    def update_indicator_lines(self, indicators: dict) -> None:
+        """
+        Update indicator lines with new data (incremental update).
+
+        This updates the y-data of existing indicator lines without
+        recreating them, preserving view state.
+
+        Args:
+            indicators: Dict from IndicatorService.calculate_multiple()
+        """
+        if not indicators or not self._indicator_lines:
+            return
+
+        x = np.arange(len(self.data), dtype=float)
+
+        for indicator_name, indicator_info in indicators.items():
+            if indicator_name not in self._indicator_lines:
+                continue
+
+            indicator_df = indicator_info.get("data")
+            if indicator_df is None:
+                continue
+
+            for col, line_item in self._indicator_lines[indicator_name].items():
+                if col not in indicator_df.columns:
+                    continue
+
+                y = indicator_df[col].to_numpy()
+
+                # Apply log scale for overlay indicators (not oscillators)
+                is_overlay = indicator_info.get("is_overlay", True)
+                if self._scale_mode == "log" and is_overlay:
+                    y = np.log10(np.clip(y, 1e-12, None))
+
+                line_item.setData(x, y)
+
+    # -------------------------
     # Oscillator Pane Management
     # -------------------------
 
@@ -1519,10 +1691,15 @@ class PriceChart(pg.GraphicsLayoutWidget):
         if hasattr(self, 'oscillator_legend') and self.oscillator_legend is not None:
             self.oscillator_legend.clear()
 
+        # Reset indicator line tracking for incremental updates
+        self._indicator_lines = {}
+
         color_idx = 0
         has_oscillators = False
 
         for indicator_name, indicator_info in indicators.items():
+            # Initialize tracking dict for this indicator
+            self._indicator_lines[indicator_name] = {}
             # Extract data and per-line appearance
             indicator_df = indicator_info.get("data")
             per_line_appearance = indicator_info.get("per_line_appearance", {}) or {}  # Safety: never None
@@ -1703,6 +1880,9 @@ class PriceChart(pg.GraphicsLayoutWidget):
                     # Plot the indicator
                     line = pg.PlotCurveItem(x=x, y=y, pen=pen, name=label or col)
                     target_vb.addItem(line)
+
+                    # Track line for incremental updates
+                    self._indicator_lines[indicator_name][col] = line
 
                     # Add to appropriate legend
                     if label:
