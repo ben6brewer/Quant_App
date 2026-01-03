@@ -20,8 +20,13 @@ class RiskAnalyticsSettingsManager(BaseSettingsManager):
             # Benchmark settings
             "default_benchmark": "SPY",
             # Analysis settings
-            "lookback_days": 252,  # 1 year default (trading days)
+            "lookback_days": 252,  # 1 year default (trading days), None if custom date range
+            "custom_start_date": None,  # Custom start date (YYYY-MM-DD), only used when lookback_days is None
+            "custom_end_date": None,  # Custom end date (YYYY-MM-DD), only used when lookback_days is None
             "show_currency_factor": True,  # Show currency in factor decomposition
+            # Universe settings (None = all sectors, list = filter to these sectors)
+            "portfolio_universe_sectors": None,  # Filter portfolio to these sectors
+            "benchmark_universe_sectors": None,  # Filter benchmark to these sectors (not yet implemented)
             # Display settings
             "decimal_places": 2,  # Decimal places for percentages
             # Table settings

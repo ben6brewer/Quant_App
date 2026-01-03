@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
 )
+
+from .smooth_scroll_widgets import SmoothScrollTableWidget
 from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QPainter, QColor
 
@@ -63,7 +65,7 @@ class BarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class CTEVTable(QTableWidget):
+class CTEVTable(SmoothScrollTableWidget):
     """Table widget for displaying CTEV breakdown with bar visualization."""
 
     def __init__(self, title: str, columns: List[str], parent=None):

@@ -634,6 +634,10 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio selection change in dropdown."""
+        # Strip "[Port] " prefix if present
+        if name.startswith("[Port] "):
+            name = name[7:]
+
         if not name:
             return
 

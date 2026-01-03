@@ -128,8 +128,8 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
         if name == self._current_portfolio:
             return
 
-        # Strip "[Portfolio] " prefix if present
-        if name.startswith("[Portfolio] "):
+        # Strip "[Port] " prefix if present
+        if name.startswith("[Port] "):
             name = name[12:]
             self._is_ticker_mode = False
         else:
@@ -156,7 +156,7 @@ class MonteCarloModule(LazyThemeMixin, QWidget):
 
     def _on_benchmark_changed(self, benchmark: str):
         """Handle benchmark selection change."""
-        if benchmark.startswith("[Portfolio] "):
+        if benchmark.startswith("[Port] "):
             benchmark = benchmark[12:]
         self._current_benchmark = benchmark
 

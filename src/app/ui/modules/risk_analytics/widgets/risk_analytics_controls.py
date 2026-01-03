@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QListView,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
@@ -24,6 +24,7 @@ class SmoothScrollListView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def wheelEvent(self, event: QWheelEvent):
         """Override wheel event to reduce scroll speed."""
@@ -83,11 +84,13 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
         # Add stretch to push controls toward center
         layout.addStretch(1)
 
-        # Portfolio selector (non-editable dropdown)
+        # Portfolio selector (editable with read-only line edit for display control)
         self.portfolio_label = QLabel("Portfolio:")
         self.portfolio_label.setObjectName("control_label")
         layout.addWidget(self.portfolio_label)
         self.portfolio_combo = QComboBox()
+        self.portfolio_combo.setEditable(True)
+        self.portfolio_combo.lineEdit().setReadOnly(True)
         self.portfolio_combo.setFixedWidth(250)
         self.portfolio_combo.setFixedHeight(40)
         smooth_view = SmoothScrollListView(self.portfolio_combo)
@@ -142,6 +145,9 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
             text = self.portfolio_combo.currentText()
             if text and text != self._last_portfolio_text:
                 self._last_portfolio_text = text
+                # Show name without prefix in the display
+                if text.startswith("[Port] "):
+                    self.portfolio_combo.lineEdit().setText(text[7:])
                 self.portfolio_changed.emit(text)
 
     def _on_benchmark_entered(self):
@@ -153,7 +159,7 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
             text = ""
         else:
             # Check if this matches a portfolio in the dropdown (case-insensitive)
-            # Portfolios are listed as "[Portfolio] Name"
+            # Portfolios are listed as "[Port] Name"
             portfolio_match = None
             for i in range(self.benchmark_combo.count()):
                 item = self.benchmark_combo.itemText(i)
@@ -205,11 +211,16 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
         """
         self.portfolio_combo.blockSignals(True)
         self.portfolio_combo.clear()
-        self.portfolio_combo.addItems(portfolios)
+        for p in portfolios:
+            self.portfolio_combo.addItem(f"[Port] {p}")
         if current and current in portfolios:
-            self.portfolio_combo.setCurrentText(current)
+            self.portfolio_combo.setCurrentText(f"[Port] {current}")
+            # Show name without prefix in the display
+            self.portfolio_combo.lineEdit().setText(current)
         elif portfolios:
             self.portfolio_combo.setCurrentIndex(0)
+            # Show first portfolio name without prefix
+            self.portfolio_combo.lineEdit().setText(portfolios[0])
         self.portfolio_combo.blockSignals(False)
 
     def update_benchmark_list(self, portfolios: List[str]):
@@ -224,7 +235,7 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
         self.benchmark_combo.clear()
         # Add portfolios with prefix
         for p in portfolios:
-            self.benchmark_combo.addItem(f"[Portfolio] {p}")
+            self.benchmark_combo.addItem(f"[Port] {p}")
         # Restore previous selection if still valid, otherwise show placeholder
         if current:
             self.benchmark_combo.setCurrentText(current)

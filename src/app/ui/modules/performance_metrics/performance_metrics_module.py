@@ -124,6 +124,10 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio/ticker selection change."""
+        # Strip "[Port] " prefix if present
+        if name.startswith("[Port] "):
+            name = name[7:]
+
         if name == self._current_portfolio:
             return
 
@@ -141,7 +145,7 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
 
         # Determine if benchmark is a portfolio
         if benchmark:
-            self._is_benchmark_portfolio = benchmark.startswith("[Portfolio] ")
+            self._is_benchmark_portfolio = benchmark.startswith("[Port] ")
         else:
             self._is_benchmark_portfolio = False
 
@@ -216,8 +220,8 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
                     is_portfolio = self._is_benchmark_portfolio
 
                     if is_portfolio:
-                        # Remove "[Portfolio] " prefix
-                        benchmark_name = benchmark_name.replace("[Portfolio] ", "")
+                        # Remove "[Port] " prefix
+                        benchmark_name = benchmark_name.replace("[Port] ", "")
 
                     benchmark_returns = self._get_returns(
                         benchmark_name,

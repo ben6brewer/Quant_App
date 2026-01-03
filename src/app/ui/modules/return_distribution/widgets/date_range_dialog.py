@@ -146,7 +146,7 @@ class DateRangeDialog(QDialog):
 
     def _show_validation_error(self, title: str, message: str):
         """Show validation error message."""
-        CustomMessageBox.warning(self, title, message, self.theme_manager)
+        CustomMessageBox.warning(self.theme_manager, self, title, message)
 
     def _on_ok_clicked(self):
         """Handle OK button click."""
@@ -156,20 +156,20 @@ class DateRangeDialog(QDialog):
         # Validate both dates are set
         if not start_date.isValid():
             CustomMessageBox.warning(
+                self.theme_manager,
                 self,
                 "Missing Start Date",
                 "Please enter a valid start date.",
-                self.theme_manager,
             )
             self.start_date_input.setFocus()
             return
 
         if not end_date.isValid():
             CustomMessageBox.warning(
+                self.theme_manager,
                 self,
                 "Missing End Date",
                 "Please enter a valid end date.",
-                self.theme_manager,
             )
             self.end_date_input.setFocus()
             return
@@ -177,10 +177,10 @@ class DateRangeDialog(QDialog):
         # Validate start is before end
         if start_date > end_date:
             CustomMessageBox.warning(
+                self.theme_manager,
                 self,
                 "Invalid Date Range",
                 "Start date must be before or equal to end date.",
-                self.theme_manager,
             )
             self.start_date_input.setFocus()
             return

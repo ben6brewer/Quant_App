@@ -1,7 +1,6 @@
 """Risk Analytics Settings Dialog - Configure module settings and sector overrides."""
 
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Optional
 from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -15,7 +14,10 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QWidget,
 )
-from PySide6.QtCore import Signal, Qt
+
+from .smooth_scroll_widgets import SmoothScrollListWidget
+from .risk_analytics_controls import SmoothScrollListView
+from PySide6.QtCore import Signal, Qt, QDate
 
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common.themed_dialog import ThemedDialog
@@ -52,12 +54,17 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         """
         self.current_settings = current_settings
         self.portfolio_tickers = set(t.upper() for t in (portfolio_tickers or []))
+        # Sectors for universe selection (exclude "Not Classified")
+        self.universe_sectors = [s for s in SectorOverrideService.SECTORS if s != "Not Classified"]
+        # Custom date range storage
+        self._custom_start_date: Optional[str] = current_settings.get("custom_start_date")
+        self._custom_end_date: Optional[str] = current_settings.get("custom_end_date")
         super().__init__(
             theme_manager,
             "Risk Analytics Settings",
             parent,
             min_width=620,
-            min_height=450,
+            min_height=720,
         )
 
     def _setup_content(self, layout: QVBoxLayout):
@@ -73,10 +80,11 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         self.lookback_combo = QComboBox()
         self.lookback_combo.addItems(
-            ["3 Months (63 days)", "6 Months (126 days)", "1 Year (252 days)",
-             "2 Years (504 days)", "3 Years (756 days)"]
+            ["3 Months", "6 Months", "1 Year", "2 Years", "3 Years", "Custom Date Range..."]
         )
         self.lookback_combo.setFixedWidth(180)
+        # Use activated signal so clicking the same item again still triggers
+        self.lookback_combo.activated.connect(self._on_lookback_activated)
         lookback_row.addWidget(self.lookback_combo)
         lookback_row.addStretch()
         analysis_layout.addLayout(lookback_row)
@@ -88,6 +96,84 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         analysis_group.setLayout(analysis_layout)
         layout.addWidget(analysis_group)
+
+        # Universe Settings section
+        universe_group = QGroupBox("Universe Settings")
+        universe_layout = QHBoxLayout()
+
+        # Portfolio Universe
+        portfolio_universe_layout = QVBoxLayout()
+        portfolio_universe_label = QLabel("Portfolio Universe:")
+        portfolio_universe_label.setObjectName("settingsSubLabel")
+        portfolio_universe_layout.addWidget(portfolio_universe_label)
+
+        self.portfolio_universe_list = SmoothScrollListWidget()
+        self.portfolio_universe_list.setFixedHeight(150)
+        self.portfolio_universe_list.setSelectionMode(QListWidget.MultiSelection)
+        self.portfolio_universe_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.portfolio_universe_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        for sector in self.universe_sectors:
+            item = QListWidgetItem(sector)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self.portfolio_universe_list.addItem(item)
+        portfolio_universe_layout.addWidget(self.portfolio_universe_list)
+
+        # Select All / Clear buttons for portfolio
+        portfolio_btn_row = QHBoxLayout()
+        portfolio_btn_row.setContentsMargins(0, 20, 0, 0)
+        self.portfolio_select_all_btn = QPushButton("Select All")
+        self.portfolio_select_all_btn.setFixedWidth(80)
+        self.portfolio_select_all_btn.clicked.connect(self._select_all_portfolio_sectors)
+        portfolio_btn_row.addWidget(self.portfolio_select_all_btn)
+
+        self.portfolio_clear_btn = QPushButton("Clear")
+        self.portfolio_clear_btn.setFixedWidth(80)
+        self.portfolio_clear_btn.clicked.connect(self._clear_portfolio_sectors)
+        portfolio_btn_row.addWidget(self.portfolio_clear_btn)
+        portfolio_btn_row.addStretch()
+        portfolio_universe_layout.addLayout(portfolio_btn_row)
+
+        universe_layout.addLayout(portfolio_universe_layout)
+
+        # Benchmark Universe (disabled for now)
+        benchmark_universe_layout = QVBoxLayout()
+        benchmark_universe_label = QLabel("Benchmark Universe:")
+        benchmark_universe_label.setObjectName("settingsSubLabel")
+        benchmark_universe_layout.addWidget(benchmark_universe_label)
+
+        self.benchmark_universe_list = SmoothScrollListWidget()
+        self.benchmark_universe_list.setFixedHeight(150)
+        self.benchmark_universe_list.setSelectionMode(QListWidget.MultiSelection)
+        self.benchmark_universe_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.benchmark_universe_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.benchmark_universe_list.setEnabled(False)  # Disabled for now
+        for sector in self.universe_sectors:
+            item = QListWidgetItem(sector)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self.benchmark_universe_list.addItem(item)
+        benchmark_universe_layout.addWidget(self.benchmark_universe_list)
+
+        # Select All / Clear buttons for benchmark (disabled)
+        benchmark_btn_row = QHBoxLayout()
+        benchmark_btn_row.setContentsMargins(0, 20, 0, 0)
+        self.benchmark_select_all_btn = QPushButton("Select All")
+        self.benchmark_select_all_btn.setFixedWidth(80)
+        self.benchmark_select_all_btn.setEnabled(False)
+        benchmark_btn_row.addWidget(self.benchmark_select_all_btn)
+
+        self.benchmark_clear_btn = QPushButton("Clear")
+        self.benchmark_clear_btn.setFixedWidth(80)
+        self.benchmark_clear_btn.setEnabled(False)
+        benchmark_btn_row.addWidget(self.benchmark_clear_btn)
+        benchmark_btn_row.addStretch()
+        benchmark_universe_layout.addLayout(benchmark_btn_row)
+
+        universe_layout.addLayout(benchmark_universe_layout)
+
+        universe_group.setLayout(universe_layout)
+        layout.addWidget(universe_group)
 
         # Sector Overrides section
         override_group = QGroupBox("Sector Classification Overrides")
@@ -121,6 +207,8 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self.sector_combo = QComboBox()
         self.sector_combo.addItems(SectorOverrideService.SECTORS)
         self.sector_combo.setFixedWidth(180)
+        smooth_view = SmoothScrollListView(self.sector_combo)
+        self.sector_combo.setView(smooth_view)
         add_row.addWidget(self.sector_combo)
 
         # Add button
@@ -138,8 +226,10 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         list_label.setObjectName("settingsSubLabel")
         override_layout.addWidget(list_label)
 
-        self.overrides_list = QListWidget()
-        self.overrides_list.setMaximumHeight(120)
+        self.overrides_list = SmoothScrollListWidget()
+        self.overrides_list.setFixedHeight(210)
+        self.overrides_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.overrides_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         override_layout.addWidget(self.overrides_list)
 
         # Edit and Remove buttons
@@ -188,6 +278,107 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         button_layout.addWidget(save_btn)
 
         layout.addLayout(button_layout)
+
+    def _select_all_portfolio_sectors(self):
+        """Select all sectors in portfolio universe."""
+        for i in range(self.portfolio_universe_list.count()):
+            self.portfolio_universe_list.item(i).setCheckState(Qt.Checked)
+
+    def _clear_portfolio_sectors(self):
+        """Clear all sectors in portfolio universe."""
+        for i in range(self.portfolio_universe_list.count()):
+            self.portfolio_universe_list.item(i).setCheckState(Qt.Unchecked)
+
+    def _get_checked_portfolio_sectors(self) -> List[str]:
+        """Get list of checked sectors in portfolio universe."""
+        checked = []
+        for i in range(self.portfolio_universe_list.count()):
+            item = self.portfolio_universe_list.item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    def _set_checked_portfolio_sectors(self, sectors: List[str]):
+        """Set checked state for portfolio universe sectors."""
+        sector_set = set(sectors) if sectors else set(self.universe_sectors)
+        for i in range(self.portfolio_universe_list.count()):
+            item = self.portfolio_universe_list.item(i)
+            if item.text() in sector_set:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+
+    def _on_lookback_activated(self, index: int):
+        """Handle lookback period dropdown selection (activated fires even for same item)."""
+        text = self.lookback_combo.itemText(index)
+        if text == "Custom Date Range...":
+            self._show_date_range_dialog()
+
+    def _show_date_range_dialog(self):
+        """Show the custom date range dialog."""
+        from app.ui.modules.return_distribution.widgets.date_range_dialog import DateRangeDialog
+
+        dialog = DateRangeDialog(self.theme_manager, self)
+
+        # Pre-populate with existing custom dates if available
+        # Check both instance variables and current_settings as fallback
+        start_date_str = self._custom_start_date or self.current_settings.get("custom_start_date")
+        end_date_str = self._custom_end_date or self.current_settings.get("custom_end_date")
+
+        if start_date_str:
+            start_date = QDate.fromString(start_date_str, "yyyy-MM-dd")
+            if start_date.isValid():
+                dialog.start_date_input.setDate(start_date)
+
+        if end_date_str:
+            end_date = QDate.fromString(end_date_str, "yyyy-MM-dd")
+            if end_date.isValid():
+                dialog.end_date_input.setDate(end_date)
+
+        from PySide6.QtWidgets import QDialog
+        if dialog.exec() == QDialog.Accepted:
+            start_date, end_date = dialog.get_date_range()
+            if start_date and end_date:
+                self._custom_start_date = start_date
+                self._custom_end_date = end_date
+                # Update dropdown to show "Custom"
+                self._update_lookback_display_custom()
+            else:
+                # Dialog accepted but no valid dates - revert
+                self._revert_lookback_selection()
+        else:
+            # User cancelled - revert to previous selection
+            self._revert_lookback_selection()
+
+    def _update_lookback_display_custom(self):
+        """Update the lookback dropdown to show 'Custom Date Range...' as selected."""
+        self.lookback_combo.blockSignals(True)
+        # Just select "Custom Date Range..." - no need for a separate "Custom" item
+        custom_index = self.lookback_combo.findText("Custom Date Range...")
+        if custom_index >= 0:
+            self.lookback_combo.setCurrentIndex(custom_index)
+        self.lookback_combo.blockSignals(False)
+
+    def _revert_lookback_selection(self):
+        """Revert lookback dropdown to previous selection."""
+        self.lookback_combo.blockSignals(True)
+        # If we have custom dates, show "Custom", otherwise show based on lookback_days
+        if self._custom_start_date and self._custom_end_date:
+            self._update_lookback_display_custom()
+        else:
+            lookback_days = self.current_settings.get("lookback_days", 252)
+            lookback_days_to_text = {
+                63: "3 Months",
+                126: "6 Months",
+                252: "1 Year",
+                504: "2 Years",
+                756: "3 Years",
+            }
+            text = lookback_days_to_text.get(lookback_days or 252, "1 Year")
+            index = self.lookback_combo.findText(text)
+            if index >= 0:
+                self.lookback_combo.setCurrentIndex(index)
+        self.lookback_combo.blockSignals(False)
 
     def _on_ticker_text_changed(self, text: str):
         """Enable/disable add button based on ticker input."""
@@ -287,40 +478,105 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
     def _load_settings(self):
         """Load current settings into UI."""
-        # Lookback period
-        lookback_days = self.current_settings.get("lookback_days", 252)
-        lookback_map = {63: 0, 126: 1, 252: 2, 504: 3, 756: 4}
-        self.lookback_combo.setCurrentIndex(lookback_map.get(lookback_days, 2))
+        self.lookback_combo.blockSignals(True)
+
+        # Lookback period - check if custom date range is set
+        lookback_days = self.current_settings.get("lookback_days")
+        custom_start = self.current_settings.get("custom_start_date")
+        custom_end = self.current_settings.get("custom_end_date")
+
+        # Always load custom dates from settings if available (for pre-population)
+        if custom_start:
+            self._custom_start_date = custom_start
+        if custom_end:
+            self._custom_end_date = custom_end
+
+        if lookback_days is None and custom_start and custom_end:
+            # Custom date range is active - show "Custom" in dropdown
+            self._update_lookback_display_custom()
+        else:
+            # Standard lookback period - use text-based lookup (more robust)
+            lookback_days_to_text = {
+                63: "3 Months",
+                126: "6 Months",
+                252: "1 Year",
+                504: "2 Years",
+                756: "3 Years",
+            }
+            text = lookback_days_to_text.get(lookback_days or 252, "1 Year")
+            index = self.lookback_combo.findText(text)
+            if index >= 0:
+                self.lookback_combo.setCurrentIndex(index)
+
+        self.lookback_combo.blockSignals(False)
 
         # Currency factor
         self.currency_check.setChecked(
             self.current_settings.get("show_currency_factor", True)
         )
 
+        # Portfolio universe sectors (default to all sectors if not set)
+        portfolio_sectors = self.current_settings.get("portfolio_universe_sectors")
+        self._set_checked_portfolio_sectors(portfolio_sectors)
+
     def _save_settings(self):
         """Save settings and close dialog."""
-        # Map lookback combo index to days
-        lookback_map = {0: 63, 1: 126, 2: 252, 3: 504, 4: 756}
-        lookback_days = lookback_map.get(self.lookback_combo.currentIndex(), 252)
+        # Get checked portfolio universe sectors
+        portfolio_sectors = self._get_checked_portfolio_sectors()
 
-        settings = {
-            "lookback_days": lookback_days,
-            "show_currency_factor": self.currency_check.isChecked(),
-        }
+        # Check if custom date range is selected
+        current_text = self.lookback_combo.currentText()
+        if current_text == "Custom Date Range..." and self._custom_start_date and self._custom_end_date:
+            # Custom date range
+            settings = {
+                "lookback_days": None,
+                "custom_start_date": self._custom_start_date,
+                "custom_end_date": self._custom_end_date,
+                "show_currency_factor": self.currency_check.isChecked(),
+                "portfolio_universe_sectors": portfolio_sectors,
+            }
+        else:
+            # Standard lookback period - use text-based lookup (more robust than index)
+            lookback_text_map = {
+                "3 Months": 63,
+                "6 Months": 126,
+                "1 Year": 252,
+                "2 Years": 504,
+                "3 Years": 756,
+            }
+            lookback_days = lookback_text_map.get(current_text, 252)
+            settings = {
+                "lookback_days": lookback_days,
+                "custom_start_date": None,
+                "custom_end_date": None,
+                "show_currency_factor": self.currency_check.isChecked(),
+                "portfolio_universe_sectors": portfolio_sectors,
+            }
 
-        # Close dialog first, then emit signal
-        self.accept()
+        # Emit signal first, then close dialog
         self.settings_saved.emit(settings)
+        self.accept()
 
     def get_settings(self) -> Dict[str, Any]:
         """Get the current dialog settings."""
-        lookback_map = {0: 63, 1: 126, 2: 252, 3: 504, 4: 756}
-        lookback_days = lookback_map.get(self.lookback_combo.currentIndex(), 252)
+        current_text = self.lookback_combo.currentText()
 
-        return {
-            "lookback_days": lookback_days,
-            "show_currency_factor": self.currency_check.isChecked(),
-        }
+        if current_text == "Custom Date Range..." and self._custom_start_date and self._custom_end_date:
+            return {
+                "lookback_days": None,
+                "custom_start_date": self._custom_start_date,
+                "custom_end_date": self._custom_end_date,
+                "show_currency_factor": self.currency_check.isChecked(),
+            }
+        else:
+            lookback_map = {0: 63, 1: 126, 2: 252, 3: 504, 4: 756}
+            lookback_days = lookback_map.get(self.lookback_combo.currentIndex(), 252)
+            return {
+                "lookback_days": lookback_days,
+                "custom_start_date": None,
+                "custom_end_date": None,
+                "show_currency_factor": self.currency_check.isChecked(),
+            }
 
     def _apply_theme(self):
         """Apply theme styling."""
@@ -389,12 +645,31 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
                 border: 1px solid {colors['border']};
                 border-radius: 3px;
             }}
+            QListWidget:disabled {{
+                background-color: {colors['bg']};
+                color: {colors['text_muted']};
+            }}
             QListWidget::item {{
                 padding: 4px 8px;
             }}
             QListWidget::item:selected {{
                 background-color: {colors['accent']};
                 color: {colors['bg']};
+            }}
+            QListWidget::indicator {{
+                width: 14px;
+                height: 14px;
+                border: 1px solid {colors['border']};
+                border-radius: 2px;
+                background-color: {colors['bg_alt']};
+            }}
+            QListWidget::indicator:checked {{
+                background-color: {colors['accent']};
+                border-color: {colors['accent']};
+            }}
+            QListWidget::indicator:disabled {{
+                background-color: {colors['bg']};
+                border-color: {colors['border']};
             }}
         """
 

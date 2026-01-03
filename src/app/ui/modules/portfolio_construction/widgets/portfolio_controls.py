@@ -2,7 +2,7 @@
 
 from typing import List
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton, QAbstractItemView, QListView
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QWheelEvent
 
 from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
@@ -14,20 +14,14 @@ class SmoothScrollListView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def wheelEvent(self, event: QWheelEvent):
         """Override wheel event to reduce scroll speed."""
-        # Get the scroll delta (typically 120 per notch)
         delta = event.angleDelta().y()
-
-        # Reduce scroll speed by scrolling fewer pixels per wheel notch
-        # Default is ~3 items worth, we want ~1 item worth (smoother)
-        pixels_to_scroll = int(delta / 4)  # Divide by 4 for smoother scrolling
-
-        # Get current scroll position and update
+        pixels_to_scroll = int(delta / 4)
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
-
         event.accept()
 
 from app.core.theme_manager import ThemeManager
@@ -82,14 +76,16 @@ class PortfolioControls(LazyThemeMixin, QWidget):
         # Add stretch to push portfolio selector toward center
         layout.addStretch(1)
 
-        # Portfolio selector (centered)
+        # Portfolio selector (editable with read-only line edit for display control)
         self.portfolio_label = QLabel("Portfolio:")
         self.portfolio_label.setObjectName("portfolio_label")
         layout.addWidget(self.portfolio_label)
         self.portfolio_combo = QComboBox()
+        self.portfolio_combo.setEditable(True)
+        self.portfolio_combo.lineEdit().setReadOnly(True)
+        self.portfolio_combo.lineEdit().setPlaceholderText("Select Portfolio...")
         self.portfolio_combo.setFixedWidth(250)
         self.portfolio_combo.setFixedHeight(45)
-        self.portfolio_combo.setPlaceholderText("Select Portfolio...")
         # Use custom smooth scroll view for the dropdown
         smooth_view = SmoothScrollListView(self.portfolio_combo)
         smooth_view.setAlternatingRowColors(True)
@@ -158,6 +154,9 @@ class PortfolioControls(LazyThemeMixin, QWidget):
                 item_text = self.portfolio_combo.itemText(i)
                 if item_text != "Create New Portfolio":
                     self.portfolio_combo.setCurrentIndex(i)
+                    # Show name without prefix in the display
+                    if item_text.startswith("[Port] "):
+                        self.portfolio_combo.lineEdit().setText(item_text[7:])
                     found_portfolio = True
                     break
             if not found_portfolio:
@@ -167,6 +166,9 @@ class PortfolioControls(LazyThemeMixin, QWidget):
             # Emit signal to create new portfolio
             self.new_portfolio_clicked.emit()
         elif name:
+            # Show name without prefix in the display
+            if name.startswith("[Port] "):
+                self.portfolio_combo.lineEdit().setText(name[7:])
             self.portfolio_changed.emit(name)
 
     def set_view_mode(self, is_transaction_view: bool):
@@ -194,9 +196,12 @@ class PortfolioControls(LazyThemeMixin, QWidget):
         self.portfolio_combo.clear()
         # Add "Create New Portfolio" as first option
         self.portfolio_combo.addItem("Create New Portfolio")
-        self.portfolio_combo.addItems(portfolios)
+        for p in portfolios:
+            self.portfolio_combo.addItem(f"[Port] {p}")
         if current and current in portfolios:
-            self.portfolio_combo.setCurrentText(current)
+            self.portfolio_combo.setCurrentText(f"[Port] {current}")
+            # Show name without prefix in the display
+            self.portfolio_combo.lineEdit().setText(current)
         else:
             # Default to placeholder (index -1 shows placeholder text)
             self.portfolio_combo.setCurrentIndex(-1)

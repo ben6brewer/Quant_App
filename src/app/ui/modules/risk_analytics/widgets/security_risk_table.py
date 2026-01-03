@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QFrame,
 )
+
+from .smooth_scroll_widgets import SmoothScrollTableWidget
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
 
@@ -61,7 +63,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         layout.addWidget(self.title_label)
 
         # Table
-        self.table = QTableWidget()
+        self.table = SmoothScrollTableWidget()
         self.table.setColumnCount(len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.setSelectionMode(QTableWidget.NoSelection)

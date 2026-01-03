@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QMessageBox,
 )
-from PySide6.QtCore import Signal, QDate
+from PySide6.QtCore import Signal, QDate, Qt
 from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
@@ -28,6 +28,7 @@ class SmoothScrollListView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def wheelEvent(self, event: QWheelEvent):
         """Override wheel event to reduce scroll speed."""
@@ -404,9 +405,20 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         current_text = self.portfolio_combo.lineEdit().text().strip()
         if current_text and current_text != self._last_portfolio_text:
             self._last_portfolio_text = current_text
-            # Auto-uppercase if it looks like a ticker
-            if not any(current_text.startswith(prefix) for prefix in ["[Portfolio]"]):
-                current_text = current_text.upper()
+            # Check if this matches a portfolio name (case-insensitive)
+            portfolio_match = None
+            for i in range(self.portfolio_combo.count()):
+                item = self.portfolio_combo.itemText(i)
+                # Strip [Port] prefix for comparison
+                item_name = item[7:] if item.startswith("[Port] ") else item
+                if item_name.lower() == current_text.lower():
+                    portfolio_match = item
+                    break
+
+            if portfolio_match:
+                current_text = portfolio_match  # Use exact portfolio name with prefix
+            else:
+                current_text = current_text.upper()  # Uppercase for ticker lookup
                 self.portfolio_combo.lineEdit().setText(current_text)
             self.portfolio_changed.emit(current_text)
 
@@ -416,6 +428,9 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
             text = self.portfolio_combo.currentText()
             if text and text != self._last_portfolio_text:
                 self._last_portfolio_text = text
+                # Show name without prefix in the display
+                if text.startswith("[Port] "):
+                    self.portfolio_combo.lineEdit().setText(text[7:])
                 self.portfolio_changed.emit(text)
 
     def _on_method_changed(self, text: str):
@@ -477,7 +492,7 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         if current_text != self._last_benchmark_text:
             self._last_benchmark_text = current_text
             if current_text and not any(
-                current_text.startswith(prefix) for prefix in ["[Portfolio]"]
+                current_text.startswith(prefix) for prefix in ["[Port]"]
             ):
                 current_text = current_text.upper()
                 self.benchmark_combo.lineEdit().setText(current_text)
@@ -497,9 +512,12 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         self.portfolio_combo.blockSignals(True)
         self.portfolio_combo.clear()
         for portfolio in portfolios:
-            self.portfolio_combo.addItem(f"[Portfolio] {portfolio}")
+            self.portfolio_combo.addItem(f"[Port] {portfolio}")
         if current:
             self.portfolio_combo.setCurrentText(current)
+            # Show name without prefix in the display
+            if current.startswith("[Port] "):
+                self.portfolio_combo.lineEdit().setText(current[7:])
         else:
             self.portfolio_combo.setCurrentIndex(-1)  # Show placeholder
         self.portfolio_combo.blockSignals(False)
@@ -510,7 +528,7 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         self.benchmark_combo.blockSignals(True)
         self.benchmark_combo.clear()
         for portfolio in portfolios:
-            self.benchmark_combo.addItem(f"[Portfolio] {portfolio}")
+            self.benchmark_combo.addItem(f"[Port] {portfolio}")
         if current:
             self.benchmark_combo.setCurrentText(current)
         else:

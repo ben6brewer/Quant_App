@@ -150,6 +150,10 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio selection change (just update state, don't analyze)."""
+        # Strip "[Port] " prefix if present
+        if name.startswith("[Port] "):
+            name = name[7:]
+
         if name == self._current_portfolio:
             return
 
@@ -164,7 +168,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         # Determine if benchmark is a portfolio
         if benchmark:
-            self._is_benchmark_portfolio = benchmark.startswith("[Portfolio] ")
+            self._is_benchmark_portfolio = benchmark.startswith("[Port] ")
         else:
             self._is_benchmark_portfolio = False
 
@@ -200,7 +204,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         # Normalize benchmark text
         if benchmark_text and benchmark_text.upper() != "NONE":
-            if benchmark_text.startswith("[Portfolio]"):
+            if benchmark_text.startswith("[Port]"):
                 self._current_benchmark = benchmark_text
                 self._is_benchmark_portfolio = True
             else:
@@ -284,8 +288,48 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
             # Prefetch metadata for all tickers (parallel fetch)
             TickerMetadataService.get_metadata_batch(tickers)
 
-            # Get lookback days from settings
+            # Filter by portfolio universe sectors if specified
+            from .services.sector_override_service import SectorOverrideService
+
+            universe_sectors = self.settings_manager.get_setting("portfolio_universe_sectors")
+            if universe_sectors:
+                # Filter tickers to only those in allowed sectors
+                allowed_sectors = set(universe_sectors)
+                filtered_tickers = []
+                filtered_weights = {}
+
+                for ticker in tickers:
+                    sector = SectorOverrideService.get_effective_sector(ticker)
+                    if sector in allowed_sectors:
+                        filtered_tickers.append(ticker)
+                        filtered_weights[ticker] = weights[ticker]
+
+                if not filtered_tickers:
+                    self._hide_loading_overlay()
+                    self._clear_displays()
+                    CustomMessageBox.warning(
+                        self.theme_manager,
+                        self,
+                        "No Holdings in Universe",
+                        f"No holdings in '{self._current_portfolio}' match the selected "
+                        f"portfolio universe sectors.",
+                    )
+                    return
+
+                # Renormalize weights to sum to 1.0
+                total_weight = sum(filtered_weights.values())
+                if total_weight > 0:
+                    filtered_weights = {
+                        t: w / total_weight for t, w in filtered_weights.items()
+                    }
+
+                tickers = filtered_tickers
+                weights = filtered_weights
+
+            # Get lookback settings (either lookback_days or custom date range)
             lookback_days = self.settings_manager.get_setting("lookback_days")
+            custom_start_date = self.settings_manager.get_setting("custom_start_date")
+            custom_end_date = self.settings_manager.get_setting("custom_end_date")
 
             # Get portfolio returns
             portfolio_returns = ReturnsDataService.get_portfolio_returns(
@@ -303,12 +347,15 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 )
                 return
 
-            # Trim to lookback period
-            if len(portfolio_returns) > lookback_days:
-                portfolio_returns = portfolio_returns.iloc[-lookback_days:]
+            # Apply date filtering
+            portfolio_returns = self._filter_returns_by_period(
+                portfolio_returns, lookback_days, custom_start_date, custom_end_date
+            )
 
             # Get benchmark returns
-            benchmark_returns = self._get_benchmark_returns(lookback_days)
+            benchmark_returns = self._get_benchmark_returns(
+                lookback_days, custom_start_date, custom_end_date
+            )
 
             if benchmark_returns is None or benchmark_returns.empty:
                 self._hide_loading_overlay()
@@ -322,7 +369,34 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 return
 
             # Get individual ticker returns for CTEV calculation
-            ticker_returns = self._get_ticker_returns(tickers, lookback_days)
+            ticker_returns = self._get_ticker_returns(
+                tickers, lookback_days, custom_start_date, custom_end_date
+            )
+
+            # If universe filtering is active, recalculate portfolio returns from filtered tickers
+            if universe_sectors and not ticker_returns.empty:
+                import pandas as pd
+
+                # Calculate weighted portfolio returns from filtered ticker returns
+                filtered_portfolio_returns = pd.Series(0.0, index=ticker_returns.index)
+                for ticker in tickers:
+                    if ticker in ticker_returns.columns:
+                        weight = weights.get(ticker, 0.0)
+                        filtered_portfolio_returns += ticker_returns[ticker] * weight
+
+                # Use filtered returns instead of full portfolio returns
+                portfolio_returns = filtered_portfolio_returns.dropna()
+
+                if portfolio_returns.empty:
+                    self._hide_loading_overlay()
+                    self._clear_displays()
+                    CustomMessageBox.warning(
+                        self.theme_manager,
+                        self,
+                        "No Returns Data",
+                        "Could not calculate returns for the filtered portfolio universe.",
+                    )
+                    return
 
             # Run full analysis
             analysis = RiskAnalyticsService.get_full_analysis(
@@ -346,7 +420,47 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         finally:
             self._hide_loading_overlay()
 
-    def _get_benchmark_returns(self, lookback_days: int) -> Optional["pd.Series"]:
+    def _filter_returns_by_period(
+        self,
+        returns: "pd.Series",
+        lookback_days: Optional[int],
+        custom_start_date: Optional[str],
+        custom_end_date: Optional[str],
+    ) -> "pd.Series":
+        """
+        Filter returns by either lookback period or custom date range.
+
+        Args:
+            returns: Series of returns with DatetimeIndex
+            lookback_days: Number of trading days to look back (or None for custom)
+            custom_start_date: Start date string (YYYY-MM-DD) for custom range
+            custom_end_date: End date string (YYYY-MM-DD) for custom range
+
+        Returns:
+            Filtered returns series
+        """
+        if returns is None or returns.empty:
+            return returns
+
+        if lookback_days is None and custom_start_date and custom_end_date:
+            # Custom date range - filter by dates
+            import pandas as pd
+
+            start = pd.Timestamp(custom_start_date)
+            end = pd.Timestamp(custom_end_date)
+            return returns[(returns.index >= start) & (returns.index <= end)]
+        elif lookback_days is not None:
+            # Standard lookback period - take last N days
+            if len(returns) > lookback_days:
+                return returns.iloc[-lookback_days:]
+        return returns
+
+    def _get_benchmark_returns(
+        self,
+        lookback_days: Optional[int],
+        custom_start_date: Optional[str] = None,
+        custom_end_date: Optional[str] = None,
+    ) -> Optional["pd.Series"]:
         """Get benchmark returns (portfolio or ticker)."""
         import pandas as pd
 
@@ -356,8 +470,8 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
             return None
 
         if self._is_benchmark_portfolio:
-            # Extract portfolio name from "[Portfolio] Name"
-            portfolio_name = benchmark.replace("[Portfolio] ", "")
+            # Extract portfolio name from "[Port] Name"
+            portfolio_name = benchmark.replace("[Port] ", "")
             returns = ReturnsDataService.get_portfolio_returns(portfolio_name)
         else:
             # It's a ticker - fetch from market data
@@ -371,14 +485,17 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         if returns is None or returns.empty:
             return None
 
-        # Trim to lookback period
-        if len(returns) > lookback_days:
-            returns = returns.iloc[-lookback_days:]
-
-        return returns
+        # Apply date filtering
+        return self._filter_returns_by_period(
+            returns, lookback_days, custom_start_date, custom_end_date
+        )
 
     def _get_ticker_returns(
-        self, tickers: List[str], lookback_days: int
+        self,
+        tickers: List[str],
+        lookback_days: Optional[int],
+        custom_start_date: Optional[str] = None,
+        custom_end_date: Optional[str] = None,
     ) -> "pd.DataFrame":
         """Get returns for individual tickers."""
         import pandas as pd
@@ -391,9 +508,12 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 df = fetch_price_history(ticker, period="max", interval="1d")
                 if df is not None and not df.empty:
                     returns = df["Close"].pct_change().dropna()
-                    if len(returns) > lookback_days:
-                        returns = returns.iloc[-lookback_days:]
-                    returns_dict[ticker] = returns
+                    # Apply date filtering
+                    returns = self._filter_returns_by_period(
+                        returns, lookback_days, custom_start_date, custom_end_date
+                    )
+                    if returns is not None and not returns.empty:
+                        returns_dict[ticker] = returns
             except Exception:
                 continue
 

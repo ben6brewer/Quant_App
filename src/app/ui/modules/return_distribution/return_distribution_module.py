@@ -108,6 +108,10 @@ class ReturnDistributionModule(LazyThemeMixin, QWidget):
 
     def _on_portfolio_changed(self, name: str):
         """Handle portfolio/ticker selection change."""
+        # Strip "[Port] " prefix if present
+        if name.startswith("[Port] "):
+            name = name[7:]
+
         if name == self._current_portfolio:
             return
 
@@ -423,10 +427,10 @@ class ReturnDistributionModule(LazyThemeMixin, QWidget):
 
         benchmark = self._current_benchmark
         metric = self._current_metric
-        is_portfolio = benchmark.startswith("[Portfolio] ")
+        is_portfolio = benchmark.startswith("[Port] ")
 
         if is_portfolio:
-            benchmark_name = benchmark.replace("[Portfolio] ", "")
+            benchmark_name = benchmark.replace("[Port] ", "")
         else:
             benchmark_name = benchmark
 

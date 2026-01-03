@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QListView,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
@@ -24,6 +24,7 @@ class SmoothScrollListView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def wheelEvent(self, event: QWheelEvent):
         """Override wheel event to reduce scroll speed."""
@@ -213,12 +214,14 @@ class DistributionControls(LazyThemeMixin, QWidget):
         portfolio_match = None
         for i in range(self.portfolio_combo.count()):
             item = self.portfolio_combo.itemText(i)
-            if item.lower() == text.lower():
+            # Strip [Port] prefix for comparison
+            item_name = item[7:] if item.startswith("[Port] ") else item
+            if item_name.lower() == text.lower():
                 portfolio_match = item
                 break
 
         if portfolio_match:
-            text = portfolio_match  # Use exact portfolio name
+            text = portfolio_match  # Use exact portfolio name with prefix
         else:
             text = text.upper()  # Uppercase for ticker lookup
 
@@ -242,6 +245,9 @@ class DistributionControls(LazyThemeMixin, QWidget):
             text = self.portfolio_combo.currentText()
             if text and text != self._last_portfolio_text:
                 self._last_portfolio_text = text
+                # Show name without prefix in the display
+                if text.startswith("[Port] "):
+                    self.portfolio_combo.lineEdit().setText(text[7:])
                 self.portfolio_changed.emit(text)
 
     def _on_metric_changed(self, metric: str):
@@ -316,7 +322,7 @@ class DistributionControls(LazyThemeMixin, QWidget):
             text = ""
         else:
             # Check if this matches a portfolio in the dropdown (case-insensitive)
-            # Portfolios are listed as "[Portfolio] Name"
+            # Portfolios are listed as "[Port] Name"
             portfolio_match = None
             for i in range(self.benchmark_combo.count()):
                 item = self.benchmark_combo.itemText(i)
@@ -370,7 +376,7 @@ class DistributionControls(LazyThemeMixin, QWidget):
         self.benchmark_combo.clear()
         # Add portfolios (no "None" item - we use placeholder text instead)
         for p in portfolios:
-            self.benchmark_combo.addItem(f"[Portfolio] {p}")
+            self.benchmark_combo.addItem(f"[Port] {p}")
         # Restore previous selection if still valid, otherwise show placeholder
         if current:
             self.benchmark_combo.setCurrentText(current)
@@ -422,9 +428,12 @@ class DistributionControls(LazyThemeMixin, QWidget):
         """
         self.portfolio_combo.blockSignals(True)
         self.portfolio_combo.clear()
-        self.portfolio_combo.addItems(portfolios)
+        for p in portfolios:
+            self.portfolio_combo.addItem(f"[Port] {p}")
         if current and current in portfolios:
-            self.portfolio_combo.setCurrentText(current)
+            self.portfolio_combo.setCurrentText(f"[Port] {current}")
+            # Show name without prefix in the display
+            self.portfolio_combo.lineEdit().setText(current)
         else:
             self.portfolio_combo.setCurrentIndex(-1)
         self.portfolio_combo.blockSignals(False)

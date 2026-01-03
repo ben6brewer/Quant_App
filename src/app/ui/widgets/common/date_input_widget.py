@@ -30,8 +30,8 @@ class DateInputWidget(QLineEdit):
         self.setPlaceholderText("YYYY-MM-DD")
         self.setMaxLength(10)  # "2025-01-15" = 10 chars
 
-        # Current valid date (or None if invalid/incomplete)
-        self._current_date = QDate.currentDate()
+        # Current valid date (None until user enters a valid date)
+        self._current_date = None
 
     def keyPressEvent(self, event):
         """Handle key press for live dash formatting."""
@@ -353,6 +353,10 @@ class DateInputWidget(QLineEdit):
 
     def date(self) -> QDate:
         """Get the current date (for compatibility with QDateEdit)."""
+        # Return invalid date if text field is empty or incomplete
+        text = self.text().strip()
+        if not text or len(text.replace("-", "")) < 8:
+            return QDate()  # Invalid date
         return self._current_date if self._current_date and self._current_date.isValid() else QDate()
 
     def dateChanged(self):
