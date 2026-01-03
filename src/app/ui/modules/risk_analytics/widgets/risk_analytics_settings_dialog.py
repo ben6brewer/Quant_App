@@ -54,8 +54,8 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         """
         self.current_settings = current_settings
         self.portfolio_tickers = set(t.upper() for t in (portfolio_tickers or []))
-        # Sectors for universe selection (exclude "Not Classified")
-        self.universe_sectors = [s for s in SectorOverrideService.SECTORS if s != "Not Classified"]
+        # Compute sectors present in the portfolio
+        self.universe_sectors = self._compute_portfolio_sectors()
         # Custom date range storage
         self._custom_start_date: Optional[str] = current_settings.get("custom_start_date")
         self._custom_end_date: Optional[str] = current_settings.get("custom_end_date")
@@ -66,6 +66,26 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
             min_width=620,
             min_height=720,
         )
+
+    def _compute_portfolio_sectors(self) -> List[str]:
+        """
+        Compute sectors present in the current portfolio.
+
+        Returns only sectors that have at least one ticker in the portfolio.
+        Falls back to all sectors (excluding Not Classified) if no portfolio loaded.
+        """
+        if not self.portfolio_tickers:
+            # No portfolio - show all sectors except "Not Classified"
+            return [s for s in SectorOverrideService.SECTORS if s != "Not Classified"]
+
+        # Get unique sectors from portfolio tickers
+        portfolio_sector_set = set()
+        for ticker in self.portfolio_tickers:
+            sector = SectorOverrideService.get_effective_sector(ticker)
+            portfolio_sector_set.add(sector)
+
+        # Return in standard SECTORS order (for consistent UI)
+        return [s for s in SectorOverrideService.SECTORS if s in portfolio_sector_set]
 
     def _setup_content(self, layout: QVBoxLayout):
         """Setup dialog content."""

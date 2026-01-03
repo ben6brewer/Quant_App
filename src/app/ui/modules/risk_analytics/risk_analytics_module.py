@@ -159,6 +159,9 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         self._current_portfolio = name
 
+        # Reset universe sectors to include all sectors from new portfolio
+        self.settings_manager.update_settings({"portfolio_universe_sectors": None})
+
     def _on_benchmark_changed(self, benchmark: str):
         """Handle benchmark selection change (just update state, don't analyze)."""
         if benchmark == self._current_benchmark:
