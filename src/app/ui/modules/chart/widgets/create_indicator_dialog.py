@@ -95,6 +95,13 @@ class CreateIndicatorDialog(QDialog):
             "params": [],
             "uses_markers": False,
         },
+        "Volume": {
+            "name": "Volume",
+            "params": [],
+            "uses_markers": False,
+            "is_builtin": True,
+            "display_type_options": ["Histogram", "Line"],
+        },
     }
 
     # Line style options
@@ -507,6 +514,10 @@ class CreateIndicatorDialog(QDialog):
 
     def _populate_per_line_settings(self, indicator_type: str):
         """Populate per-line settings based on indicator type."""
+        # Show per-line group (may have been hidden for Volume)
+        if hasattr(self, "per_line_group") and self.per_line_group:
+            self.per_line_group.show()
+
         # Clear existing widgets
         for col_name, widgets in self.line_widgets.items():
             widgets["widget"].setParent(None)
@@ -517,7 +528,8 @@ class CreateIndicatorDialog(QDialog):
         kind_map = {
             "SMA": "sma", "EMA": "ema", "Bollinger Bands": "bbands",
             "RSI": "rsi", "MACD": "macd", "ATR": "atr",
-            "Stochastic": "stochastic", "OBV": "obv", "VWAP": "vwap"
+            "Stochastic": "stochastic", "OBV": "obv", "VWAP": "vwap",
+            "Volume": "volume"
         }
         kind = kind_map.get(indicator_type, indicator_type.lower())
 
@@ -1022,13 +1034,18 @@ class CreateIndicatorDialog(QDialog):
         indicator_info = self.INDICATOR_TYPES.get(indicator_type, {})
         params = indicator_info.get("params", [])
 
+        # Special handling for Volume indicator
+        if indicator_type == "Volume":
+            self._setup_volume_settings()
+            return
+
         # Add parameter inputs
         for param in params:
             label = QLabel(f"{param['label']}:")
             input_field = QLineEdit()
             input_field.setText(param["default"])
             input_field.setPlaceholderText(f"Enter {param['label'].lower()}")
-            
+
             self.param_form.addRow(label, input_field)
             self.param_inputs[param["name"]] = {
                 "widget": input_field,
@@ -1044,10 +1061,118 @@ class CreateIndicatorDialog(QDialog):
         # Update per-line settings
         self._populate_per_line_settings(indicator_type)
 
+    def _setup_volume_settings(self):
+        """Setup special settings form for Volume indicator."""
+        from ..services import IndicatorService
+
+        # Get current Volume config
+        config = IndicatorService.ALL_INDICATORS.get("Volume", {})
+        current_display_type = config.get("display_type", "histogram")
+        current_up_color = config.get("up_color", (76, 153, 0))
+        current_down_color = config.get("down_color", (200, 50, 50))
+
+        # Store colors for later access
+        self._volume_up_color = current_up_color
+        self._volume_down_color = current_down_color
+
+        # Display type selector
+        display_label = QLabel("Display Type:")
+        self.volume_display_combo = QComboBox()
+        self.volume_display_combo.addItems(["Histogram", "Line"])
+        self.volume_display_combo.setCurrentText(
+            "Histogram" if current_display_type == "histogram" else "Line"
+        )
+        self.param_form.addRow(display_label, self.volume_display_combo)
+
+        # Up bar color (green for up candles)
+        up_color_label = QLabel("Up Bar Color:")
+        up_color_layout = QHBoxLayout()
+        self.volume_up_color_btn = QPushButton()
+        self.volume_up_color_btn.setFixedSize(60, 25)
+        self._update_color_button(self.volume_up_color_btn, current_up_color)
+        self.volume_up_color_btn.clicked.connect(self._pick_volume_up_color)
+        up_color_layout.addWidget(self.volume_up_color_btn)
+        up_color_layout.addStretch()
+        up_color_widget = QWidget()
+        up_color_widget.setLayout(up_color_layout)
+        self.param_form.addRow(up_color_label, up_color_widget)
+
+        # Down bar color (red for down candles)
+        down_color_label = QLabel("Down Bar Color:")
+        down_color_layout = QHBoxLayout()
+        self.volume_down_color_btn = QPushButton()
+        self.volume_down_color_btn.setFixedSize(60, 25)
+        self._update_color_button(self.volume_down_color_btn, current_down_color)
+        self.volume_down_color_btn.clicked.connect(self._pick_volume_down_color)
+        down_color_layout.addWidget(self.volume_down_color_btn)
+        down_color_layout.addStretch()
+        down_color_widget = QWidget()
+        down_color_widget.setLayout(down_color_layout)
+        self.param_form.addRow(down_color_label, down_color_widget)
+
+        # Note about built-in indicator
+        note_label = QLabel("Volume is a built-in indicator and cannot be deleted.")
+        note_label.setStyleSheet("font-style: italic; color: #888888;")
+        self.param_form.addRow(note_label)
+
+        # Hide per-line settings for Volume (it has its own settings)
+        if hasattr(self, "per_line_group"):
+            self.per_line_group.hide()
+
+    def _update_color_button(self, button: QPushButton, color: tuple):
+        """Update a color button's background to show the selected color."""
+        r, g, b = color[:3]
+        button.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;"
+        )
+
+    def _pick_volume_up_color(self):
+        """Open color picker for Volume up bar color."""
+        current = QColor(*self._volume_up_color)
+        color = QColorDialog.getColor(current, self, "Select Up Bar Color")
+        if color.isValid():
+            self._volume_up_color = (color.red(), color.green(), color.blue())
+            self._update_color_button(self.volume_up_color_btn, self._volume_up_color)
+
+    def _pick_volume_down_color(self):
+        """Open color picker for Volume down bar color."""
+        current = QColor(*self._volume_down_color)
+        color = QColorDialog.getColor(current, self, "Select Down Bar Color")
+        if color.isValid():
+            self._volume_down_color = (color.red(), color.green(), color.blue())
+            self._update_color_button(self.volume_down_color_btn, self._volume_down_color)
+
     def _create_indicator(self):
         """Validate inputs and create/update the indicator."""
+        from ..services import IndicatorService
+
         indicator_type = self.type_combo.currentText()
-        
+
+        # Special handling for Volume indicator (built-in)
+        if indicator_type == "Volume":
+            # Update Volume settings in IndicatorService
+            display_type = self.volume_display_combo.currentText().lower()
+            IndicatorService.ALL_INDICATORS["Volume"]["display_type"] = display_type
+            IndicatorService.ALL_INDICATORS["Volume"]["up_color"] = self._volume_up_color
+            IndicatorService.ALL_INDICATORS["Volume"]["down_color"] = self._volume_down_color
+            IndicatorService.OSCILLATOR_INDICATORS["Volume"]["display_type"] = display_type
+            IndicatorService.OSCILLATOR_INDICATORS["Volume"]["up_color"] = self._volume_up_color
+            IndicatorService.OSCILLATOR_INDICATORS["Volume"]["down_color"] = self._volume_down_color
+
+            # Save settings to disk
+            IndicatorService.save_volume_settings()
+
+            # Store result for dialog
+            self.result = {
+                "type": "Volume",
+                "params": {},
+                "custom_name": None,
+                "per_line_appearance": {},
+                "is_builtin": True,
+            }
+            self.accept()
+            return
+
         # Collect and validate parameters
         params = {}
         for param_name, param_info in self.param_inputs.items():

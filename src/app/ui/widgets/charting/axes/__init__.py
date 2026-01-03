@@ -5,6 +5,7 @@ from .price_axis import DraggablePriceAxisItem
 from .date_index_axis import DraggableIndexDateAxisItem
 from .percentage_axis import DraggablePercentageAxisItem
 from .trading_day_axis import DraggableTradingDayAxisItem
+from .volume_axis import VolumeAxisItem
 
 __all__ = [
     'DraggableAxisItem',
@@ -12,4 +13,5 @@ __all__ = [
     'DraggableIndexDateAxisItem',
     'DraggablePercentageAxisItem',
     'DraggableTradingDayAxisItem',
+    'VolumeAxisItem',
 ]

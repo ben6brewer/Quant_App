@@ -77,8 +77,14 @@ class IndicatorService:
         ],
         "vwap": [
             {"column": "VWAP", "label": "VWAP", "default_color": (255, 0, 150), "default_style": Qt.SolidLine}
+        ],
+        "volume": [
+            {"column": "Volume", "label": "Volume", "default_color": (100, 100, 100), "default_style": Qt.SolidLine}
         ]
     }
+
+    # Path to save Volume indicator settings
+    _VOLUME_SETTINGS_PATH = Path.home() / ".quant_terminal" / "volume_settings.json"
 
     # Qt PenStyle mapping for JSON serialization
     _PENSTYLE_TO_STR = {
@@ -180,6 +186,64 @@ class IndicatorService:
         cls.load_indicators()
         cls.load_custom_indicator_plugins()
         cls.load_plugin_appearance_overrides()
+        cls._register_builtin_volume()
+        cls.load_volume_settings()
+
+    @classmethod
+    def _register_builtin_volume(cls) -> None:
+        """Register the built-in Volume indicator."""
+        volume_config = {
+            "kind": "volume",
+            "builtin": True,  # Mark as built-in (cannot be deleted)
+            "display_type": "histogram",  # Default display mode
+            "up_color": (76, 153, 0),  # Green for up bars
+            "down_color": (200, 50, 50),  # Red for down bars
+            "line_color": (100, 100, 100),  # Used when display_type is "line"
+            "line_width": 2,
+        }
+        cls.ALL_INDICATORS["Volume"] = volume_config
+        cls.OSCILLATOR_INDICATORS["Volume"] = volume_config  # Volume is an oscillator
+
+    @classmethod
+    def save_volume_settings(cls) -> None:
+        """Save Volume indicator settings."""
+        if "Volume" not in cls.ALL_INDICATORS:
+            return
+        try:
+            cls._VOLUME_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            config = cls.ALL_INDICATORS["Volume"]
+            settings = {
+                "display_type": config.get("display_type", "histogram"),
+                "up_color": list(config.get("up_color", (76, 153, 0))),
+                "down_color": list(config.get("down_color", (200, 50, 50))),
+                "line_color": list(config.get("line_color", (100, 100, 100))),
+                "line_width": config.get("line_width", 2),
+            }
+            with open(cls._VOLUME_SETTINGS_PATH, "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving volume settings: {e}")
+
+    @classmethod
+    def load_volume_settings(cls) -> None:
+        """Load Volume indicator settings."""
+        if not cls._VOLUME_SETTINGS_PATH.exists():
+            return
+        try:
+            with open(cls._VOLUME_SETTINGS_PATH, "r") as f:
+                settings = json.load(f)
+            if "Volume" in cls.ALL_INDICATORS:
+                # Convert color lists back to tuples
+                if "up_color" in settings:
+                    settings["up_color"] = tuple(settings["up_color"])
+                if "down_color" in settings:
+                    settings["down_color"] = tuple(settings["down_color"])
+                if "line_color" in settings:
+                    settings["line_color"] = tuple(settings["line_color"])
+                cls.ALL_INDICATORS["Volume"].update(settings)
+                cls.OSCILLATOR_INDICATORS["Volume"].update(settings)
+        except Exception as e:
+            print(f"Error loading volume settings: {e}")
 
     @classmethod
     def load_custom_indicator_plugins(cls) -> None:
@@ -382,12 +446,19 @@ class IndicatorService:
         """
         Remove a custom indicator.
         Note: Cannot remove plugin-based indicators (they're loaded from files).
+        Note: Cannot remove built-in indicators (like Volume).
         """
+        # Check if this is a built-in indicator
+        config = cls.ALL_INDICATORS.get(name, {})
+        if config.get("builtin", False):
+            print(f"Cannot remove built-in indicator '{name}'.")
+            return
+
         # Check if this is a plugin-based indicator
         if name in cls.CUSTOM_INDICATOR_CLASSES:
             print(f"Cannot remove plugin-based indicator '{name}'. Delete the plugin file instead.")
             return
-        
+
         cls.ALL_INDICATORS.pop(name, None)
         cls.OVERLAY_INDICATORS.pop(name, None)
         cls.OSCILLATOR_INDICATORS.pop(name, None)
@@ -630,6 +701,8 @@ class IndicatorService:
                 return cls._calculate_obv(df)
             elif kind == "vwap":
                 return cls._calculate_vwap(df)
+            elif kind == "volume":
+                return cls._calculate_volume(df)
             return None
 
         except Exception as e:
@@ -871,3 +944,22 @@ class IndicatorService:
         vwap = (typical_price * volume).cumsum() / volume.cumsum()
 
         return pd.DataFrame({"VWAP": vwap}, index=df.index)
+
+    @staticmethod
+    def _calculate_volume(df: "pd.DataFrame") -> "pd.DataFrame":
+        """Return Volume data with candle direction for coloring."""
+        import pandas as pd
+
+        if "Volume" not in df.columns:
+            return None
+
+        volume = df["Volume"].copy()
+
+        # Calculate direction: 1 for up (close > open), -1 for down (close < open), 0 for unchanged
+        direction = (df["Close"] > df["Open"]).astype(int) - (
+            df["Close"] < df["Open"]
+        ).astype(int)
+
+        return pd.DataFrame(
+            {"Volume": volume, "Volume_Direction": direction}, index=df.index
+        )

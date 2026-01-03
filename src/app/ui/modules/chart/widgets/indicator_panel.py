@@ -67,27 +67,16 @@ class IndicatorPanel(LazyThemeMixin, QWidget):
         layout.addWidget(create_btn)
         self.create_btn = create_btn
 
-        # Overlay indicators section
-        overlay_label = QLabel("Overlays:")
-        overlay_label.setStyleSheet("font-size: 12px; font-weight: bold; background-color: transparent;")
-        layout.addWidget(overlay_label)
+        # Combined indicators section
+        indicator_label = QLabel("Indicators:")
+        indicator_label.setStyleSheet("font-size: 12px; font-weight: bold; background-color: transparent;")
+        layout.addWidget(indicator_label)
 
-        self.overlay_list = QListWidget()
-        self.overlay_list.setSelectionMode(QListWidget.MultiSelection)
-        self.overlay_list.addItems(IndicatorService.get_overlay_names())
-        self.overlay_list.setMaximumHeight(200)
-        layout.addWidget(self.overlay_list)
-
-        # Oscillator indicators section
-        oscillator_label = QLabel("Oscillators")
-        oscillator_label.setStyleSheet("font-size: 12px; font-weight: bold; background-color: transparent;")
-        layout.addWidget(oscillator_label)
-
-        self.oscillator_list = QListWidget()
-        self.oscillator_list.setSelectionMode(QListWidget.MultiSelection)
-        self.oscillator_list.addItems(IndicatorService.get_oscillator_names())
-        self.oscillator_list.setMaximumHeight(150)
-        layout.addWidget(self.oscillator_list)
+        self.indicator_list = QListWidget()
+        self.indicator_list.setSelectionMode(QListWidget.MultiSelection)
+        self._populate_indicator_list()
+        self.indicator_list.setMaximumHeight(350)
+        layout.addWidget(self.indicator_list)
 
         # Apply button
         apply_btn = QPushButton("Apply Indicators")
@@ -126,10 +115,7 @@ class IndicatorPanel(LazyThemeMixin, QWidget):
         self.delete_btn.clicked.connect(self.delete_clicked.emit)
 
         # Double-click to edit
-        self.overlay_list.itemDoubleClicked.connect(
-            lambda item: self.indicator_double_clicked.emit(item.text())
-        )
-        self.oscillator_list.itemDoubleClicked.connect(
+        self.indicator_list.itemDoubleClicked.connect(
             lambda item: self.indicator_double_clicked.emit(item.text())
         )
 
@@ -139,14 +125,33 @@ class IndicatorPanel(LazyThemeMixin, QWidget):
         stylesheet = ChartThemeService.get_indicator_panel_stylesheet(theme)
         self.setStyleSheet(stylesheet)
 
+    def _populate_indicator_list(self) -> None:
+        """Populate the combined indicator list with Volume pinned at top."""
+        self.indicator_list.clear()
+
+        # Add Volume first (pinned at top, unchecked by default)
+        self.indicator_list.addItem("Volume")
+
+        # Add all other indicators sorted alphabetically
+        all_names = sorted(IndicatorService.get_all_names())
+        for name in all_names:
+            if name != "Volume":  # Skip Volume since it's already added
+                self.indicator_list.addItem(name)
+
     # Public methods for indicator management
     def get_selected_overlays(self) -> list[str]:
         """Get list of selected overlay indicator names."""
-        return [item.text() for item in self.overlay_list.selectedItems()]
+        return [
+            item.text() for item in self.indicator_list.selectedItems()
+            if IndicatorService.is_overlay(item.text())
+        ]
 
     def get_selected_oscillators(self) -> list[str]:
         """Get list of selected oscillator indicator names."""
-        return [item.text() for item in self.oscillator_list.selectedItems()]
+        return [
+            item.text() for item in self.indicator_list.selectedItems()
+            if not IndicatorService.is_overlay(item.text())
+        ]
 
     def get_all_selected(self) -> tuple[list[str], list[str]]:
         """Get both overlay and oscillator selections.
@@ -158,35 +163,24 @@ class IndicatorPanel(LazyThemeMixin, QWidget):
 
     def clear_selections(self) -> None:
         """Clear all indicator selections."""
-        self.overlay_list.clearSelection()
-        self.oscillator_list.clearSelection()
+        self.indicator_list.clearSelection()
 
     def refresh_indicators(self, preserve_selection: bool = True) -> None:
-        """Refresh indicator lists from IndicatorService.
+        """Refresh indicator list from IndicatorService.
 
         Args:
             preserve_selection: If True, restore previous selections after refresh
         """
         if preserve_selection:
             # Save current selections
-            overlay_selected = self.get_selected_overlays()
-            oscillator_selected = self.get_selected_oscillators()
+            selected_names = [item.text() for item in self.indicator_list.selectedItems()]
 
-        # Refresh lists
-        self.overlay_list.clear()
-        self.overlay_list.addItems(sorted(IndicatorService.get_overlay_names()))
-
-        self.oscillator_list.clear()
-        self.oscillator_list.addItems(sorted(IndicatorService.get_oscillator_names()))
+        # Refresh list with Volume pinned at top
+        self._populate_indicator_list()
 
         if preserve_selection:
             # Restore selections
-            for i in range(self.overlay_list.count()):
-                item = self.overlay_list.item(i)
-                if item.text() in overlay_selected:
-                    item.setSelected(True)
-
-            for i in range(self.oscillator_list.count()):
-                item = self.oscillator_list.item(i)
-                if item.text() in oscillator_selected:
+            for i in range(self.indicator_list.count()):
+                item = self.indicator_list.item(i)
+                if item.text() in selected_names:
                     item.setSelected(True)

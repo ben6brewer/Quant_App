@@ -18,7 +18,8 @@ from app.ui.widgets.charting.overlays import ResizeHandle
 from app.ui.widgets.charting.axes import (
     DraggableAxisItem,
     DraggablePriceAxisItem,
-    DraggableIndexDateAxisItem
+    DraggableIndexDateAxisItem,
+    VolumeAxisItem,
 )
 from app.ui.widgets.charting.renderers import CandlestickItem
 
@@ -67,11 +68,12 @@ class PriceChart(pg.GraphicsLayoutWidget):
         self.price_plot.layout.setColumnSpacing(2, 5)
 
         # Create oscillator plot (row 1, column 0) - initially hidden
+        # Uses VolumeAxisItem for proper formatting of large volume numbers
         self.oscillator_plot = self.addPlot(
             row=1, col=0,
             axisItems={
                 'bottom': DraggableIndexDateAxisItem(orientation='bottom'),
-                'right': DraggableAxisItem(orientation='right')
+                'right': VolumeAxisItem(orientation='right')
             }
         )
         # No label on oscillator axis (leave blank)
@@ -1538,8 +1540,52 @@ class PriceChart(pg.GraphicsLayoutWidget):
             target_plot = self.oscillator_plot if is_oscillator else self.price_plot
             target_vb = target_plot.getViewBox()
 
+            # Special handling for Volume indicator histogram
+            config = IndicatorService.ALL_INDICATORS.get(indicator_name, {})
+            if config.get("kind") == "volume":
+                display_type = config.get("display_type", "histogram")
+                if display_type == "histogram" and "Volume" in indicator_df.columns:
+                    # Render as histogram with direction-based coloring
+                    volume_data = indicator_df["Volume"].to_numpy()
+                    direction_data = indicator_df.get(
+                        "Volume_Direction", pd.Series([0] * len(volume_data))
+                    ).to_numpy()
+
+                    # Get colors from config
+                    up_color = config.get("up_color", (76, 153, 0))
+                    down_color = config.get("down_color", (200, 50, 50))
+                    neutral_color = (100, 100, 100)
+
+                    # Create per-bar brushes based on direction
+                    brushes = []
+                    for direction in direction_data:
+                        if direction > 0:
+                            brushes.append(pg.mkBrush(*up_color, 180))
+                        elif direction < 0:
+                            brushes.append(pg.mkBrush(*down_color, 180))
+                        else:
+                            brushes.append(pg.mkBrush(*neutral_color, 180))
+
+                    # Create BarGraphItem for histogram
+                    bar_width = 0.8
+                    bar_graph = pg.BarGraphItem(
+                        x=x,
+                        height=volume_data,
+                        width=bar_width,
+                        brushes=brushes,
+                        pen=pg.mkPen(None),
+                    )
+                    target_vb.addItem(bar_graph)
+                    self._oscillator_indicator_lines.append(bar_graph)
+
+                    continue  # Skip normal column rendering for Volume histogram
+
             # Plot each column in the indicator dataframe
             for col in indicator_df.columns:
+                # Skip internal/metadata columns
+                if col == "Volume_Direction":
+                    continue
+
                 # Get per-line settings
                 line_settings = per_line_appearance.get(col, {})
 
@@ -1685,7 +1731,7 @@ class PriceChart(pg.GraphicsLayoutWidget):
         """Auto-fit the oscillator Y-range to show all oscillator data."""
         if not self._oscillator_indicator_lines:
             return
-        
+
         # Collect all Y values from oscillator indicators
         all_y_values = []
         for item in self._oscillator_indicator_lines:
@@ -1697,11 +1743,16 @@ class PriceChart(pg.GraphicsLayoutWidget):
                 y_data = item.getData()[1]
                 if y_data is not None:
                     all_y_values.extend(y_data[np.isfinite(y_data)])
-        
+            elif isinstance(item, pg.BarGraphItem):
+                # Handle BarGraphItem (e.g., Volume histogram)
+                height = item.opts.get("height")
+                if height is not None:
+                    all_y_values.extend(height[np.isfinite(height)])
+
         if all_y_values:
             y_min = np.min(all_y_values)
             y_max = np.max(all_y_values)
-            
+
             # Add some padding
             padding = (y_max - y_min) * 0.1
             self.oscillator_vb.setYRange(y_min - padding, y_max + padding, padding=0)
