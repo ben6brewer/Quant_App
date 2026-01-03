@@ -28,6 +28,32 @@ DEFAULT_PERIOD = "max"
 DATA_FETCH_THREADS = True
 SHOW_DOWNLOAD_PROGRESS = False
 
+# Polygon.io API Configuration
+POLYGON_BASE_URL = "https://api.polygon.io"
+POLYGON_RATE_LIMIT_CALLS = 5  # Starter plan: 5 calls/minute
+POLYGON_RATE_LIMIT_PERIOD = 60  # seconds
+POLYGON_MAX_HISTORY_YEARS = 5  # Polygon Starter plan limit
+POLYGON_MAX_HISTORY_DAYS = 1825  # 5 years in days
+
+# Yahoo Finance Configuration (for backfill and crypto)
+YAHOO_HISTORICAL_START = "1970-01-01"  # Earliest date to try fetching
+
+# Polygon timespan mapping (Yahoo format -> Polygon format)
+POLYGON_TIMESPAN_MAP = {
+    "d": "day",
+    "1d": "day",
+    "daily": "day",
+    "wk": "week",
+    "1wk": "week",
+    "weekly": "week",
+    "mo": "month",
+    "1mo": "month",
+    "monthly": "month",
+    "y": "year",
+    "1y": "year",
+    "yearly": "year",
+}
+
 # Interval mappings for yfinance (case-insensitive lookup)
 INTERVAL_MAP = {
     "daily": "1d",

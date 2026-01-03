@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from app.core.config import (
@@ -10,6 +11,7 @@ from app.core.config import (
     SHOW_DOWNLOAD_PROGRESS,
     ERROR_EMPTY_TICKER,
     ERROR_NO_DATA,
+    YAHOO_HISTORICAL_START,
 )
 
 if TYPE_CHECKING:
@@ -18,13 +20,55 @@ if TYPE_CHECKING:
 # Import the cache manager
 from app.services.market_data_cache import MarketDataCache
 
+# Import Polygon.io data service (primary data source)
+from app.services.polygon_data import PolygonDataService
+
+# Import Yahoo Finance service (for historical backfill and crypto live prices)
+from app.services.yahoo_finance_service import YahooFinanceService
+
+# Import backfill tracker (prevents repeat Yahoo calls)
+from app.services.backfill_tracker import BackfillTracker
+
+# Import crypto detection utility
+from app.utils.market_hours import is_crypto_ticker
+
 # Create a global cache instance (disk-based parquet cache)
 _cache = MarketDataCache()
+
+# Data source version tracking - increment this when switching data sources
+# to automatically clear cache and avoid mixing data from different providers
+_DATA_SOURCE_VERSION = "polygon_v1"
+_VERSION_FILE = Path.home() / ".quant_terminal" / "cache" / ".data_source_version"
+
+
+def _check_data_source_version() -> None:
+    """
+    Check if data source has changed and clear cache if needed.
+
+    This ensures we don't mix data from different providers (e.g., Yahoo vs Polygon)
+    which could have different adjusted prices or date ranges.
+    """
+    _VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    if _VERSION_FILE.exists():
+        current = _VERSION_FILE.read_text().strip()
+        if current == _DATA_SOURCE_VERSION:
+            return
+
+    print(f"Data source changed to {_DATA_SOURCE_VERSION}, clearing cache...")
+    _cache.clear_cache()
+    _VERSION_FILE.write_text(_DATA_SOURCE_VERSION)
 
 # In-memory session cache to avoid repeated parquet reads
 # Key: ticker (uppercase), Value: DataFrame
 _memory_cache: Dict[str, Any] = {}
 _memory_cache_lock = threading.Lock()
+
+# Live bar cache for today's partial data (stocks only)
+# Key: ticker, Value: {"df": DataFrame, "timestamp": float}
+_live_bar_cache: Dict[str, Any] = {}
+_live_bar_cache_lock = threading.Lock()
+_LIVE_BAR_REFRESH_SECONDS = 900  # 15 minutes
 
 
 def _get_from_memory_cache(ticker: str) -> Optional["pd.DataFrame"]:
@@ -37,6 +81,249 @@ def _set_memory_cache(ticker: str, df: "pd.DataFrame") -> None:
     """Set DataFrame in memory cache (thread-safe)."""
     with _memory_cache_lock:
         _memory_cache[ticker] = df
+
+
+def _get_live_bar(ticker: str) -> Optional["pd.DataFrame"]:
+    """
+    Get today's partial (live) bar for a stock ticker.
+
+    Uses a 15-minute cache to avoid excessive API calls.
+    Only works for stocks on Polygon Starter plan.
+
+    Args:
+        ticker: Ticker symbol
+
+    Returns:
+        DataFrame with today's partial bar, or None if unavailable
+    """
+    import time
+
+    ticker = ticker.upper()
+
+    # Check cache first
+    with _live_bar_cache_lock:
+        cached = _live_bar_cache.get(ticker)
+        if cached:
+            elapsed = time.time() - cached["timestamp"]
+            if elapsed < _LIVE_BAR_REFRESH_SECONDS:
+                return cached["df"]
+
+    # Fetch fresh live bar
+    live_bar = PolygonDataService.fetch_live_bar(ticker)
+
+    # Cache the result (even if None)
+    with _live_bar_cache_lock:
+        _live_bar_cache[ticker] = {
+            "df": live_bar,
+            "timestamp": time.time(),
+        }
+
+    return live_bar
+
+
+def _append_live_bar(df: "pd.DataFrame", ticker: str) -> "pd.DataFrame":
+    """
+    Append live bar to daily data if available.
+
+    Only appends if:
+    - Live bar is available (stocks only on Starter plan)
+    - The live bar's date is not already in the DataFrame
+
+    Args:
+        df: DataFrame with daily OHLCV data
+        ticker: Ticker symbol
+
+    Returns:
+        DataFrame with live bar appended (if applicable)
+    """
+    import pandas as pd
+
+    live_bar = _get_live_bar(ticker)
+    if live_bar is None or live_bar.empty:
+        return df
+
+    # Get the date of the live bar
+    live_bar_date = live_bar.index[0].date()
+    last_cached_date = df.index.max().date()
+
+    # Only append if live bar date is newer than cached data
+    if live_bar_date <= last_cached_date:
+        return df
+
+    # Append live bar
+    combined = pd.concat([df, live_bar])
+    combined.sort_index(inplace=True)
+
+    return combined
+
+
+def _perform_historical_backfill(ticker: str, polygon_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Perform one-time historical backfill from Yahoo Finance.
+
+    Only fetches data OLDER than what Polygon provides (pre-5-year data).
+    This is a one-time operation tracked by BackfillTracker.
+
+    Args:
+        ticker: Ticker symbol
+        polygon_df: DataFrame from Polygon (up to 5 years)
+
+    Returns:
+        Combined DataFrame with Yahoo historical + Polygon data
+    """
+    import pandas as pd
+    from datetime import timedelta
+
+    # Check if already backfilled
+    if BackfillTracker.is_backfilled(ticker):
+        return polygon_df
+
+    # Get Polygon's earliest date
+    polygon_earliest = polygon_df.index.min()
+
+    # Calculate end date for Yahoo fetch (day before Polygon's earliest)
+    yahoo_end = (polygon_earliest - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    print(f"Checking Yahoo Finance for {ticker} historical data before {yahoo_end}...")
+
+    # Fetch from Yahoo Finance (pre-5-year data)
+    try:
+        yahoo_df = YahooFinanceService.fetch_historical(
+            ticker, YAHOO_HISTORICAL_START, yahoo_end
+        )
+    except Exception as e:
+        # Fail silently - just use Polygon data
+        print(f"Yahoo backfill unavailable for {ticker}: {e}")
+        BackfillTracker.mark_backfilled(ticker)
+        return polygon_df
+
+    # If Yahoo has no older data, mark as backfilled and return Polygon data
+    if yahoo_df is None or yahoo_df.empty:
+        print(f"No pre-5-year Yahoo data available for {ticker}")
+        BackfillTracker.mark_backfilled(ticker)
+        return polygon_df
+
+    # Check for gap at boundary (> 5 trading days)
+    yahoo_latest = yahoo_df.index.max()
+    gap_days = (polygon_earliest - yahoo_latest).days
+    if gap_days > 7:  # More than a week gap (accounting for weekends)
+        print(f"Warning: {gap_days} day gap at boundary for {ticker} "
+              f"(Yahoo ends: {yahoo_latest.date()}, Polygon starts: {polygon_earliest.date()})")
+        # Try to fill the gap with Yahoo data
+        gap_start = (yahoo_latest + timedelta(days=1)).strftime("%Y-%m-%d")
+        gap_end = (polygon_earliest - timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            gap_df = YahooFinanceService.fetch_historical(ticker, gap_start, gap_end)
+            if gap_df is not None and not gap_df.empty:
+                yahoo_df = pd.concat([yahoo_df, gap_df])
+                yahoo_df.sort_index(inplace=True)
+                print(f"Filled {len(gap_df)} bars in gap from Yahoo")
+        except Exception:
+            pass  # Continue without gap fill
+
+    # Merge: Yahoo first, then Polygon (Polygon takes priority for overlaps)
+    combined = pd.concat([yahoo_df, polygon_df])
+    combined = combined[~combined.index.duplicated(keep='last')]  # Polygon wins
+    combined.sort_index(inplace=True)
+
+    print(f"Backfilled {ticker} with {len(yahoo_df)} historical bars from Yahoo Finance")
+
+    # Mark as backfilled
+    BackfillTracker.mark_backfilled(ticker)
+
+    return combined
+
+
+def _perform_incremental_update(ticker: str, cached_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Fetch only missing days from Polygon and append to cached data.
+
+    Args:
+        ticker: Ticker symbol
+        cached_df: Existing cached DataFrame
+
+    Returns:
+        Updated DataFrame with new data appended
+    """
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    # Get last cached date
+    last_date = cached_df.index.max().date()
+
+    # Calculate date range for update
+    start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
+    # If start > end, no update needed
+    if start_date >= end_date:
+        return cached_df
+
+    print(f"Incremental update for {ticker}: {start_date} to {end_date}")
+
+    # Fetch missing days from Polygon
+    try:
+        new_df = PolygonDataService.fetch_date_range(ticker, start_date, end_date)
+    except Exception as e:
+        print(f"Incremental update failed for {ticker}: {e}")
+        return cached_df
+
+    # If no new data, return cached
+    if new_df is None or new_df.empty:
+        return cached_df
+
+    # Append and deduplicate (keep new data for any overlaps)
+    combined = pd.concat([cached_df, new_df])
+    combined = combined[~combined.index.duplicated(keep='last')]
+    combined.sort_index(inplace=True)
+
+    return combined
+
+
+def _append_crypto_today(df: "pd.DataFrame", ticker: str) -> "pd.DataFrame":
+    """
+    Append today's bar for crypto tickers from Yahoo Finance.
+
+    Polygon WebSocket doesn't support crypto on Starter plan,
+    so we fetch today's OHLCV from Yahoo Finance instead.
+
+    Args:
+        df: Existing DataFrame
+        ticker: Crypto ticker (e.g., "BTC-USD")
+
+    Returns:
+        DataFrame with today's bar appended if not already present
+    """
+    import pandas as pd
+    from datetime import datetime
+
+    # Only for crypto tickers
+    if not is_crypto_ticker(ticker):
+        return df
+
+    # Check if today is already in the data
+    today = datetime.now().date()
+    if df.index.max().date() >= today:
+        return df
+
+    print(f"Fetching today's price for crypto {ticker} from Yahoo Finance...")
+
+    # Fetch today's bar from Yahoo
+    try:
+        today_bar = YahooFinanceService.fetch_today_ohlcv(ticker)
+        if today_bar is not None and not today_bar.empty:
+            # Only append if the bar date is newer
+            bar_date = today_bar.index[0].date()
+            if bar_date > df.index.max().date():
+                combined = pd.concat([df, today_bar])
+                combined = combined[~combined.index.duplicated(keep='last')]
+                combined.sort_index(inplace=True)
+                print(f"Added today's bar for {ticker} from Yahoo")
+                return combined
+    except Exception as e:
+        print(f"Failed to fetch today's crypto bar for {ticker}: {e}")
+
+    return df
 
 
 def _load_btc_historical_csv() -> "pd.DataFrame":
@@ -110,7 +397,11 @@ def fetch_price_history(
         ValueError: If ticker is empty or no data is available
     """
     import pandas as pd
-    import yfinance as yf
+    # Note: yfinance kept for potential fallback but not currently used
+    # import yfinance as yf
+
+    # Check if data source has changed (auto-clears cache if switching providers)
+    _check_data_source_version()
 
     ticker = ticker.strip().upper()
     if not ticker:
@@ -126,67 +417,79 @@ def fetch_price_history(
     if yf_interval == "1y":
         yf_interval = "1d"  # We'll resample from daily data
 
+    # Helper to append live data (crypto vs stock)
+    def _append_live_data(data: "pd.DataFrame") -> "pd.DataFrame":
+        """Append today's data: Yahoo for crypto, Polygon snapshot for stocks."""
+        if is_crypto_ticker(ticker):
+            return _append_crypto_today(data, ticker)
+        return _append_live_bar(data, ticker)
+
     # LEVEL 1: Check memory cache first (instant, no disk I/O)
     df = _get_from_memory_cache(ticker)
     if df is not None and not df.empty:
         # Memory cache hit - check if still current
         if _cache.is_cache_current(ticker):
             if needs_daily:
-                return df
+                return _append_live_data(df)
             else:
-                return _resample_data(df, interval_key)
-        # Memory cache exists but outdated - will try to refresh below
+                return _resample_data(_append_live_data(df), interval_key)
+        # Memory cache exists but outdated - try incremental update
+        print(f"Memory cache outdated for {ticker}, checking for incremental update...")
+        df = _perform_incremental_update(ticker, df)
+        # Update both caches
+        _cache.save_to_cache(ticker, df)
+        _set_memory_cache(ticker, df)
+        if needs_daily:
+            return _append_live_data(df)
+        else:
+            return _resample_data(_append_live_data(df), interval_key)
 
     # LEVEL 2: Check disk cache (parquet)
-    if needs_daily:
-        if _cache.is_cache_current(ticker):
-            df = _cache.get_cached_data(ticker)
-            if df is not None and not df.empty:
-                last_date = df.index.max().strftime("%Y-%m-%d")
+    if _cache.has_cache(ticker):
+        df = _cache.get_cached_data(ticker)
+        if df is not None and not df.empty:
+            last_date = df.index.max().strftime("%Y-%m-%d")
+
+            if _cache.is_cache_current(ticker):
+                # Cache is current
                 print(f"Using cached data for {ticker} (last date: {last_date})")
-                # Store in memory cache for subsequent reads
                 _set_memory_cache(ticker, df)
-                return df
-    else:
-        # For non-daily intervals, check if we have cached daily data to resample
-        if _cache.has_cache(ticker):
-            df = _cache.get_cached_data(ticker)
-            if df is not None and not df.empty:
-                last_date = df.index.max().strftime("%Y-%m-%d")
-                is_current = _cache.is_cache_current(ticker)
-                status = "current" if is_current else "outdated"
-                print(f"Using cached daily data for {ticker} ({status}, last date: {last_date})")
-                # Store in memory cache for subsequent reads
+                if needs_daily:
+                    return _append_live_data(df)
+                else:
+                    return _resample_data(_append_live_data(df), interval_key)
+            else:
+                # Cache exists but outdated - do incremental update
+                print(f"Cache outdated for {ticker} (last date: {last_date}), doing incremental update...")
+                df = _perform_incremental_update(ticker, df)
+                # Update both caches
+                _cache.save_to_cache(ticker, df)
                 _set_memory_cache(ticker, df)
-                # Resample to requested interval
-                return _resample_data(df, interval_key)
+                if needs_daily:
+                    return _append_live_data(df)
+                else:
+                    return _resample_data(_append_live_data(df), interval_key)
 
-    # Try to fetch fresh data from Yahoo Finance
+    # Try to fetch fresh data from Polygon.io (primary data source)
     try:
-        print(f"Fetching fresh data for {ticker} from Yahoo Finance...")
-
         # Always fetch daily data for max period (for caching)
-        df = yf.download(
-            tickers=ticker,
+        df = PolygonDataService.fetch(
+            ticker=ticker,
             period="max",
             interval="1d",
-            auto_adjust=False,
-            progress=SHOW_DOWNLOAD_PROGRESS,
-            threads=DATA_FETCH_THREADS,
         )
 
         if df is None or df.empty:
             raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
 
-        # Sometimes yfinance returns MultiIndex columns
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
-
         df = df.copy()
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
 
-        # Prepend historical CSV data for BTC-USD
+        # Perform one-time historical backfill from Yahoo Finance (pre-5-year data)
+        df = _perform_historical_backfill(ticker, df)
+
+        # Legacy: Prepend historical CSV data for BTC-USD (kept for backward compat)
         if ticker == "BTC-USD":
             df = _prepend_btc_historical(df)
 
@@ -194,15 +497,37 @@ def fetch_price_history(
         _cache.save_to_cache(ticker, df)
         _set_memory_cache(ticker, df)
 
+        # Append today's live data (Yahoo for crypto, Polygon snapshot for stocks)
+        df_with_live = _append_live_data(df)
+
         # If user needs non-daily interval, resample
         if not needs_daily:
-            return _resample_data(df, interval_key)
+            return _resample_data(df_with_live, interval_key)
 
-        return df
+        return df_with_live
 
     except Exception as e:
         # Fetch failed - try to use cached data as fallback (even if outdated)
-        print(f"Failed to fetch {ticker} from Yahoo Finance: {e}")
+        print(f"Failed to fetch {ticker} from Polygon.io: {e}")
+
+        # ========================================================================
+        # YAHOO FINANCE FALLBACK (kept for reference, not currently used)
+        # ========================================================================
+        # import yfinance as yf
+        #
+        # df = yf.download(
+        #     tickers=ticker,
+        #     period="max",
+        #     interval="1d",
+        #     auto_adjust=False,
+        #     progress=SHOW_DOWNLOAD_PROGRESS,
+        #     threads=DATA_FETCH_THREADS,
+        # )
+        #
+        # # Sometimes yfinance returns MultiIndex columns
+        # if isinstance(df.columns, pd.MultiIndex):
+        #     df.columns = [c[0] for c in df.columns]
+        # ========================================================================
 
         if _cache.has_cache(ticker):
             df = _cache.get_cached_data(ticker)
@@ -212,11 +537,12 @@ def fetch_price_history(
                 # Store in memory cache
                 _set_memory_cache(ticker, df)
 
-                # Resample if needed
+                # Append live data and resample if needed
+                df_with_live = _append_live_data(df)
                 if not needs_daily:
-                    return _resample_data(df, interval_key)
+                    return _resample_data(df_with_live, interval_key)
 
-                return df
+                return df_with_live
 
         # No cache available, re-raise the error
         raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
@@ -272,7 +598,7 @@ def clear_cache(ticker: str | None = None) -> None:
     """
     Clear cache for a specific ticker or all tickers.
 
-    Clears both memory cache and disk cache.
+    Clears memory cache, disk cache, and backfill status.
 
     Args:
         ticker: Ticker symbol to clear, or None to clear all
@@ -286,3 +612,196 @@ def clear_cache(ticker: str | None = None) -> None:
 
     # Clear disk cache
     _cache.clear_cache(ticker)
+
+    # Clear backfill status (so next fetch will re-do backfill)
+    BackfillTracker.clear_status(ticker)
+
+
+def fetch_price_history_yahoo(
+    ticker: str,
+    period: str = "max",
+    interval: str = "1d",
+) -> "pd.DataFrame":
+    """
+    Fetch price history using Yahoo Finance exclusively.
+
+    Used by chart module. Checks parquet first, backfills if needed.
+
+    Flow:
+    1. Check if parquet exists
+    2. If exists but not backfilled -> backfill with Yahoo historical
+    3. If most recent date < today -> fetch missing days from Yahoo
+    4. If no parquet -> fresh fetch from Yahoo
+    5. Save/update parquet
+
+    Args:
+        ticker: Ticker symbol (e.g., "BTC-USD", "AAPL")
+        period: Time period (e.g., "max", "1y", "6mo") - only "max" fully supported
+        interval: Data interval (e.g., "1d", "daily", "weekly")
+
+    Returns:
+        DataFrame with OHLCV data
+
+    Raises:
+        ValueError: If ticker is empty or no data is available
+    """
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    ticker = ticker.strip().upper()
+    if not ticker:
+        raise ValueError(ERROR_EMPTY_TICKER)
+
+    interval_key = (interval or "1d").strip().lower()
+    needs_daily = interval_key in ["daily", "1d"]
+
+    # LEVEL 1: Check memory cache first
+    df = _get_from_memory_cache(ticker)
+    if df is not None and not df.empty:
+        if _cache.is_cache_current(ticker):
+            if needs_daily:
+                return df
+            return _resample_data(df, interval_key)
+
+    # LEVEL 2: Check if parquet exists
+    if _cache.has_cache(ticker):
+        df = _cache.get_cached_data(ticker)
+        if df is not None and not df.empty:
+            last_date = df.index.max().strftime("%Y-%m-%d")
+            print(f"Found cached data for {ticker} (last date: {last_date})")
+
+            # Check if backfill needed (Yahoo historical data)
+            if not BackfillTracker.is_backfilled(ticker):
+                print(f"Backfilling {ticker} with Yahoo historical data...")
+                df = _perform_yahoo_backfill(ticker, df)
+                _cache.save_to_cache(ticker, df)
+
+            # Check if incremental update needed
+            if not _cache.is_cache_current(ticker):
+                print(f"Updating {ticker} with recent Yahoo data...")
+                df = _perform_yahoo_incremental_update(ticker, df)
+                _cache.save_to_cache(ticker, df)
+
+            _set_memory_cache(ticker, df)
+
+            if needs_daily:
+                return df
+            return _resample_data(df, interval_key)
+
+    # LEVEL 3: Fresh fetch from Yahoo Finance (no parquet exists)
+    print(f"Fresh fetch for {ticker} from Yahoo Finance...")
+    df = YahooFinanceService.fetch_full_history(ticker)
+
+    if df is None or df.empty:
+        raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
+
+    # Mark as backfilled (since we got full history from Yahoo)
+    BackfillTracker.mark_backfilled(ticker)
+
+    # Save to cache
+    _cache.save_to_cache(ticker, df)
+    _set_memory_cache(ticker, df)
+
+    if needs_daily:
+        return df
+    return _resample_data(df, interval_key)
+
+
+def _perform_yahoo_backfill(ticker: str, existing_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Backfill existing parquet with older Yahoo Finance data.
+
+    Used when parquet exists (possibly from Polygon in another module)
+    but hasn't been backfilled with Yahoo historical data yet.
+
+    Args:
+        ticker: Ticker symbol
+        existing_df: Existing DataFrame from parquet
+
+    Returns:
+        Combined DataFrame with Yahoo historical + existing data
+    """
+    import pandas as pd
+    from datetime import timedelta
+
+    # Get the earliest date in existing data
+    earliest_date = existing_df.index.min()
+    yahoo_end = (earliest_date - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    print(f"Fetching Yahoo historical data for {ticker} before {yahoo_end}...")
+
+    # Fetch older data from Yahoo
+    try:
+        yahoo_df = YahooFinanceService.fetch_historical(
+            ticker, YAHOO_HISTORICAL_START, yahoo_end
+        )
+    except Exception as e:
+        print(f"Yahoo backfill failed for {ticker}: {e}")
+        BackfillTracker.mark_backfilled(ticker)
+        return existing_df
+
+    # If no older data, mark as backfilled and return existing
+    if yahoo_df is None or yahoo_df.empty:
+        print(f"No older Yahoo data available for {ticker}")
+        BackfillTracker.mark_backfilled(ticker)
+        return existing_df
+
+    # Merge: Yahoo first, existing takes priority for overlaps
+    combined = pd.concat([yahoo_df, existing_df])
+    combined = combined[~combined.index.duplicated(keep='last')]
+    combined.sort_index(inplace=True)
+
+    print(f"Backfilled {ticker} with {len(yahoo_df)} historical bars from Yahoo")
+
+    # Mark as backfilled
+    BackfillTracker.mark_backfilled(ticker)
+
+    return combined
+
+
+def _perform_yahoo_incremental_update(ticker: str, cached_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Fetch missing recent days from Yahoo Finance.
+
+    Args:
+        ticker: Ticker symbol
+        cached_df: Existing cached DataFrame
+
+    Returns:
+        Updated DataFrame with new data appended
+    """
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    # Get last cached date
+    last_date = cached_df.index.max().date()
+
+    # Calculate date range for update
+    start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
+    # If start > end, no update needed
+    if start_date >= end_date:
+        return cached_df
+
+    print(f"Fetching Yahoo data for {ticker}: {start_date} to {end_date}")
+
+    # Fetch missing days from Yahoo
+    try:
+        new_df = YahooFinanceService.fetch_historical(ticker, start_date, end_date)
+    except Exception as e:
+        print(f"Yahoo incremental update failed for {ticker}: {e}")
+        return cached_df
+
+    # If no new data, return cached
+    if new_df is None or new_df.empty:
+        print(f"No new Yahoo data for {ticker}")
+        return cached_df
+
+    # Append and deduplicate
+    combined = pd.concat([cached_df, new_df])
+    combined = combined[~combined.index.duplicated(keep='last')]
+    combined.sort_index(inplace=True)
+
+    print(f"Updated {ticker} with {len(new_df)} new bars from Yahoo")
+    return combined
