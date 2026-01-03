@@ -7,36 +7,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QLabel,
-    QComboBox,
     QPushButton,
-    QAbstractItemView,
-    QListView,
     QSpinBox,
     QMessageBox,
 )
-from PySide6.QtCore import Signal, QDate, Qt
+from PySide6.QtCore import Signal, QDate
 from PySide6.QtGui import QWheelEvent
 
 from app.core.theme_manager import ThemeManager
-from app.ui.widgets.common import LazyThemeMixin, ThemedDialog, DateInputWidget, NoScrollComboBox
+from app.ui.widgets.common import (
+    LazyThemeMixin,
+    ThemedDialog,
+    DateInputWidget,
+    NoScrollComboBox,
+    PortfolioTickerComboBox,
+    BenchmarkComboBox,
+)
 from app.services.theme_stylesheet_service import ThemeStylesheetService
-
-
-class SmoothScrollListView(QListView):
-    """QListView with smoother, slower scrolling for combo box dropdowns."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    def wheelEvent(self, event: QWheelEvent):
-        """Override wheel event to reduce scroll speed."""
-        delta = event.angleDelta().y()
-        pixels_to_scroll = int(delta / 4)
-        scrollbar = self.verticalScrollBar()
-        scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
-        event.accept()
 
 
 class HorizonComboBox(NoScrollComboBox):
@@ -274,8 +261,6 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self._theme_dirty = False  # For lazy theme application
-        self._last_portfolio_text: str = ""
-        self._last_benchmark_text: str = ""
 
         self._setup_ui()
         self._apply_theme()
@@ -307,17 +292,10 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         self.portfolio_label = QLabel("Portfolio:")
         self.portfolio_label.setObjectName("control_label")
         layout.addWidget(self.portfolio_label)
-        self.portfolio_combo = QComboBox()
-        self.portfolio_combo.setEditable(True)
+        self.portfolio_combo = PortfolioTickerComboBox()
         self.portfolio_combo.setFixedWidth(250)
         self.portfolio_combo.setFixedHeight(40)
-        self.portfolio_combo.lineEdit().setPlaceholderText("Type ticker or select...")
-        smooth_view = SmoothScrollListView(self.portfolio_combo)
-        smooth_view.setAlternatingRowColors(True)
-        self.portfolio_combo.setView(smooth_view)
-        self.portfolio_combo.lineEdit().editingFinished.connect(self._on_portfolio_entered)
-        self.portfolio_combo.lineEdit().returnPressed.connect(self._on_portfolio_entered)
-        self.portfolio_combo.currentIndexChanged.connect(self._on_portfolio_selected)
+        self.portfolio_combo.value_changed.connect(self.portfolio_changed.emit)
         layout.addWidget(self.portfolio_combo)
 
         layout.addSpacing(20)
@@ -326,17 +304,10 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         self.benchmark_label = QLabel("Benchmark:")
         self.benchmark_label.setObjectName("control_label")
         layout.addWidget(self.benchmark_label)
-        self.benchmark_combo = QComboBox()
-        self.benchmark_combo.setEditable(True)
+        self.benchmark_combo = BenchmarkComboBox()
         self.benchmark_combo.setFixedWidth(250)
         self.benchmark_combo.setFixedHeight(40)
-        self.benchmark_combo.lineEdit().setPlaceholderText("None")
-        smooth_view_bench = SmoothScrollListView(self.benchmark_combo)
-        smooth_view_bench.setAlternatingRowColors(True)
-        self.benchmark_combo.setView(smooth_view_bench)
-        self.benchmark_combo.lineEdit().editingFinished.connect(self._on_benchmark_entered)
-        self.benchmark_combo.lineEdit().returnPressed.connect(self._on_benchmark_entered)
-        self.benchmark_combo.currentIndexChanged.connect(self._on_benchmark_selected)
+        self.benchmark_combo.value_changed.connect(self.benchmark_changed.emit)
         layout.addWidget(self.benchmark_combo)
 
         layout.addSpacing(20)
@@ -400,39 +371,6 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         self.settings_btn.clicked.connect(self.settings_clicked.emit)
         layout.addWidget(self.settings_btn)
 
-    def _on_portfolio_entered(self):
-        """Handle Enter key or focus out in portfolio combo box."""
-        current_text = self.portfolio_combo.lineEdit().text().strip()
-        if current_text and current_text != self._last_portfolio_text:
-            self._last_portfolio_text = current_text
-            # Check if this matches a portfolio name (case-insensitive)
-            portfolio_match = None
-            for i in range(self.portfolio_combo.count()):
-                item = self.portfolio_combo.itemText(i)
-                # Strip [Port] prefix for comparison
-                item_name = item[7:] if item.startswith("[Port] ") else item
-                if item_name.lower() == current_text.lower():
-                    portfolio_match = item
-                    break
-
-            if portfolio_match:
-                current_text = portfolio_match  # Use exact portfolio name with prefix
-            else:
-                current_text = current_text.upper()  # Uppercase for ticker lookup
-                self.portfolio_combo.lineEdit().setText(current_text)
-            self.portfolio_changed.emit(current_text)
-
-    def _on_portfolio_selected(self, index: int):
-        """Handle portfolio selection from dropdown."""
-        if index >= 0:
-            text = self.portfolio_combo.currentText()
-            if text and text != self._last_portfolio_text:
-                self._last_portfolio_text = text
-                # Show name without prefix in the display
-                if text.startswith("[Port] "):
-                    self.portfolio_combo.lineEdit().setText(text[7:])
-                self.portfolio_changed.emit(text)
-
     def _on_method_changed(self, text: str):
         """Handle simulation method change."""
         method = self.METHOD_MAP.get(text, "bootstrap")
@@ -486,54 +424,13 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
         if count:
             self.simulations_changed.emit(count)
 
-    def _on_benchmark_entered(self):
-        """Handle Enter key or focus out in benchmark combo box."""
-        current_text = self.benchmark_combo.lineEdit().text().strip()
-        if current_text != self._last_benchmark_text:
-            self._last_benchmark_text = current_text
-            if current_text and not any(
-                current_text.startswith(prefix) for prefix in ["[Port]"]
-            ):
-                current_text = current_text.upper()
-                self.benchmark_combo.lineEdit().setText(current_text)
-            self.benchmark_changed.emit(current_text)
-
-    def _on_benchmark_selected(self, index: int):
-        """Handle benchmark selection from dropdown."""
-        if index >= 0:
-            text = self.benchmark_combo.currentText()
-            if text != self._last_benchmark_text:
-                self._last_benchmark_text = text
-                self.benchmark_changed.emit(text)
-
     def set_portfolio_list(self, portfolios: List[str]):
         """Set the list of available portfolios."""
-        current = self.portfolio_combo.currentText()
-        self.portfolio_combo.blockSignals(True)
-        self.portfolio_combo.clear()
-        for portfolio in portfolios:
-            self.portfolio_combo.addItem(f"[Port] {portfolio}")
-        if current:
-            self.portfolio_combo.setCurrentText(current)
-            # Show name without prefix in the display
-            if current.startswith("[Port] "):
-                self.portfolio_combo.lineEdit().setText(current[7:])
-        else:
-            self.portfolio_combo.setCurrentIndex(-1)  # Show placeholder
-        self.portfolio_combo.blockSignals(False)
+        self.portfolio_combo.set_portfolios(portfolios)
 
     def set_benchmark_list(self, portfolios: List[str]):
         """Set the list of available portfolios for benchmark."""
-        current = self.benchmark_combo.currentText()
-        self.benchmark_combo.blockSignals(True)
-        self.benchmark_combo.clear()
-        for portfolio in portfolios:
-            self.benchmark_combo.addItem(f"[Port] {portfolio}")
-        if current:
-            self.benchmark_combo.setCurrentText(current)
-        else:
-            self.benchmark_combo.setCurrentIndex(-1)  # Show placeholder
-        self.benchmark_combo.blockSignals(False)
+        self.benchmark_combo.set_portfolios(portfolios)
 
     def set_method(self, method: str):
         """Set the current simulation method."""
@@ -555,12 +452,12 @@ class MonteCarloControls(LazyThemeMixin, QWidget):
                 break
 
     def get_current_portfolio(self) -> str:
-        """Get the current portfolio/ticker selection."""
-        return self.portfolio_combo.currentText().strip()
+        """Get the current portfolio/ticker selection (with [Port] prefix if portfolio)."""
+        return self.portfolio_combo.get_value()
 
     def get_current_benchmark(self) -> str:
-        """Get the current benchmark selection."""
-        return self.benchmark_combo.currentText().strip()
+        """Get the current benchmark selection (with [Port] prefix if portfolio)."""
+        return self.benchmark_combo.get_value()
 
     def get_current_method(self) -> str:
         """Get the current simulation method."""

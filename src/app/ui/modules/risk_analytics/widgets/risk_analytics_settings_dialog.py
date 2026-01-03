@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .smooth_scroll_widgets import SmoothScrollListWidget
-from .risk_analytics_controls import SmoothScrollListView
+from app.ui.widgets.common import SmoothScrollListView
 from PySide6.QtCore import Signal, Qt, QDate
 
 from app.core.theme_manager import ThemeManager

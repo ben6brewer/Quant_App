@@ -2,37 +2,15 @@
 
 from typing import List
 
-from PySide6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QLabel,
-    QComboBox,
-    QPushButton,
-    QAbstractItemView,
-    QListView,
-)
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtCore import Signal
 
 from app.core.theme_manager import ThemeManager
-from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
-
-
-class SmoothScrollListView(QListView):
-    """QListView with smoother, slower scrolling for combo box dropdowns."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    def wheelEvent(self, event: QWheelEvent):
-        """Override wheel event to reduce scroll speed."""
-        delta = event.angleDelta().y()
-        pixels_to_scroll = int(delta / 4)
-        scrollbar = self.verticalScrollBar()
-        scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
-        event.accept()
+from app.ui.widgets.common import (
+    LazyThemeMixin,
+    PortfolioTickerComboBox,
+    BenchmarkComboBox,
+)
 
 
 class PerformanceMetricsControls(LazyThemeMixin, QWidget):
@@ -52,9 +30,6 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self._theme_dirty = False
-        # Track last processed values to prevent duplicate signals
-        self._last_portfolio_text: str = ""
-        self._last_benchmark_text: str = ""
 
         self._setup_ui()
         self._apply_theme()
@@ -87,20 +62,10 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         self.portfolio_label = QLabel("Portfolio:")
         self.portfolio_label.setObjectName("control_label")
         layout.addWidget(self.portfolio_label)
-        self.portfolio_combo = QComboBox()
-        self.portfolio_combo.setEditable(True)
+        self.portfolio_combo = PortfolioTickerComboBox()
         self.portfolio_combo.setFixedWidth(250)
         self.portfolio_combo.setFixedHeight(40)
-        self.portfolio_combo.lineEdit().setPlaceholderText("Type ticker or select...")
-        smooth_view = SmoothScrollListView(self.portfolio_combo)
-        smooth_view.setAlternatingRowColors(True)
-        self.portfolio_combo.setView(smooth_view)
-        # Connect editing finished (Enter or focus out) and dropdown selection
-        self.portfolio_combo.lineEdit().editingFinished.connect(
-            self._on_portfolio_entered
-        )
-        self.portfolio_combo.lineEdit().returnPressed.connect(self._on_portfolio_entered)
-        self.portfolio_combo.currentIndexChanged.connect(self._on_portfolio_selected)
+        self.portfolio_combo.value_changed.connect(self.portfolio_changed.emit)
         layout.addWidget(self.portfolio_combo)
 
         layout.addSpacing(20)
@@ -109,20 +74,10 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         self.benchmark_label = QLabel("Benchmark:")
         self.benchmark_label.setObjectName("control_label")
         layout.addWidget(self.benchmark_label)
-        self.benchmark_combo = QComboBox()
-        self.benchmark_combo.setEditable(True)
+        self.benchmark_combo = BenchmarkComboBox()
         self.benchmark_combo.setFixedWidth(250)
         self.benchmark_combo.setFixedHeight(40)
-        self.benchmark_combo.lineEdit().setPlaceholderText("None")
-        smooth_view_bmrk = SmoothScrollListView(self.benchmark_combo)
-        smooth_view_bmrk.setAlternatingRowColors(True)
-        self.benchmark_combo.setView(smooth_view_bmrk)
-        # Connect editing finished (Enter or focus out) and dropdown selection
-        self.benchmark_combo.lineEdit().editingFinished.connect(
-            self._on_benchmark_entered
-        )
-        self.benchmark_combo.lineEdit().returnPressed.connect(self._on_benchmark_entered)
-        self.benchmark_combo.currentIndexChanged.connect(self._on_benchmark_selected)
+        self.benchmark_combo.value_changed.connect(self.benchmark_changed.emit)
         layout.addWidget(self.benchmark_combo)
 
         # Add stretch to push settings button to right
@@ -134,102 +89,6 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         self.settings_btn.clicked.connect(self.settings_clicked.emit)
         layout.addWidget(self.settings_btn)
 
-    def _on_portfolio_entered(self):
-        """Handle Enter key or focus out in portfolio combo box."""
-        text = self.portfolio_combo.currentText().strip()
-
-        # Check if this matches a portfolio name (case-insensitive)
-        # If so, use the portfolio name as-is; otherwise uppercase for ticker lookup
-        portfolio_match = None
-        for i in range(self.portfolio_combo.count()):
-            item = self.portfolio_combo.itemText(i)
-            # Strip [Port] prefix for comparison
-            item_name = item[7:] if item.startswith("[Port] ") else item
-            if item_name.lower() == text.lower():
-                portfolio_match = item
-                break
-
-        if portfolio_match:
-            text = portfolio_match  # Use exact portfolio name with prefix
-        else:
-            text = text.upper()  # Uppercase for ticker lookup
-
-        # Always update display to show uppercase
-        if text:
-            self.portfolio_combo.blockSignals(True)
-            self.portfolio_combo.lineEdit().blockSignals(True)
-            self.portfolio_combo.lineEdit().setText(text)
-            self.portfolio_combo.lineEdit().blockSignals(False)
-            self.portfolio_combo.blockSignals(False)
-
-        # Only emit signal if value actually changed
-        if text != self._last_portfolio_text:
-            self._last_portfolio_text = text
-            if text:
-                self.portfolio_changed.emit(text)
-
-    def _on_portfolio_selected(self, index: int):
-        """Handle dropdown selection in portfolio combo box."""
-        if index >= 0:
-            text = self.portfolio_combo.currentText()
-            if text and text != self._last_portfolio_text:
-                self._last_portfolio_text = text
-                # Show name without prefix in the display
-                if text.startswith("[Port] "):
-                    self.portfolio_combo.lineEdit().setText(text[7:])
-                self.portfolio_changed.emit(text)
-
-    def _on_benchmark_entered(self):
-        """Handle Enter key or focus out in benchmark combo box."""
-        text = self.benchmark_combo.currentText().strip()
-
-        # Treat "NONE" or empty as no benchmark
-        if not text or text.upper() == "NONE":
-            text = ""
-        else:
-            # Check if this matches a portfolio in the dropdown (case-insensitive)
-            # Portfolios are listed as "[Port] Name"
-            portfolio_match = None
-            for i in range(self.benchmark_combo.count()):
-                item = self.benchmark_combo.itemText(i)
-                if item.lower() == text.lower():
-                    portfolio_match = item
-                    break
-
-            if portfolio_match:
-                text = portfolio_match  # Use exact portfolio name
-            else:
-                text = text.upper()  # Uppercase for ticker lookup
-
-        # Always update display to show uppercase
-        if text:
-            self.benchmark_combo.blockSignals(True)
-            self.benchmark_combo.lineEdit().blockSignals(True)
-            self.benchmark_combo.lineEdit().setText(text)
-            self.benchmark_combo.lineEdit().blockSignals(False)
-            self.benchmark_combo.blockSignals(False)
-
-        # Only emit signal if value actually changed
-        if text != self._last_benchmark_text:
-            self._last_benchmark_text = text
-            if text:
-                self.benchmark_changed.emit(text)
-            else:
-                # Clear to show placeholder
-                self.benchmark_combo.blockSignals(True)
-                self.benchmark_combo.lineEdit().clear()
-                self.benchmark_combo.setCurrentIndex(-1)
-                self.benchmark_combo.blockSignals(False)
-                self.benchmark_changed.emit("")
-
-    def _on_benchmark_selected(self, index: int):
-        """Handle benchmark selected from dropdown."""
-        if index >= 0:
-            text = self.benchmark_combo.currentText()
-            if text and text != self._last_benchmark_text:
-                self._last_benchmark_text = text
-                self.benchmark_changed.emit(text)
-
     def update_portfolio_list(self, portfolios: List[str], current: str = None):
         """
         Update portfolio dropdown.
@@ -238,17 +97,7 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
             portfolios: List of portfolio names
             current: Currently selected portfolio name (None to show placeholder)
         """
-        self.portfolio_combo.blockSignals(True)
-        self.portfolio_combo.clear()
-        for p in portfolios:
-            self.portfolio_combo.addItem(f"[Port] {p}")
-        if current and current in portfolios:
-            self.portfolio_combo.setCurrentText(f"[Port] {current}")
-            # Show name without prefix in the display
-            self.portfolio_combo.lineEdit().setText(current)
-        else:
-            self.portfolio_combo.setCurrentIndex(-1)
-        self.portfolio_combo.blockSignals(False)
+        self.portfolio_combo.set_portfolios(portfolios, current)
 
     def update_benchmark_list(self, portfolios: List[str]):
         """
@@ -257,22 +106,11 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         Args:
             portfolios: List of portfolio names
         """
-        current = self.benchmark_combo.currentText()
-        self.benchmark_combo.blockSignals(True)
-        self.benchmark_combo.clear()
-        # Add portfolios with prefix
-        for p in portfolios:
-            self.benchmark_combo.addItem(f"[Port] {p}")
-        # Restore previous selection if still valid, otherwise show placeholder
-        if current:
-            self.benchmark_combo.setCurrentText(current)
-        else:
-            self.benchmark_combo.setCurrentIndex(-1)  # Show placeholder
-        self.benchmark_combo.blockSignals(False)
+        self.benchmark_combo.set_portfolios(portfolios)
 
     def get_current_portfolio(self) -> str:
-        """Get currently selected portfolio name."""
-        return self.portfolio_combo.currentText() or ""
+        """Get currently selected portfolio name (with [Port] prefix if portfolio)."""
+        return self.portfolio_combo.get_value()
 
     def get_current_benchmark(self) -> str:
         """
@@ -281,14 +119,11 @@ class PerformanceMetricsControls(LazyThemeMixin, QWidget):
         Returns:
             Benchmark ticker/portfolio name, or empty string if none selected.
         """
-        return self.benchmark_combo.currentText() or ""
+        return self.benchmark_combo.get_value()
 
     def reset_benchmark(self):
         """Reset the benchmark dropdown to show placeholder."""
-        self.benchmark_combo.blockSignals(True)
-        self.benchmark_combo.setCurrentIndex(-1)  # Show placeholder
-        self.benchmark_combo.lineEdit().clear()
-        self.benchmark_combo.blockSignals(False)
+        self.benchmark_combo.reset()
 
     def _apply_theme(self):
         """Apply theme-specific styling."""

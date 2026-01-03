@@ -64,7 +64,7 @@ tracking_error = StatisticsService.get_tracking_error(portfolio, benchmark)
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from app.core.theme_manager import ThemeManager
 from app.services import StatisticsService
-from app.ui.modules.portfolio_construction.services import PortfolioService
+from app.ui.widgets.common import PortfolioTickerComboBox, BenchmarkComboBox
 
 class PortfolioRiskModule(QWidget):
     def __init__(self, theme_manager: ThemeManager, parent=None):
@@ -72,9 +72,30 @@ class PortfolioRiskModule(QWidget):
         self.theme_manager = theme_manager
         self._setup_ui()
 
-    def load_portfolio(self, portfolio_name: str = "Default"):
-        holdings = PortfolioService.get_current_holdings_snapshot(portfolio_name)
-        # Use StatisticsService for risk calculations
+    def _setup_ui(self):
+        # Use reusable dropdowns for portfolio/benchmark selection
+        self.portfolio_combo = PortfolioTickerComboBox()  # Editable (ticker + portfolio)
+        self.benchmark_combo = BenchmarkComboBox()        # With "None" handling
+        self.portfolio_combo.value_changed.connect(self._on_portfolio_changed)
+```
+
+---
+
+## Reusable Dropdown Components
+
+```python
+from app.ui.widgets.common import PortfolioTickerComboBox, BenchmarkComboBox, PortfolioComboBox
+
+# PortfolioTickerComboBox - Editable, allows typing tickers OR selecting portfolios
+combo.set_portfolios(["Portfolio A", "Portfolio B"], current="Portfolio A")
+combo.value_changed.connect(handler)  # Emits "[Port] Name" or "TICKER"
+combo.get_value()  # Full value with [Port] prefix
+combo.get_display_value()  # Display text without prefix
+
+# BenchmarkComboBox - Same as above but treats "NONE"/empty as clearing
+benchmark = BenchmarkComboBox(placeholder="SPY")  # Custom placeholder
+
+# PortfolioComboBox - Read-only dropdown (no typing, portfolio selection only)
 ```
 
 ---
@@ -83,6 +104,7 @@ class PortfolioRiskModule(QWidget):
 
 - [ ] Register in `config.py` under `MODULE_SECTIONS["Portfolio"]`
 - [ ] Add to `main.py` with factory function
+- [ ] Use `PortfolioTickerComboBox`/`BenchmarkComboBox` for dropdowns
 - [ ] Use `StatisticsService` for financial calculations
 - [ ] Use `ThemedDialog` for dialogs
 - [ ] Keep module-specific services in `modules/{name}/services/`

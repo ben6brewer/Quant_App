@@ -103,6 +103,7 @@ class HubWindow(QMainWindow):
         self.module_containers = {}  # module_id -> container widget
         self._module_factories = {}  # module_id -> factory function (for lazy loading)
         self._module_options = {}  # module_id -> options dict (has_own_home_button, etc.)
+        self._overlay_home_buttons = []  # Track overlay home buttons for theme updates
 
         # For window dragging
         self._drag_pos = QPoint()
@@ -377,6 +378,9 @@ class HubWindow(QMainWindow):
         # Apply solid styling based on current theme
         self._apply_overlay_home_btn_style(home_btn)
 
+        # Track this button for theme updates (immediate, not lazy)
+        self._overlay_home_buttons.append(home_btn)
+
         # Add button with alignment to position it top-left within the expanding layout
         layout.addWidget(home_btn, alignment=Qt.AlignTop | Qt.AlignLeft)
         layout.addStretch(1)
@@ -542,7 +546,24 @@ class HubWindow(QMainWindow):
 
     def _on_theme_changed(self, theme: str) -> None:
         """Handle theme change signal - defer to avoid blocking UI."""
+        # Update overlay home buttons immediately (not lazy loaded)
+        self._update_overlay_home_buttons()
         QTimer.singleShot(0, self._apply_theme)
+
+    def _update_overlay_home_buttons(self) -> None:
+        """Update all overlay home buttons with current theme styling."""
+        # Clean up any deleted buttons and update existing ones
+        valid_buttons = []
+        for btn in self._overlay_home_buttons:
+            try:
+                # Try to access the button - will raise RuntimeError if C++ object deleted
+                _ = btn.objectName()
+                self._apply_overlay_home_btn_style(btn)
+                valid_buttons.append(btn)
+            except RuntimeError:
+                # Button was deleted, skip it
+                pass
+        self._overlay_home_buttons = valid_buttons
 
     def _apply_theme(self) -> None:
         """Apply the current theme to the window."""

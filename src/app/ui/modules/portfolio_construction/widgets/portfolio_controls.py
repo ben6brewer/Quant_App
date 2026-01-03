@@ -1,30 +1,11 @@
 """Portfolio Controls Widget - Top Control Bar"""
 
 from typing import List
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton, QAbstractItemView, QListView
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QWheelEvent
-
-from app.ui.widgets.common.lazy_theme_mixin import LazyThemeMixin
-
-
-class SmoothScrollListView(QListView):
-    """QListView with smoother, slower scrolling for combo box dropdowns."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    def wheelEvent(self, event: QWheelEvent):
-        """Override wheel event to reduce scroll speed."""
-        delta = event.angleDelta().y()
-        pixels_to_scroll = int(delta / 4)
-        scrollbar = self.verticalScrollBar()
-        scrollbar.setValue(scrollbar.value() - pixels_to_scroll)
-        event.accept()
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QComboBox, QPushButton
+from PySide6.QtCore import Signal
 
 from app.core.theme_manager import ThemeManager
+from app.ui.widgets.common import LazyThemeMixin, SmoothScrollListView
 
 
 class PortfolioControls(LazyThemeMixin, QWidget):

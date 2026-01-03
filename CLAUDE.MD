@@ -213,6 +213,32 @@ class MyDialog(ThemedDialog):
         layout.addWidget(QLabel("Content"))
 ```
 
+### Portfolio/Benchmark Dropdowns (`common/portfolio_ticker_combo.py`)
+
+Reusable dropdowns for portfolio/ticker selection. Used by 5+ modules.
+
+```python
+from app.ui.widgets.common import PortfolioTickerComboBox, BenchmarkComboBox, PortfolioComboBox
+
+# Editable - allows typing tickers OR selecting portfolios
+self.portfolio_combo = PortfolioTickerComboBox()
+self.portfolio_combo.set_portfolios(["Portfolio A", "Portfolio B"], current="Portfolio A")
+self.portfolio_combo.value_changed.connect(self._on_portfolio_changed)  # Emits with [Port] prefix
+
+# Benchmark - same as above but treats "NONE"/empty as clearing
+self.benchmark_combo = BenchmarkComboBox()  # Default placeholder: "None"
+self.benchmark_combo = BenchmarkComboBox(placeholder="SPY")  # Custom placeholder
+
+# Read-only - dropdown only, no typing (for portfolio-only selection)
+self.portfolio_combo = PortfolioComboBox()
+```
+
+**Key Features**:
+- Portfolios stored internally with `[Port] ` prefix, displayed without
+- `value_changed` signal emits full value (with prefix for portfolios, UPPERCASE for tickers)
+- `SmoothScrollListView` for slow, smooth dropdown scrolling
+- Methods: `set_portfolios()`, `get_value()`, `get_display_value()`, `reset()`
+
 ### Other Common Widgets
 
 - **EditableTableBase**: Themed editable tables with cell highlighting
@@ -220,6 +246,7 @@ class MyDialog(ThemedDialog):
 - **ValidatedNumericLineEdit**: Numeric input with validation
 - **AutoSelectLineEdit**: Auto-select on focus, auto-capitalize
 - **NoScrollComboBox**: ComboBox ignoring wheel events
+- **SmoothScrollListView**: Slow-scroll list view for combo dropdowns
 - **CustomMessageBox**: Themed message dialogs
 - **LoadingOverlay**: Semi-transparent loading indicator
 - **LazyThemeMixin**: Defer theme application when widget hidden
@@ -398,6 +425,6 @@ sharpe = StatisticsService.get_sharpe_ratio(returns, risk_free_rate)
 
 **Key Services**: StatisticsService (25+ financial calcs), ThemeStylesheetService, BaseSettingsManager
 
-**Key Widgets**: ThemedDialog (dialogs), BaseChart (charts), EditableTableBase (tables)
+**Key Widgets**: ThemedDialog (dialogs), BaseChart (charts), EditableTableBase (tables), PortfolioTickerComboBox/BenchmarkComboBox (dropdowns)
 
 **Scalability**: Designed for 25+ modules with tile navigation and reusable components
