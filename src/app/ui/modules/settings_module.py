@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QGroupBox,
     QLabel,
+    QPushButton,
     QRadioButton,
     QScrollArea,
     QVBoxLayout,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 
 from app.core.theme_manager import ThemeManager
+from app.ui.widgets.common import CustomMessageBox
 
 
 class SettingsModule(QWidget):
@@ -51,8 +53,11 @@ class SettingsModule(QWidget):
         appearance_group = self._create_appearance_group()
         layout.addWidget(appearance_group)
 
+        # Memory Manager settings
+        memory_group = self._create_memory_group()
+        layout.addWidget(memory_group)
+
         # Future settings groups can go here
-        # layout.addWidget(self._create_data_group())
         # layout.addWidget(self._create_api_group())
 
         layout.addStretch(1)
@@ -92,6 +97,72 @@ class SettingsModule(QWidget):
 
         group.setLayout(layout)
         return group
+
+    def _create_memory_group(self) -> QGroupBox:
+        """Create memory manager settings group."""
+        group = QGroupBox("Memory Manager")
+
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+
+        # Description label
+        desc_label = QLabel(
+            "Clear cached market data stored on your local system. "
+            "This includes parquet files and backfill status tracking."
+        )
+        desc_label.setObjectName("descLabel")
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Clear cache button
+        self.clear_cache_btn = QPushButton("Clear Local Cache")
+        self.clear_cache_btn.setObjectName("clearCacheButton")
+        self.clear_cache_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_cache_btn.clicked.connect(self._on_clear_cache_clicked)
+        layout.addWidget(self.clear_cache_btn)
+
+        group.setLayout(layout)
+        return group
+
+    def _on_clear_cache_clicked(self) -> None:
+        """Handle clear cache button click."""
+        # Show confirmation dialog
+        result = CustomMessageBox.question(
+            self.theme_manager,
+            self,
+            "Clear Local Cache",
+            "This will permanently delete all cached market data from your system.\n\n"
+            "• All parquet files (~/.quant_terminal/cache/)\n"
+            "• Backfill status tracking\n"
+            "• In-memory cache\n\n"
+            "The next time you load data, it will be re-fetched from Yahoo Finance.\n\n"
+            "Are you sure you want to continue?",
+            CustomMessageBox.Ok | CustomMessageBox.Cancel,
+        )
+
+        if result == CustomMessageBox.Ok:
+            self._clear_cache()
+
+    def _clear_cache(self) -> None:
+        """Clear all cached market data."""
+        from app.services.market_data import clear_cache
+
+        try:
+            clear_cache()
+            CustomMessageBox.information(
+                self.theme_manager,
+                self,
+                "Cache Cleared",
+                "Local cache has been successfully cleared.\n\n"
+                "Market data will be re-fetched on next access.",
+            )
+        except Exception as e:
+            CustomMessageBox.critical(
+                self.theme_manager,
+                self,
+                "Error",
+                f"Failed to clear cache:\n\n{str(e)}",
+            )
 
     def _sync_theme_buttons(self) -> None:
         """Synchronize radio buttons with current theme."""
@@ -198,6 +269,32 @@ class SettingsModule(QWidget):
             QRadioButton::indicator:hover {
                 border-color: #00d4ff;
             }
+            QLabel#descLabel {
+                font-size: 13px;
+                color: #999999;
+                margin-left: 10px;
+                margin-right: 10px;
+            }
+            QPushButton#clearCacheButton {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 6px;
+                padding: 12px 24px;
+                font-size: 13px;
+                font-weight: bold;
+                margin-left: 10px;
+                margin-right: 10px;
+                max-width: 200px;
+            }
+            QPushButton#clearCacheButton:hover {
+                border-color: #ff6b6b;
+                background-color: #3d3d3d;
+            }
+            QPushButton#clearCacheButton:pressed {
+                background-color: #ff6b6b;
+                color: #ffffff;
+            }
         """
 
     def _get_light_stylesheet(self) -> str:
@@ -258,6 +355,32 @@ class SettingsModule(QWidget):
             QRadioButton::indicator:hover {
                 border-color: #0066cc;
             }
+            QLabel#descLabel {
+                font-size: 13px;
+                color: #666666;
+                margin-left: 10px;
+                margin-right: 10px;
+            }
+            QPushButton#clearCacheButton {
+                background-color: #f5f5f5;
+                color: #000000;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                padding: 12px 24px;
+                font-size: 13px;
+                font-weight: bold;
+                margin-left: 10px;
+                margin-right: 10px;
+                max-width: 200px;
+            }
+            QPushButton#clearCacheButton:hover {
+                border-color: #e53935;
+                background-color: #e8e8e8;
+            }
+            QPushButton#clearCacheButton:pressed {
+                background-color: #e53935;
+                color: #ffffff;
+            }
         """
 
     def _get_bloomberg_stylesheet(self) -> str:
@@ -317,5 +440,31 @@ class SettingsModule(QWidget):
             }
             QRadioButton::indicator:hover {
                 border-color: #FF8000;
+            }
+            QLabel#descLabel {
+                font-size: 13px;
+                color: #808080;
+                margin-left: 10px;
+                margin-right: 10px;
+            }
+            QPushButton#clearCacheButton {
+                background-color: #0d1420;
+                color: #e8e8e8;
+                border: 1px solid #1a2838;
+                border-radius: 6px;
+                padding: 12px 24px;
+                font-size: 13px;
+                font-weight: bold;
+                margin-left: 10px;
+                margin-right: 10px;
+                max-width: 200px;
+            }
+            QPushButton#clearCacheButton:hover {
+                border-color: #ff6b6b;
+                background-color: #1a2838;
+            }
+            QPushButton#clearCacheButton:pressed {
+                background-color: #ff6b6b;
+                color: #ffffff;
             }
         """
