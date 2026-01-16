@@ -55,6 +55,32 @@ class ISharesHoldingsService:
         "Utilities": "Utilities",
     }
 
+    # iShares ticker format -> Yahoo Finance format
+    # Only some share classes need hyphen conversion - many use concatenated format on Yahoo too
+    TICKER_MAP = {
+        # Berkshire Hathaway (Yahoo uses hyphen)
+        "BRKA": "BRK-A",
+        "BRKB": "BRK-B",
+        # Brown-Forman (Yahoo uses hyphen)
+        "BFA": "BF-A",
+        "BFB": "BF-B",
+        # Lennar (Yahoo uses hyphen)
+        "LENA": "LEN-A",
+        "LENB": "LEN-B",
+        # Greif (Yahoo uses hyphen)
+        "GEFA": "GEF-A",
+        "GEFB": "GEF-B",
+        # Moog (Yahoo uses hyphen)
+        "MOGA": "MOG-A",
+        "MOGB": "MOG-B",
+        # Clearway Energy (Yahoo uses hyphen)
+        "CWENA": "CWEN-A",
+        # Heico (Yahoo uses hyphen)
+        "HEIA": "HEI-A",
+        # Note: These tickers use concatenated format on Yahoo (NO hyphen needed):
+        # FOXA, NWSA, NWSB, FWONA, FWONK, LSXMA, LSXMB, LSXMK, DISCA, DISCB, DISCK
+    }
+
     # -------------------------------------------------------------------------
     # Cache methods
     # -------------------------------------------------------------------------
@@ -295,8 +321,11 @@ class ISharesHoldingsService:
         raw_sector = row.get("Sector", "").strip()
         sector = cls._normalize_sector(raw_sector)
 
+        # Normalize ticker (iShares format -> Yahoo format)
+        normalized_ticker = cls._normalize_ticker(ticker)
+
         return ETFHolding(
-            ticker=ticker.upper(),
+            ticker=normalized_ticker,
             name=row.get("Name", "").strip(),
             sector=sector,
             weight=weight,
@@ -317,6 +346,22 @@ class ISharesHoldingsService:
             Normalized sector name
         """
         return cls.SECTOR_MAP.get(ishares_sector, ishares_sector or "Not Classified")
+
+    @classmethod
+    def _normalize_ticker(cls, ishares_ticker: str) -> str:
+        """
+        Convert iShares ticker format to Yahoo Finance format.
+
+        iShares concatenates share class letters (BRKB), Yahoo uses hyphen (BRK-B).
+
+        Args:
+            ishares_ticker: Ticker from iShares CSV
+
+        Returns:
+            Yahoo-compatible ticker
+        """
+        ticker = ishares_ticker.upper().strip()
+        return cls.TICKER_MAP.get(ticker, ticker)
 
     @classmethod
     def get_available_etfs(cls) -> list[str]:

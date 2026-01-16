@@ -611,21 +611,41 @@ class ReturnsDataService:
             portfolio_name, start_date, end_date, include_cash
         )
         if weights.empty:
+            print(f"[DEBUG] get_time_varying_portfolio_returns: weights empty for '{portfolio_name}'")
             return pd.Series(dtype=float)
+
+        print(f"[DEBUG] Weights shape: {weights.shape}, date range: {weights.index.min()} to {weights.index.max()}")
 
         # Get daily returns for all tickers (excluding FREE CASH - it has 0% return)
         tickers = [t for t in weights.columns if t.upper() != "FREE CASH"]
 
         if not tickers:
             # Only cash in portfolio - return zeros
+            print(f"[DEBUG] Only cash in portfolio, returning zeros")
             return pd.Series(0.0, index=weights.index, name="portfolio_return")
 
         # Get daily returns
         returns = cls.get_daily_returns(portfolio_name, start_date, end_date)
+        print(f"[DEBUG] Returns shape: {returns.shape if not returns.empty else 'empty'}")
+
+        # Normalize both indices to date-only (remove time component and timezone)
+        # This fixes mismatches like 2026-01-15 00:00:00 vs 2026-01-15 05:00:00
+        weights_idx = pd.to_datetime(weights.index).normalize()
+        returns_idx = pd.to_datetime(returns.index).normalize()
+        # Remove timezone if present
+        if weights_idx.tz is not None:
+            weights_idx = weights_idx.tz_localize(None)
+        if returns_idx.tz is not None:
+            returns_idx = returns_idx.tz_localize(None)
+        weights.index = weights_idx
+        returns.index = returns_idx
 
         # Ensure same index
         common_dates = weights.index.intersection(returns.index)
         if common_dates.empty:
+            print(f"[DEBUG] No common dates between weights and returns!")
+            if not returns.empty:
+                print(f"[DEBUG] Returns date range: {returns.index.min()} to {returns.index.max()}")
             return pd.Series(dtype=float)
 
         weights = weights.loc[common_dates]

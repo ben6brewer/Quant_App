@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -710,31 +711,42 @@ def fetch_price_history_batch_polygon_first(
 
     results: Dict[str, pd.DataFrame] = {}
 
-    # Phase 1: Check cache for all tickers
+    # Phase 1: Check cache for all tickers (optimized with parallel reads)
     cached_tickers: List[str] = []
     need_fetch: List[str] = []
+    need_disk_check: List[str] = []
 
     print(f"[Cache] Checking {total} tickers...")
 
+    # First pass: check memory cache (fast)
     for ticker in tickers:
-        # Check memory cache first
         df = _get_from_memory_cache(ticker)
-        if df is not None and not df.empty and _cache.is_cache_current(ticker):
+        if df is not None and not df.empty and _cache.is_cache_current(ticker, df):
             results[ticker] = df
             cached_tickers.append(ticker)
-            continue
+        elif _cache.has_cache(ticker):
+            need_disk_check.append(ticker)
+        else:
+            need_fetch.append(ticker)
 
-        # Check disk cache
-        if _cache.has_cache(ticker) and _cache.is_cache_current(ticker):
+    # Second pass: parallel disk cache reads
+    if need_disk_check:
+        def _check_disk_cache(ticker: str):
             df = _cache.get_cached_data(ticker)
-            if df is not None and not df.empty:
+            if df is not None and not df.empty and _cache.is_cache_current(ticker, df):
+                return ticker, df, True  # cached and current
+            return ticker, df, False  # needs fetch (even if df exists but stale)
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            disk_results = list(executor.map(_check_disk_cache, need_disk_check))
+
+        for ticker, df, is_current in disk_results:
+            if is_current and df is not None:
                 _set_memory_cache(ticker, df)
                 results[ticker] = df
                 cached_tickers.append(ticker)
-                continue
-
-        # Need to fetch
-        need_fetch.append(ticker)
+            else:
+                need_fetch.append(ticker)
 
     print(f"[Cache] {len(cached_tickers)} current, {len(need_fetch)} need fetch")
 
@@ -747,14 +759,21 @@ def fetch_price_history_batch_polygon_first(
         need_fetch, max_workers=max_workers
     )
 
-    # Process successful Polygon results
-    for ticker, df in polygon_results.items():
+    # Process successful Polygon results (parallel cache writes)
+    def _save_polygon_ticker(item):
+        ticker, df = item
         if df is not None and not df.empty:
             df.index = pd.to_datetime(df.index)
             df.sort_index(inplace=True)
-
-            # Save to caches
             _cache.save_to_cache(ticker, df)
+            return ticker, df
+        return ticker, None
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        saved_items = list(executor.map(_save_polygon_ticker, polygon_results.items()))
+
+    for ticker, df in saved_items:
+        if df is not None:
             _set_memory_cache(ticker, df)
             results[ticker] = df
 
@@ -769,16 +788,22 @@ def fetch_price_history_batch_polygon_first(
             failed_tickers, yahoo_progress
         )
 
-        for ticker, df in yahoo_results.items():
+        # Parallel cache writes for Yahoo results
+        def _save_yahoo_ticker(item):
+            ticker, df = item
             if df is not None and not df.empty:
                 df.index = pd.to_datetime(df.index)
                 df.sort_index(inplace=True)
-
-                # Mark as yahoo_backfilled
                 BackfillTracker.mark_yahoo_backfilled(ticker)
-
-                # Save to caches
                 _cache.save_to_cache(ticker, df)
+                return ticker, df
+            return ticker, None
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            yahoo_saved = list(executor.map(_save_yahoo_ticker, yahoo_results.items()))
+
+        for ticker, df in yahoo_saved:
+            if df is not None:
                 _set_memory_cache(ticker, df)
                 results[ticker] = df
 

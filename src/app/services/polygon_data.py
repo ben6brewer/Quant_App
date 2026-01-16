@@ -21,6 +21,7 @@ from app.core.config import (
     POLYGON_BASE_URL,
     POLYGON_BATCH_CONCURRENCY,
     POLYGON_RATE_LIMIT_CALLS,
+    POLYGON_RATE_LIMIT_ENABLED,
     POLYGON_RATE_LIMIT_PERIOD,
     POLYGON_TIMESPAN_MAP,
 )
@@ -42,6 +43,38 @@ class PolygonDataService:
     """
 
     _api_key: Optional[str] = None
+    _session: Optional["requests.Session"] = None
+    _session_lock = threading.Lock()
+
+    @classmethod
+    def _get_session(cls) -> "requests.Session":
+        """Get or create a shared requests Session for connection pooling."""
+        if cls._session is None:
+            with cls._session_lock:
+                if cls._session is None:
+                    import requests
+                    from requests.adapters import HTTPAdapter
+                    from urllib3.util.retry import Retry
+
+                    session = requests.Session()
+
+                    # Configure connection pooling (100 connections matches worker count)
+                    retry_strategy = Retry(
+                        total=3,
+                        backoff_factor=0.5,
+                        status_forcelist=[429, 500, 502, 503, 504],
+                    )
+                    adapter = HTTPAdapter(
+                        pool_connections=100,
+                        pool_maxsize=100,
+                        max_retries=retry_strategy,
+                    )
+                    session.mount("https://", adapter)
+                    session.mount("http://", adapter)
+
+                    cls._session = session
+
+        return cls._session
 
     @classmethod
     def _load_api_key(cls) -> Optional[str]:
@@ -67,6 +100,7 @@ class PolygonDataService:
         Conversions:
         - BTC-USD -> X:BTCUSD (crypto)
         - ETH-USD -> X:ETHUSD (crypto)
+        - BRK-B -> BRK.B (share classes: hyphen to dot)
         - AAPL -> AAPL (stocks unchanged)
         - ^IRX -> I:IRX (indices)
         - ^SPX -> I:SPX (indices)
@@ -82,12 +116,20 @@ class PolygonDataService:
         if ticker.startswith("^"):
             return f"I:{ticker[1:]}"
 
+        # Share classes: BRK-B -> BRK.B (Yahoo uses hyphen, Polygon uses dot)
+        if "-" in ticker:
+            return ticker.replace("-", ".")
+
         # Stocks: unchanged
         return ticker
 
     @classmethod
     def _wait_for_rate_limit(cls) -> None:
-        """Implement rate limiting for Polygon API."""
+        """Implement rate limiting for Polygon API (only if enabled)."""
+        # Skip rate limiting for unlimited tier
+        if not POLYGON_RATE_LIMIT_ENABLED:
+            return
+
         global _request_timestamps
 
         with _rate_limit_lock:
@@ -166,7 +208,7 @@ class PolygonDataService:
             RuntimeError: If API request fails after retries
         """
         import pandas as pd
-        import requests
+        import requests  # For exception types
 
         # Get API key
         api_key = cls._load_api_key()
@@ -214,10 +256,11 @@ class PolygonDataService:
         # Make request with retry logic
         max_retries = 3
         last_error = None
+        session = cls._get_session()
         for attempt in range(max_retries):
             try:
                 print(f"Fetching {ticker} from Polygon.io (attempt {attempt + 1})...")
-                response = requests.get(url, params=params, timeout=30)
+                response = session.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
 
@@ -297,7 +340,7 @@ class PolygonDataService:
             RuntimeError: If API request fails after retries
         """
         import pandas as pd
-        import requests
+        import requests  # For exception types
 
         # Get API key
         api_key = cls._load_api_key()
@@ -333,10 +376,11 @@ class PolygonDataService:
 
         # Make request with retry logic
         max_retries = 3
+        session = cls._get_session()
         for attempt in range(max_retries):
             try:
                 print(f"Fetching {ticker} ({from_date} to {to_date}) from Polygon.io...")
-                response = requests.get(url, params=params, timeout=30)
+                response = session.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
 
@@ -402,8 +446,8 @@ class PolygonDataService:
         """
         Fetch incremental updates for multiple tickers in parallel.
 
-        Uses ThreadPoolExecutor for parallel fetching since user has unlimited
-        Polygon tier (no rate limiting needed).
+        Uses high concurrency (100 workers) for fast batch fetching.
+        Rate limiting only applies if POLYGON_RATE_LIMIT_ENABLED=True.
 
         Args:
             tickers: List of ticker symbols
@@ -435,9 +479,8 @@ class PolygonDataService:
                 print(f"  {ticker}: FAILED ({e})")
                 return ticker, None
 
-        # Parallel fetch with ThreadPoolExecutor
-        # Using max_workers=10 for reasonable parallelism without overwhelming
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        # Parallel fetch with ThreadPoolExecutor (100 workers for unlimited tier)
+        with ThreadPoolExecutor(max_workers=POLYGON_BATCH_CONCURRENCY) as executor:
             futures = {executor.submit(fetch_one, t): t for t in tickers}
             completed_count = 0
 
@@ -467,14 +510,14 @@ class PolygonDataService:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> tuple[dict[str, "pd.DataFrame"], list[str]]:
         """
-        Fetch full 5-year history for multiple tickers with high concurrency.
+        Fetch full 5-year history for multiple tickers with async I/O.
 
-        Designed for Polygon Unlimited tier with ~100 concurrent requests.
-        Does NOT apply rate limiting - use only if you have unlimited API calls.
+        Uses aiohttp for true async HTTP requests with connection pooling.
+        Designed for maximum throughput with Polygon API.
 
         Args:
             tickers: List of ticker symbols (Yahoo format)
-            max_workers: Number of concurrent workers (default from config)
+            max_workers: Number of concurrent requests (default from config)
             progress_callback: Optional callback(completed, total, current_ticker)
 
         Returns:
@@ -482,8 +525,7 @@ class PolygonDataService:
             - Dict mapping ticker -> DataFrame with OHLCV data
             - List of failed tickers (for Yahoo fallback)
         """
-        import pandas as pd
-        import requests
+        import asyncio
 
         if not tickers:
             return {}, []
@@ -494,8 +536,28 @@ class PolygonDataService:
             print("[Polygon Batch] ERROR: API key not configured")
             return {}, list(tickers)
 
+        # Run the async fetch
+        return asyncio.run(
+            cls._fetch_batch_full_history_async(
+                tickers, api_key, max_workers, progress_callback
+            )
+        )
+
+    @classmethod
+    async def _fetch_batch_full_history_async(
+        cls,
+        tickers: list[str],
+        api_key: str,
+        max_concurrent: int,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> tuple[dict[str, "pd.DataFrame"], list[str]]:
+        """Async implementation of batch fetch using aiohttp."""
+        import asyncio
+        import aiohttp
+        import pandas as pd
+
         total = len(tickers)
-        print(f"[Polygon Batch] Starting fetch for {total} tickers ({max_workers} workers)...")
+        print(f"[Polygon Batch] Starting async fetch for {total} tickers ({max_concurrent} concurrent)...")
 
         # Calculate date range for 5-year history
         from_date, to_date = cls._calculate_date_range("max")
@@ -503,10 +565,15 @@ class PolygonDataService:
         results: dict[str, pd.DataFrame] = {}
         failed: list[str] = []
         completed_count = 0
-        lock = threading.Lock()
 
-        def fetch_one(ticker: str) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
-            """Fetch a single ticker's full history without rate limiting."""
+        # Semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def fetch_one(
+            session: aiohttp.ClientSession,
+            ticker: str,
+        ) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
+            """Fetch a single ticker's full history."""
             nonlocal completed_count
 
             polygon_ticker = cls._convert_ticker(ticker)
@@ -523,78 +590,103 @@ class PolygonDataService:
             params = {
                 "adjusted": "true",
                 "sort": "asc",
-                "limit": 50000,
+                "limit": "50000",
                 "apiKey": api_key,
             }
 
-            # Make request with retry logic (no rate limiting)
+            # Make request with retry logic
             max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    response = requests.get(url, params=params, timeout=30)
-                    response.raise_for_status()
-                    data = response.json()
+            async with semaphore:
+                for attempt in range(max_retries):
+                    try:
+                        async with session.get(
+                            url, params=params, timeout=aiohttp.ClientTimeout(total=30)
+                        ) as response:
+                            if response.status != 200:
+                                if attempt == max_retries - 1:
+                                    return ticker, None, f"HTTP {response.status}"
+                                await asyncio.sleep(2**attempt)
+                                continue
 
-                    if data.get("status") == "ERROR":
-                        return ticker, None, data.get("error", "API error")
+                            data = await response.json()
 
-                    results_data = data.get("results", [])
-                    if not results_data:
-                        return ticker, None, "no data"
+                            if data.get("status") == "ERROR":
+                                return ticker, None, data.get("error", "API error")
 
-                    # Convert to DataFrame
-                    df = pd.DataFrame(results_data)
-                    column_map = {
-                        "o": "Open",
-                        "h": "High",
-                        "l": "Low",
-                        "c": "Close",
-                        "v": "Volume",
-                        "t": "timestamp",
-                    }
-                    df = df.rename(columns=column_map)
-                    df["Date"] = pd.to_datetime(df["timestamp"], unit="ms")
-                    df.set_index("Date", inplace=True)
+                            results_data = data.get("results", [])
+                            if not results_data:
+                                return ticker, None, "no data"
 
-                    cols_to_drop = ["timestamp", "vw", "n", "otc"]
-                    df.drop(columns=[c for c in cols_to_drop if c in df.columns], inplace=True)
+                            # Convert to DataFrame
+                            df = pd.DataFrame(results_data)
+                            column_map = {
+                                "o": "Open",
+                                "h": "High",
+                                "l": "Low",
+                                "c": "Close",
+                                "v": "Volume",
+                                "t": "timestamp",
+                            }
+                            df = df.rename(columns=column_map)
+                            df["Date"] = pd.to_datetime(df["timestamp"], unit="ms")
+                            df.set_index("Date", inplace=True)
 
-                    standard_cols = ["Open", "High", "Low", "Close", "Volume"]
-                    df = df[[c for c in standard_cols if c in df.columns]]
-                    df.sort_index(inplace=True)
+                            cols_to_drop = ["timestamp", "vw", "n", "otc"]
+                            df.drop(
+                                columns=[c for c in cols_to_drop if c in df.columns],
+                                inplace=True,
+                            )
 
-                    return ticker, df, None
+                            standard_cols = ["Open", "High", "Low", "Close", "Volume"]
+                            df = df[[c for c in standard_cols if c in df.columns]]
+                            df.sort_index(inplace=True)
 
-                except requests.RequestException as e:
-                    if attempt == max_retries - 1:
-                        return ticker, None, str(e)
-                    time.sleep(2**attempt)
+                            return ticker, df, None
+
+                    except asyncio.TimeoutError:
+                        if attempt == max_retries - 1:
+                            return ticker, None, "timeout"
+                        await asyncio.sleep(2**attempt)
+                    except aiohttp.ClientError as e:
+                        if attempt == max_retries - 1:
+                            return ticker, None, str(e)
+                        await asyncio.sleep(2**attempt)
 
             return ticker, None, "max retries exceeded"
 
-        # Parallel fetch with high concurrency
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(fetch_one, t): t for t in tickers}
+        # Create aiohttp session with connection pooling
+        connector = aiohttp.TCPConnector(
+            limit=max_concurrent,  # Connection pool size
+            limit_per_host=max_concurrent,  # Per-host limit
+            ttl_dns_cache=300,  # DNS cache TTL
+            enable_cleanup_closed=True,
+        )
 
-            for future in as_completed(futures):
-                ticker, df, error = future.result()
+        async with aiohttp.ClientSession(connector=connector) as session:
+            # Create all fetch tasks
+            tasks = [fetch_one(session, ticker) for ticker in tickers]
 
-                with lock:
-                    completed_count += 1
+            # Process results as they complete
+            for coro in asyncio.as_completed(tasks):
+                ticker, df, error = await coro
+                completed_count += 1
 
-                    if df is not None and not df.empty:
-                        results[ticker] = df
-                        # Progress logging every 50 tickers or at milestones
-                        if completed_count % 50 == 0 or completed_count == total:
-                            pct = (completed_count / total) * 100
-                            print(f"[Polygon Batch] Progress: {completed_count}/{total} ({pct:.1f}%) - {ticker}: {len(df)} bars")
-                    else:
-                        failed.append(ticker)
-                        if error and error != "no data":
-                            print(f"  {ticker}: FAILED ({error})")
+                if df is not None and not df.empty:
+                    results[ticker] = df
+                    # Progress logging every 50 tickers or at milestones
+                    if completed_count % 50 == 0 or completed_count == total:
+                        pct = (completed_count / total) * 100
+                        print(
+                            f"[Polygon Batch] Progress: {completed_count}/{total} "
+                            f"({pct:.1f}%) - {ticker}: {len(df)} bars"
+                        )
+                else:
+                    failed.append(ticker)
+                    if error and error != "no data":
+                        print(f"  {ticker}: FAILED ({error})")
 
-                    if progress_callback:
-                        progress_callback(completed_count, total, ticker)
+                if progress_callback:
+                    progress_callback(completed_count, total, ticker)
 
         succeeded = len(results)
         failed_count = len(failed)
@@ -617,7 +709,6 @@ class PolygonDataService:
             DataFrame with single row containing today's partial OHLCV, or None if unavailable
         """
         import pandas as pd
-        import requests
         from datetime import datetime
 
         # Get API key
@@ -640,7 +731,7 @@ class PolygonDataService:
         params = {"apiKey": api_key}
 
         try:
-            response = requests.get(url, params=params, timeout=15)
+            response = cls._get_session().get(url, params=params, timeout=15)
             if response.status_code != 200:
                 return None
 
