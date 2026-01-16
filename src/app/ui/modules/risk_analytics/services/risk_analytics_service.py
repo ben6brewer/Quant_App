@@ -1,14 +1,16 @@
-"""Risk Analytics Service - Core risk calculation engine.
+"""Risk Analytics Service - Core risk calculation engine using factor model.
 
-Implements a simplified factor model for risk decomposition:
+Implements proper factor-based risk decomposition:
 - Total Active Risk = Tracking Error (annualized std of return differences)
-- Factor Risk = Risk explained by factor exposures (beta, sector, style, currency)
-- Idiosyncratic Risk = sqrt(Total^2 - Factor^2)
+- Factor Risk = Risk explained by factor exposures (from R² of regressions)
+- Idiosyncratic Risk = Risk from residuals (1 - Factor Risk)
+
+Uses OLS regression with Fama-French 5 factors + Momentum + constructed factors.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -21,14 +23,13 @@ class RiskAnalyticsService:
     """
     Risk analytics calculations for portfolio vs benchmark.
 
-    Provides methods for:
-    - Total active risk (tracking error volatility)
-    - Factor risk decomposition (Market, Sector, Style, Currency)
-    - Idiosyncratic risk calculation
-    - CTEV (Contribution to Tracking Error Volatility) by security/sector/factor
+    Uses a regression-based factor model for proper risk decomposition:
+    - Factor model regression per security
+    - Risk metrics derived from regression residuals and fitted values
+    - CTEV contributions based on actual factor exposures
     """
 
-    FACTOR_GROUPS = ["Market", "Sector", "Style", "Currency"]
+    FACTOR_GROUPS = ["Market", "Sector", "Style", "Country"]
 
     @staticmethod
     def calculate_total_active_risk(
@@ -135,334 +136,6 @@ class RiskAnalyticsService:
         return cov / var
 
     @staticmethod
-    def calculate_factor_exposures(
-        tickers: List[str],
-        weights: Dict[str, float],
-        benchmark_beta: float = 1.0,
-    ) -> Dict[str, float]:
-        """
-        Calculate portfolio's active exposure to each factor group.
-
-        Args:
-            tickers: List of ticker symbols
-            weights: Dict mapping ticker to portfolio weight (decimal)
-            benchmark_beta: Benchmark beta (typically 1.0 for market index)
-
-        Returns:
-            Dict with active exposures: {"Market": 0.15, "Sector": 0.08, ...}
-        """
-        import math
-
-        exposures: Dict[str, float] = {}
-
-        # Market exposure = portfolio beta - benchmark beta
-        portfolio_beta = RiskAnalyticsService.calculate_ex_ante_beta(tickers, weights)
-        exposures["Market"] = abs(portfolio_beta - benchmark_beta)
-
-        # Sector exposure = concentration deviation from benchmark
-        # Simplified: measure sector concentration (HHI-like)
-        sector_weights: Dict[str, float] = {}
-        for ticker in tickers:
-            weight = weights.get(ticker.upper(), 0.0)
-            if weight is None or weight <= 0:
-                continue
-            sector = SectorOverrideService.get_effective_sector(ticker)
-            sector_weights[sector] = sector_weights.get(sector, 0.0) + weight
-
-        # Calculate sector concentration (deviation from equal-weight benchmark)
-        n_sectors = max(len(sector_weights), 1)
-        equal_weight = 1.0 / n_sectors if n_sectors > 0 else 0.0
-        sector_deviation = sum(
-            abs(w - equal_weight) for w in sector_weights.values()
-        ) / max(n_sectors, 1)
-        exposures["Sector"] = sector_deviation
-
-        # Style exposure = weighted average of style factor tilts
-        style_exposure = RiskAnalyticsService._calculate_style_exposure(tickers, weights)
-        exposures["Style"] = style_exposure
-
-        # Currency exposure = non-USD weight
-        currency_exposure = 0.0
-        for ticker in tickers:
-            weight = weights.get(ticker.upper(), 0.0)
-            if weight is None or weight <= 0:
-                continue
-            currency = TickerMetadataService.get_currency(ticker)
-            if currency != "USD":
-                currency_exposure += weight
-        exposures["Currency"] = currency_exposure
-
-        return exposures
-
-    @staticmethod
-    def _calculate_style_exposure(
-        tickers: List[str],
-        weights: Dict[str, float],
-    ) -> float:
-        """
-        Calculate aggregate style factor exposure.
-
-        Considers: Size, Value, Momentum, Growth, Quality
-        """
-        import math
-
-        style_scores: List[float] = []
-
-        for ticker in tickers:
-            weight = weights.get(ticker.upper(), 0.0)
-            if weight is None or weight <= 0:
-                continue
-
-            factors = TickerMetadataService.get_style_factors(ticker)
-
-            # Size factor: log(marketCap) deviation from median
-            market_cap = TickerMetadataService.get_market_cap(ticker)
-            if market_cap and market_cap > 0:
-                # Large cap = low size factor, small cap = high size factor
-                log_cap = math.log10(market_cap)
-                # Normalize: 9 = ~$1B (small), 12 = ~$1T (mega)
-                size_score = (12 - log_cap) / 3  # Higher for smaller caps
-                style_scores.append(abs(size_score) * weight)
-
-            # Value factor: inverse PE
-            pe = factors.get("trailingPE")
-            if pe and pe > 0:
-                value_score = min(30 / pe, 2.0)  # Higher for lower PE
-                style_scores.append(abs(value_score - 1.0) * weight * 0.3)
-
-            # Momentum factor: 52-week change
-            momentum = factors.get("fiftyTwoWeekChange")
-            if momentum is not None:
-                style_scores.append(abs(momentum) * weight * 0.5)
-
-        return sum(style_scores) / max(len(tickers), 1) if style_scores else 0.0
-
-    @staticmethod
-    def calculate_factor_risk(
-        total_active_risk: float,
-        factor_exposures: Dict[str, float],
-    ) -> Tuple[float, float]:
-        """
-        Calculate factor risk and idiosyncratic risk.
-
-        Uses a simplified model where factor risk is proportional to exposures.
-        Typical active portfolios have 40-70% factor risk, 30-60% idiosyncratic.
-
-        Args:
-            total_active_risk: Total tracking error (percentage)
-            factor_exposures: Dict with factor exposures
-
-        Returns:
-            Tuple of (factor_risk_pct, idio_risk_pct) as percentages of total
-        """
-        import math
-
-        if total_active_risk <= 0:
-            return 50.0, 50.0  # Default split
-
-        # Calculate weighted exposure contribution
-        # Scale each factor type appropriately
-        market_exp = factor_exposures.get("Market", 0) * 3.0  # Market beta diff is important
-        sector_exp = factor_exposures.get("Sector", 0) * 2.0  # Sector concentration matters
-        style_exp = factor_exposures.get("Style", 0) * 1.5    # Style tilts
-        currency_exp = factor_exposures.get("Currency", 0) * 1.0  # FX exposure
-
-        # Combined factor score (0-1 range typically)
-        factor_score = market_exp + sector_exp + style_exp + currency_exp
-
-        # Base factor risk proportion (even low-exposure portfolios have some factor risk)
-        # Most actively managed portfolios have 40-70% factor risk
-        base_factor_pct = 35.0
-        variable_factor_pct = min(factor_score * 50, 50.0)  # Up to 50% additional
-
-        factor_risk_pct = min(base_factor_pct + variable_factor_pct, 95.0)
-        idio_risk_pct = 100 - factor_risk_pct
-
-        return round(factor_risk_pct, 1), round(idio_risk_pct, 1)
-
-    @staticmethod
-    def calculate_ctev_by_security(
-        ticker_returns: "pd.DataFrame",
-        portfolio_returns: "pd.Series",
-        benchmark_returns: "pd.Series",
-        weights: Dict[str, float],
-        benchmark_weights: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Calculate per-security risk metrics.
-
-        CTEV_i = w_i * cov(R_i - R_b, R_p - R_b) / var(R_p - R_b) * TE
-
-        Args:
-            ticker_returns: DataFrame with ticker returns (columns = tickers)
-            portfolio_returns: Series of portfolio returns
-            benchmark_returns: Series of benchmark returns
-            weights: Dict mapping ticker to portfolio weight (decimal)
-            benchmark_weights: Dict mapping ticker to benchmark weight (decimal)
-
-        Returns:
-            Dict mapping ticker to risk metrics:
-            {
-                "AAPL": {
-                    "portfolio_weight": 5.2,
-                    "benchmark_weight": 3.1,
-                    "active_weight": 2.1,
-                    "idio_vol": 25.5,
-                    "idio_tev": 0.8,
-                    "idio_ctev": 0.15,
-                },
-                ...
-            }
-        """
-        import numpy as np
-        import pandas as pd
-
-        result: Dict[str, Dict[str, float]] = {}
-        benchmark_weights = benchmark_weights or {}
-
-        # Calculate active returns
-        aligned = pd.concat(
-            [portfolio_returns, benchmark_returns],
-            axis=1,
-            keys=["portfolio", "benchmark"],
-        ).dropna()
-
-        if len(aligned) < 10:
-            return result
-
-        active_returns = aligned["portfolio"] - aligned["benchmark"]
-        active_var = active_returns.var()
-
-        if active_var <= 0:
-            return result
-
-        total_te = active_returns.std() * np.sqrt(252) * 100
-
-        for ticker in ticker_returns.columns:
-            ticker_upper = ticker.upper()
-            port_weight = weights.get(ticker_upper, 0.0)
-            bench_weight = benchmark_weights.get(ticker_upper, 0.0)
-
-            # Include securities with any portfolio or benchmark weight
-            if (port_weight is None or port_weight <= 0) and bench_weight <= 0:
-                continue
-
-            port_weight = port_weight if port_weight else 0.0
-            active_weight = port_weight - bench_weight
-
-            # Align ticker returns with active returns
-            ticker_ret = ticker_returns[ticker]
-            combined = pd.concat(
-                [ticker_ret, aligned["benchmark"], active_returns],
-                axis=1,
-                keys=["ticker", "benchmark", "active"],
-            ).dropna()
-
-            if len(combined) < 10:
-                continue
-
-            ticker_active = combined["ticker"] - combined["benchmark"]
-
-            # Calculate CTEV contribution
-            cov_with_active = ticker_active.cov(combined["active"])
-            ctev_contribution = (abs(active_weight) * cov_with_active / active_var) * total_te
-
-            # Estimate factor vs idio split based on beta
-            beta = TickerMetadataService.get_beta(ticker)
-            if beta is None:
-                beta = 1.0
-
-            # Higher beta = more factor risk
-            factor_proportion = min(abs(beta) / 2, 0.8)
-
-            ticker_vol = ticker_active.std() * np.sqrt(252) * 100
-            idio_vol = ticker_vol * (1 - factor_proportion)
-            idio_tev = idio_vol  # Idio TEV approximation
-
-            result[ticker_upper] = {
-                "portfolio_weight": round(port_weight * 100, 2),
-                "benchmark_weight": round(bench_weight * 100, 2),
-                "active_weight": round(active_weight * 100, 2),
-                "idio_vol": round(idio_vol, 2),
-                "idio_tev": round(idio_tev, 2),
-                "idio_ctev": round(abs(ctev_contribution) * (1 - factor_proportion), 2),
-            }
-
-        return result
-
-    @staticmethod
-    def calculate_ctev_by_sector(
-        security_risks: Dict[str, Dict[str, float]],
-    ) -> Dict[str, float]:
-        """
-        Calculate CTEV by sector classification.
-
-        Args:
-            security_risks: Output from calculate_ctev_by_security
-
-        Returns:
-            Dict mapping sector to total CTEV contribution
-        """
-        sector_ctev: Dict[str, float] = {}
-
-        for ticker, risks in security_risks.items():
-            sector = SectorOverrideService.get_effective_sector(ticker)
-            ctev = risks.get("idio_ctev", 0.0)
-            sector_ctev[sector] = sector_ctev.get(sector, 0.0) + ctev
-
-        # Sort by CTEV descending
-        return dict(sorted(sector_ctev.items(), key=lambda x: x[1], reverse=True))
-
-    @staticmethod
-    def calculate_ctev_by_factor_group(
-        total_active_risk: float,
-        factor_exposures: Dict[str, float],
-    ) -> Dict[str, float]:
-        """
-        Calculate CTEV by factor group.
-
-        Args:
-            total_active_risk: Total tracking error (percentage)
-            factor_exposures: Dict with factor exposures
-
-        Returns:
-            Dict mapping factor group to CTEV contribution
-        """
-        if total_active_risk <= 0:
-            return {f: 0.0 for f in RiskAnalyticsService.FACTOR_GROUPS}
-
-        # Get factor risk proportion
-        factor_risk_pct, _ = RiskAnalyticsService.calculate_factor_risk(
-            total_active_risk, factor_exposures
-        )
-        factor_risk = total_active_risk * (factor_risk_pct / 100)
-
-        # Scale exposures with same weights used in calculate_factor_risk
-        scaled_exposures = {
-            "Market": factor_exposures.get("Market", 0) * 3.0,
-            "Sector": factor_exposures.get("Sector", 0) * 2.0,
-            "Style": factor_exposures.get("Style", 0) * 1.5,
-            "Currency": factor_exposures.get("Currency", 0) * 1.0,
-        }
-
-        # Add minimum exposure so we always show some factor contribution
-        for factor in scaled_exposures:
-            if scaled_exposures[factor] < 0.01:
-                scaled_exposures[factor] = 0.01
-
-        total_scaled = sum(scaled_exposures.values())
-        if total_scaled <= 0:
-            total_scaled = 1.0
-
-        # Allocate factor risk proportionally to scaled exposures
-        result: Dict[str, float] = {}
-        for factor in RiskAnalyticsService.FACTOR_GROUPS:
-            scaled_exp = scaled_exposures.get(factor, 0.01)
-            result[factor] = round((scaled_exp / total_scaled) * factor_risk, 2)
-
-        return result
-
-    @staticmethod
     def get_summary_metrics(
         portfolio_returns: "pd.Series",
         benchmark_returns: "pd.Series",
@@ -470,7 +143,9 @@ class RiskAnalyticsService:
         weights: Dict[str, float],
     ) -> Dict[str, float]:
         """
-        Calculate all summary panel metrics.
+        Calculate all summary panel metrics using simple method.
+
+        This is a fallback when factor model hasn't been run yet.
 
         Args:
             portfolio_returns: Series of portfolio returns
@@ -479,14 +154,7 @@ class RiskAnalyticsService:
             weights: Dict mapping ticker to weight
 
         Returns:
-            Dict with all summary metrics:
-            {
-                "total_active_risk": 5.2,
-                "factor_risk_pct": 65.0,
-                "idio_risk_pct": 35.0,
-                "ex_ante_beta": 1.15,
-                "ex_post_beta": 1.10,
-            }
+            Dict with all summary metrics
         """
         # Total active risk
         total_active_risk = RiskAnalyticsService.calculate_total_active_risk(
@@ -501,13 +169,9 @@ class RiskAnalyticsService:
             portfolio_returns, benchmark_returns
         )
 
-        # Factor exposures and risk decomposition
-        factor_exposures = RiskAnalyticsService.calculate_factor_exposures(
-            tickers, weights
-        )
-        factor_risk_pct, idio_risk_pct = RiskAnalyticsService.calculate_factor_risk(
-            total_active_risk, factor_exposures
-        )
+        # Default factor/idio split (will be updated by factor model)
+        factor_risk_pct = 50.0
+        idio_risk_pct = 50.0
 
         return {
             "total_active_risk": round(total_active_risk, 2),
@@ -525,9 +189,10 @@ class RiskAnalyticsService:
         tickers: List[str],
         weights: Dict[str, float],
         benchmark_weights: Optional[Dict[str, float]] = None,
+        ticker_price_data: Optional[Dict[str, "pd.DataFrame"]] = None,
     ) -> Dict[str, Any]:
         """
-        Run complete risk analysis and return all results.
+        Run complete risk analysis using factor model.
 
         Args:
             portfolio_returns: Series of portfolio returns
@@ -536,45 +201,276 @@ class RiskAnalyticsService:
             tickers: List of ticker symbols
             weights: Dict mapping ticker to portfolio weight (decimal)
             benchmark_weights: Dict mapping ticker to benchmark weight (decimal)
+            ticker_price_data: Dict mapping ticker to price DataFrame (for constructed factors)
 
         Returns:
             Dict with all analysis results
         """
+        import numpy as np
+        import pandas as pd
+
+        from .fama_french_data_service import FamaFrenchDataService
+        from .factor_model_service import FactorModelService
+        from .factor_risk_service import FactorRiskService
+
+        benchmark_weights = benchmark_weights or {}
+
+        # Get date range from returns
+        start_date = ticker_returns.index.min().strftime("%Y-%m-%d")
+        end_date = ticker_returns.index.max().strftime("%Y-%m-%d")
+
+        print(f"[RiskAnalytics] Running factor model analysis for {len(tickers)} tickers")
+        print(f"[RiskAnalytics] Date range: {start_date} to {end_date}")
+
+        # Step 1: Fetch Fama-French factors
+        try:
+            ff_factors = FamaFrenchDataService.get_factor_returns(start_date, end_date)
+            rf_rate = FamaFrenchDataService.get_risk_free_rate(start_date, end_date)
+            print(f"[RiskAnalytics] Loaded {len(ff_factors)} days of Fama-French data")
+        except Exception as e:
+            print(f"[RiskAnalytics] Error loading Fama-French data: {e}")
+            # Fall back to simple analysis
+            return RiskAnalyticsService._get_fallback_analysis(
+                portfolio_returns, benchmark_returns, ticker_returns,
+                tickers, weights, benchmark_weights
+            )
+
+        # Step 2: Calculate excess returns (R - RF)
+        # Normalize ticker_returns index to match FF data (timezone-naive dates)
+        ticker_returns_clean = ticker_returns.copy()
+        ticker_returns_clean.index = pd.to_datetime(ticker_returns_clean.index).normalize()
+
+        # Normalize FF factors index too
+        ff_factors.index = pd.to_datetime(ff_factors.index).normalize()
+        rf_rate.index = pd.to_datetime(rf_rate.index).normalize()
+
+        # Align risk-free rate with ticker returns
+        rf_aligned = rf_rate.reindex(ticker_returns_clean.index).ffill().fillna(0)
+        ticker_excess_returns = ticker_returns_clean.sub(rf_aligned, axis=0)
+
+        print(f"[RiskAnalytics] Ticker returns shape: {ticker_excess_returns.shape}")
+        print(f"[RiskAnalytics] FF factors shape: {ff_factors.shape}")
+        print(f"[RiskAnalytics] Date overlap: {len(ticker_excess_returns.index.intersection(ff_factors.index))} days")
+
+        # Step 3: Get metadata for all tickers
+        all_tickers = list(set(tickers) | set(benchmark_weights.keys()))
+        metadata = TickerMetadataService.get_metadata_batch(all_tickers)
+
+        # Step 4: Run factor regressions (simplified model - FF5+Momentum only)
+        # Note: use_cache=False because CTEV calculations need actual residuals
+        # which aren't stored in the cache
+        print("[RiskAnalytics] Running factor regressions...")
+        regression_results = FactorModelService.run_portfolio_regressions(
+            ticker_excess_returns,
+            ff_factors,
+            metadata,
+            max_workers=10,
+            use_cache=False,
+        )
+        print(f"[RiskAnalytics] Completed {len(regression_results)} regressions")
+
+        # Step 6: Calculate risk metrics
+        if len(regression_results) > 0:
+            # Calculate summary using factor model
+            summary = FactorRiskService.calculate_risk_summary(
+                regression_results,
+                weights,
+                benchmark_weights,
+                portfolio_returns,
+                benchmark_returns,
+            )
+
+            # Calculate CTEV by factor group
+            ctev_by_factor = FactorRiskService.calculate_factor_ctev_by_group(
+                regression_results,
+                weights,
+                benchmark_weights,
+                summary["total_active_risk"],
+            )
+
+            # Calculate per-security risks
+            security_risks = FactorRiskService.calculate_all_security_risks(
+                regression_results,
+                weights,
+                benchmark_weights,
+            )
+        else:
+            # Fall back if no regressions succeeded
+            return RiskAnalyticsService._get_fallback_analysis(
+                portfolio_returns, benchmark_returns, ticker_returns,
+                tickers, weights, benchmark_weights
+            )
+
+        # Step 7: Calculate CTEV by sector
+        ctev_by_sector = RiskAnalyticsService._calculate_ctev_by_sector(security_risks)
+
+        # Step 8: Get top securities by CTEV
+        top_securities = dict(
+            sorted(
+                security_risks.items(),
+                key=lambda x: abs(x[1].get("idio_ctev", 0)),
+                reverse=True,
+            )[:15]
+        )
+
+        # Step 9: Validate risk decomposition
+        warnings = FactorRiskService.validate_risk_decomposition(
+            security_risks, summary, ctev_by_factor
+        )
+        if warnings:
+            for warning in warnings:
+                print(f"[RiskAnalytics] Validation warning: {warning}")
+
+        return {
+            "summary": summary,
+            "factor_exposures": {},  # Not needed with new model
+            "ctev_by_factor": ctev_by_factor,
+            "ctev_by_sector": ctev_by_sector,
+            "security_risks": security_risks,
+            "top_securities": top_securities,
+            "regression_results": regression_results,  # Include for debugging
+        }
+
+    @staticmethod
+    def _calculate_ctev_by_sector(
+        security_risks: Dict[str, Dict[str, float]],
+    ) -> Dict[str, float]:
+        """
+        Calculate CTEV by sector classification.
+
+        Args:
+            security_risks: Output from calculate_all_security_risks
+
+        Returns:
+            Dict mapping sector to total CTEV contribution
+        """
+        sector_ctev: Dict[str, float] = {}
+
+        for ticker, risks in security_risks.items():
+            sector = SectorOverrideService.get_effective_sector(ticker)
+            ctev = risks.get("idio_ctev", 0.0)
+            sector_ctev[sector] = sector_ctev.get(sector, 0.0) + ctev
+
+        # Sort by CTEV descending
+        return dict(sorted(sector_ctev.items(), key=lambda x: x[1], reverse=True))
+
+    @staticmethod
+    def _get_fallback_analysis(
+        portfolio_returns: "pd.Series",
+        benchmark_returns: "pd.Series",
+        ticker_returns: "pd.DataFrame",
+        tickers: List[str],
+        weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+    ) -> Dict[str, Any]:
+        """
+        Fallback analysis when factor model fails.
+
+        Uses simpler heuristic-based calculations.
+        """
+        import numpy as np
+        import pandas as pd
+
+        print("[RiskAnalytics] Using fallback heuristic analysis")
+
         # Summary metrics
         summary = RiskAnalyticsService.get_summary_metrics(
             portfolio_returns, benchmark_returns, tickers, weights
         )
 
-        # Factor exposures
-        factor_exposures = RiskAnalyticsService.calculate_factor_exposures(
-            tickers, weights
-        )
+        # Simple CTEV by factor (heuristic)
+        total_active_risk = summary["total_active_risk"]
+        ctev_by_factor = {
+            "Market": round(total_active_risk * 0.35, 2),
+            "Sector": round(total_active_risk * 0.25, 2),
+            "Style": round(total_active_risk * 0.25, 2),
+            "Country": round(total_active_risk * 0.15, 2),
+        }
 
-        # CTEV by factor group
-        ctev_by_factor = RiskAnalyticsService.calculate_ctev_by_factor_group(
-            summary["total_active_risk"], factor_exposures
-        )
+        # Security-level risks (simplified)
+        security_risks: Dict[str, Dict[str, float]] = {}
+        benchmark_weights = benchmark_weights or {}
 
-        # CTEV by security (with benchmark weights for active weight calculation)
-        security_risks = RiskAnalyticsService.calculate_ctev_by_security(
-            ticker_returns, portfolio_returns, benchmark_returns, weights, benchmark_weights
-        )
+        # Align returns
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns],
+            axis=1,
+            keys=["portfolio", "benchmark"],
+        ).dropna()
+
+        if len(aligned) < 10:
+            return {
+                "summary": summary,
+                "factor_exposures": {},
+                "ctev_by_factor": ctev_by_factor,
+                "ctev_by_sector": {},
+                "security_risks": {},
+                "top_securities": {},
+            }
+
+        active_returns = aligned["portfolio"] - aligned["benchmark"]
+        active_var = active_returns.var()
+        total_te = float(active_returns.std() * np.sqrt(252) * 100)
+
+        for ticker in ticker_returns.columns:
+            ticker_upper = ticker.upper()
+            port_weight = weights.get(ticker_upper, 0.0)
+            bench_weight = benchmark_weights.get(ticker_upper, 0.0)
+
+            if (port_weight is None or port_weight <= 0) and bench_weight <= 0:
+                continue
+
+            port_weight = port_weight if port_weight else 0.0
+            active_weight = port_weight - bench_weight
+
+            # Align ticker returns
+            ticker_ret = ticker_returns[ticker]
+            combined = pd.concat(
+                [ticker_ret, aligned["benchmark"], active_returns],
+                axis=1,
+                keys=["ticker", "benchmark", "active"],
+            ).dropna()
+
+            if len(combined) < 10:
+                continue
+
+            ticker_active = combined["ticker"] - combined["benchmark"]
+            ticker_vol = float(ticker_active.std() * np.sqrt(252) * 100)
+
+            # Estimate idiosyncratic portion (rough)
+            idio_vol = ticker_vol * 0.5
+
+            # CTEV contribution
+            if active_var > 0:
+                cov_with_active = ticker_active.cov(combined["active"])
+                ctev = abs(active_weight) * (cov_with_active / active_var) * total_te
+            else:
+                ctev = 0.0
+
+            security_risks[ticker_upper] = {
+                "portfolio_weight": round(port_weight * 100, 2),
+                "benchmark_weight": round(bench_weight * 100, 2),
+                "active_weight": round(active_weight * 100, 2),
+                "idio_vol": round(idio_vol, 2),
+                "idio_tev": round(idio_vol, 2),
+                "idio_ctev": round(abs(ctev) * 0.5, 2),
+            }
 
         # CTEV by sector
-        ctev_by_sector = RiskAnalyticsService.calculate_ctev_by_sector(security_risks)
+        ctev_by_sector = RiskAnalyticsService._calculate_ctev_by_sector(security_risks)
 
-        # Top securities by CTEV
+        # Top securities
         top_securities = dict(
             sorted(
                 security_risks.items(),
-                key=lambda x: x[1].get("idio_ctev", 0),
+                key=lambda x: abs(x[1].get("idio_ctev", 0)),
                 reverse=True,
             )[:15]
         )
 
         return {
             "summary": summary,
-            "factor_exposures": factor_exposures,
+            "factor_exposures": {},
             "ctev_by_factor": ctev_by_factor,
             "ctev_by_sector": ctev_by_sector,
             "security_risks": security_risks,

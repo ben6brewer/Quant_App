@@ -147,7 +147,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
                     "portfolio_weight": 0.0,
                     "benchmark_weight": 0.0,
                     "active_weight": 0.0,
-                    "idio_vol": 0.0,
+                    "idio_vol": None,  # Not additive - can't sum volatilities
                     "idio_tev": 0.0,
                     "idio_ctev": 0.0,
                 }
@@ -158,21 +158,21 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
             sector_groups[sector].append((ticker, name, metrics))
 
-            # Aggregate metrics for sector
-            for key in sector_aggregates[sector]:
+            # Aggregate metrics for sector (only additive metrics)
+            for key in ["portfolio_weight", "benchmark_weight", "active_weight", "idio_tev", "idio_ctev"]:
                 sector_aggregates[sector][key] += metrics.get(key, 0.0)
 
-        # Calculate grand totals
+        # Calculate grand totals (only additive metrics)
         grand_totals = {
             "portfolio_weight": 0.0,
             "benchmark_weight": 0.0,
             "active_weight": 0.0,
-            "idio_vol": 0.0,
+            "idio_vol": None,  # Not additive - can't sum volatilities
             "idio_tev": 0.0,
             "idio_ctev": 0.0,
         }
         for sector_agg in sector_aggregates.values():
-            for key in grand_totals:
+            for key in ["portfolio_weight", "benchmark_weight", "active_weight", "idio_tev", "idio_ctev"]:
                 grand_totals[key] += sector_agg[key]
 
         # Sort sectors by total CTEV descending
@@ -261,15 +261,15 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         active_wt_item.setData(Qt.UserRole, "total_header")
         self.table.setItem(row, 4, active_wt_item)
 
-        # Column 5: Idio Vol
-        idio_vol_item = QTableWidgetItem(f"{totals.get('idio_vol', 0):.2f}")
+        # Column 5: Idio Vol (not additive - show "--")
+        idio_vol_item = QTableWidgetItem("--")
         idio_vol_item.setFlags(idio_vol_item.flags() & ~Qt.ItemIsEditable)
         idio_vol_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         idio_vol_item.setFont(font)
         idio_vol_item.setData(Qt.UserRole, "total_header")
         self.table.setItem(row, 5, idio_vol_item)
 
-        # Column 6: Idio TEV
+        # Column 6: Idio TEV (sum of individual Idio TEV contributions)
         idio_tev_item = QTableWidgetItem(f"{totals.get('idio_tev', 0):.2f}")
         idio_tev_item.setFlags(idio_tev_item.flags() & ~Qt.ItemIsEditable)
         idio_tev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -277,7 +277,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         idio_tev_item.setData(Qt.UserRole, "total_header")
         self.table.setItem(row, 6, idio_tev_item)
 
-        # Column 7: Idio CTEV
+        # Column 7: Idio CTEV (sum of individual CTEV contributions)
         ctev_item = QTableWidgetItem(f"{totals.get('idio_ctev', 0):.2f}")
         ctev_item.setFlags(ctev_item.flags() & ~Qt.ItemIsEditable)
         ctev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -349,8 +349,8 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         active_wt_item.setData(Qt.UserRole + 1, sector)
         self.table.setItem(row, 4, active_wt_item)
 
-        # Column 5: Idio Vol
-        idio_vol_item = QTableWidgetItem(f"{aggregates.get('idio_vol', 0):.2f}")
+        # Column 5: Idio Vol (not additive - show "--")
+        idio_vol_item = QTableWidgetItem("--")
         idio_vol_item.setFlags(idio_vol_item.flags() & ~Qt.ItemIsEditable)
         idio_vol_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         idio_vol_item.setFont(font)
@@ -358,7 +358,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         idio_vol_item.setData(Qt.UserRole + 1, sector)
         self.table.setItem(row, 5, idio_vol_item)
 
-        # Column 6: Idio TEV
+        # Column 6: Idio TEV (sum of individual contributions)
         idio_tev_item = QTableWidgetItem(f"{aggregates.get('idio_tev', 0):.2f}")
         idio_tev_item.setFlags(idio_tev_item.flags() & ~Qt.ItemIsEditable)
         idio_tev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)

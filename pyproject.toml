@@ -21,6 +21,7 @@ dependencies = [
   "requests>=2.31",
   "aiohttp>=3.9",
   "massive>=2.0",
+  "pandas-datareader>=0.10",
 ]
 
 [tool.setuptools]
