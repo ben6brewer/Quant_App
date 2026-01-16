@@ -28,10 +28,20 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
     Displays security-level risk metrics grouped by sector with
     clickable headers to expand/collapse groups.
+
+    Columns match Bloomberg PORT Risk screen:
+    - Name: Security name
+    - Ticker: Ticker symbol
+    - Port Wt: Portfolio weight %
+    - Bench Wt: Benchmark weight %
+    - Active Wt: Active weight (Port - Bench)
+    - Idio Vol: Idiosyncratic volatility
+    - Idio TEV: Idiosyncratic tracking error variance
+    - Idio CTEV: Idiosyncratic contribution to TEV
     """
 
-    COLUMNS = ["Name", "Ticker", "Net Wt (%)", "Factor TEV", "Idio TEV", "Idio CTEV"]
-    COL_WIDTHS = [200, 80, 90, 90, 90, 90]
+    COLUMNS = ["Name", "Ticker", "Port Wt", "Bench Wt", "Active Wt", "Idio Vol", "Idio TEV", "Idio CTEV"]
+    COL_WIDTHS = [200, 80, 70, 70, 70, 70, 70, 70]
 
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
@@ -39,6 +49,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         self._theme_dirty = False
         self._collapsed_sectors: Set[str] = set()
         self._security_data: Dict[str, Dict[str, float]] = {}
+        self._benchmark_weights: Dict[str, float] = {}
         self._sector_rows: Dict[str, int] = {}  # Maps sector to header row index
 
         self._setup_ui()
@@ -88,7 +99,11 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
         layout.addWidget(self.table, stretch=1)
 
-    def set_data(self, security_risks: Dict[str, Dict[str, float]]):
+    def set_data(
+        self,
+        security_risks: Dict[str, Dict[str, float]],
+        benchmark_weights: Optional[Dict[str, float]] = None,
+    ):
         """
         Set security risk data and rebuild table.
 
@@ -96,15 +111,20 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             security_risks: Dict mapping ticker to risk metrics:
                 {
                     "AAPL": {
-                        "net_weight": 5.2,
-                        "factor_tev": 1.2,
+                        "portfolio_weight": 5.2,
+                        "benchmark_weight": 3.1,
+                        "active_weight": 2.1,
+                        "idio_vol": 25.5,
                         "idio_tev": 0.8,
                         "idio_ctev": 0.15,
                     },
                     ...
                 }
+            benchmark_weights: Optional dict mapping ticker to benchmark weight %
+                (used as fallback if not included in security_risks)
         """
         self._security_data = security_risks
+        self._benchmark_weights = benchmark_weights or {}
         self._rebuild_table()
 
     def _rebuild_table(self):
@@ -115,12 +135,22 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         if not self._security_data:
             return
 
-        # Group securities by sector
+        # Group securities by sector and calculate sector aggregates
         sector_groups: Dict[str, List[tuple]] = {}
+        sector_aggregates: Dict[str, Dict[str, float]] = {}
+
         for ticker, metrics in self._security_data.items():
             sector = SectorOverrideService.get_effective_sector(ticker)
             if sector not in sector_groups:
                 sector_groups[sector] = []
+                sector_aggregates[sector] = {
+                    "portfolio_weight": 0.0,
+                    "benchmark_weight": 0.0,
+                    "active_weight": 0.0,
+                    "idio_vol": 0.0,
+                    "idio_tev": 0.0,
+                    "idio_ctev": 0.0,
+                }
 
             # Get display name from cache
             metadata = TickerMetadataService.get_metadata(ticker)
@@ -128,31 +158,47 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
             sector_groups[sector].append((ticker, name, metrics))
 
-        # Sort sectors by total CTEV descending
-        sector_totals = {
-            sector: sum(m[2].get("idio_ctev", 0) for m in members)
-            for sector, members in sector_groups.items()
+            # Aggregate metrics for sector
+            for key in sector_aggregates[sector]:
+                sector_aggregates[sector][key] += metrics.get(key, 0.0)
+
+        # Calculate grand totals
+        grand_totals = {
+            "portfolio_weight": 0.0,
+            "benchmark_weight": 0.0,
+            "active_weight": 0.0,
+            "idio_vol": 0.0,
+            "idio_tev": 0.0,
+            "idio_ctev": 0.0,
         }
+        for sector_agg in sector_aggregates.values():
+            for key in grand_totals:
+                grand_totals[key] += sector_agg[key]
+
+        # Sort sectors by total CTEV descending
         sorted_sectors = sorted(
             sector_groups.keys(),
-            key=lambda s: sector_totals.get(s, 0),
+            key=lambda s: sector_aggregates[s]["idio_ctev"],
             reverse=True,
         )
 
         # Build table rows
-        theme = self.theme_manager.current_theme
         current_row = 0
+
+        # Add Total row at the very top
+        self._add_total_row(len(self._security_data), grand_totals)
+        current_row += 1
 
         for sector in sorted_sectors:
             securities = sector_groups[sector]
-            # Sort securities by CTEV descending
+            # Sort securities by CTEV descending (metrics is at index 2)
             securities.sort(key=lambda x: x[2].get("idio_ctev", 0), reverse=True)
 
             is_collapsed = sector in self._collapsed_sectors
 
-            # Add sector header row
+            # Add sector header row with aggregated metrics
             header_row = self._add_sector_header(
-                sector, len(securities), sector_totals.get(sector, 0), is_collapsed
+                sector, len(securities), sector_aggregates[sector], is_collapsed
             )
             self._sector_rows[sector] = header_row
             current_row += 1
@@ -165,11 +211,90 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
         self.table.resizeRowsToContents()
 
+    def _add_total_row(self, count: int, totals: Dict[str, float]) -> int:
+        """
+        Add the grand total row at the top of the table.
+
+        Returns:
+            Row index of the total row
+        """
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        # Column 0: Total label
+        total_item = QTableWidgetItem(f"TOTAL ({count} securities)")
+        total_item.setFlags(total_item.flags() & ~Qt.ItemIsEditable)
+        total_item.setFont(font)
+        total_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 0, total_item)
+
+        # Column 1: Empty (Ticker column)
+        empty_item = QTableWidgetItem("")
+        empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEditable)
+        empty_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 1, empty_item)
+
+        # Column 2: Portfolio Weight
+        port_wt_item = QTableWidgetItem(f"{totals.get('portfolio_weight', 0):.2f}")
+        port_wt_item.setFlags(port_wt_item.flags() & ~Qt.ItemIsEditable)
+        port_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        port_wt_item.setFont(font)
+        port_wt_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 2, port_wt_item)
+
+        # Column 3: Benchmark Weight
+        bench_wt_item = QTableWidgetItem(f"{totals.get('benchmark_weight', 0):.2f}")
+        bench_wt_item.setFlags(bench_wt_item.flags() & ~Qt.ItemIsEditable)
+        bench_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bench_wt_item.setFont(font)
+        bench_wt_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 3, bench_wt_item)
+
+        # Column 4: Active Weight
+        active_wt_item = QTableWidgetItem(f"{totals.get('active_weight', 0):.2f}")
+        active_wt_item.setFlags(active_wt_item.flags() & ~Qt.ItemIsEditable)
+        active_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        active_wt_item.setFont(font)
+        active_wt_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 4, active_wt_item)
+
+        # Column 5: Idio Vol
+        idio_vol_item = QTableWidgetItem(f"{totals.get('idio_vol', 0):.2f}")
+        idio_vol_item.setFlags(idio_vol_item.flags() & ~Qt.ItemIsEditable)
+        idio_vol_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        idio_vol_item.setFont(font)
+        idio_vol_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 5, idio_vol_item)
+
+        # Column 6: Idio TEV
+        idio_tev_item = QTableWidgetItem(f"{totals.get('idio_tev', 0):.2f}")
+        idio_tev_item.setFlags(idio_tev_item.flags() & ~Qt.ItemIsEditable)
+        idio_tev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        idio_tev_item.setFont(font)
+        idio_tev_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 6, idio_tev_item)
+
+        # Column 7: Idio CTEV
+        ctev_item = QTableWidgetItem(f"{totals.get('idio_ctev', 0):.2f}")
+        ctev_item.setFlags(ctev_item.flags() & ~Qt.ItemIsEditable)
+        ctev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        ctev_item.setFont(font)
+        ctev_item.setData(Qt.UserRole, "total_header")
+        self.table.setItem(row, 7, ctev_item)
+
+        # Apply total row styling
+        self._style_total_row(row)
+
+        return row
+
     def _add_sector_header(
-        self, sector: str, count: int, total_ctev: float, is_collapsed: bool
+        self, sector: str, count: int, aggregates: Dict[str, float], is_collapsed: bool
     ) -> int:
         """
-        Add a sector header row.
+        Add a sector header row with aggregated metrics.
 
         Returns:
             Row index of the header
@@ -177,87 +302,143 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        # Collapse indicator
-        arrow = ">" if is_collapsed else "v"
-        header_text = f"{arrow} {sector} ({count} securities)"
-
-        # Create header item spanning all columns visually
-        header_item = QTableWidgetItem(header_text)
-        header_item.setFlags(header_item.flags() & ~Qt.ItemIsEditable)
-        header_item.setData(Qt.UserRole, "sector_header")
-        header_item.setData(Qt.UserRole + 1, sector)
-
-        # Style header
         font = QFont()
         font.setBold(True)
-        header_item.setFont(font)
 
+        # Column 0: Sector name with collapse indicator
+        arrow = "▶" if is_collapsed else "▼"
+        header_text = f"{arrow} {sector} ({count})"
+        header_item = QTableWidgetItem(header_text)
+        header_item.setFlags(header_item.flags() & ~Qt.ItemIsEditable)
+        header_item.setFont(font)
+        header_item.setData(Qt.UserRole, "sector_header")
+        header_item.setData(Qt.UserRole + 1, sector)
         self.table.setItem(row, 0, header_item)
 
-        # CTEV total in last column
-        ctev_item = QTableWidgetItem(f"{total_ctev:.2f}")
+        # Column 1: Empty (Ticker column)
+        empty_item = QTableWidgetItem("")
+        empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEditable)
+        empty_item.setData(Qt.UserRole, "sector_header")
+        empty_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 1, empty_item)
+
+        # Column 2: Portfolio Weight
+        port_wt_item = QTableWidgetItem(f"{aggregates.get('portfolio_weight', 0):.2f}")
+        port_wt_item.setFlags(port_wt_item.flags() & ~Qt.ItemIsEditable)
+        port_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        port_wt_item.setFont(font)
+        port_wt_item.setData(Qt.UserRole, "sector_header")
+        port_wt_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 2, port_wt_item)
+
+        # Column 3: Benchmark Weight
+        bench_wt_item = QTableWidgetItem(f"{aggregates.get('benchmark_weight', 0):.2f}")
+        bench_wt_item.setFlags(bench_wt_item.flags() & ~Qt.ItemIsEditable)
+        bench_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bench_wt_item.setFont(font)
+        bench_wt_item.setData(Qt.UserRole, "sector_header")
+        bench_wt_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 3, bench_wt_item)
+
+        # Column 4: Active Weight
+        active_wt_item = QTableWidgetItem(f"{aggregates.get('active_weight', 0):.2f}")
+        active_wt_item.setFlags(active_wt_item.flags() & ~Qt.ItemIsEditable)
+        active_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        active_wt_item.setFont(font)
+        active_wt_item.setData(Qt.UserRole, "sector_header")
+        active_wt_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 4, active_wt_item)
+
+        # Column 5: Idio Vol
+        idio_vol_item = QTableWidgetItem(f"{aggregates.get('idio_vol', 0):.2f}")
+        idio_vol_item.setFlags(idio_vol_item.flags() & ~Qt.ItemIsEditable)
+        idio_vol_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        idio_vol_item.setFont(font)
+        idio_vol_item.setData(Qt.UserRole, "sector_header")
+        idio_vol_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 5, idio_vol_item)
+
+        # Column 6: Idio TEV
+        idio_tev_item = QTableWidgetItem(f"{aggregates.get('idio_tev', 0):.2f}")
+        idio_tev_item.setFlags(idio_tev_item.flags() & ~Qt.ItemIsEditable)
+        idio_tev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        idio_tev_item.setFont(font)
+        idio_tev_item.setData(Qt.UserRole, "sector_header")
+        idio_tev_item.setData(Qt.UserRole + 1, sector)
+        self.table.setItem(row, 6, idio_tev_item)
+
+        # Column 7: Idio CTEV
+        ctev_item = QTableWidgetItem(f"{aggregates.get('idio_ctev', 0):.2f}")
         ctev_item.setFlags(ctev_item.flags() & ~Qt.ItemIsEditable)
         ctev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         ctev_item.setFont(font)
         ctev_item.setData(Qt.UserRole, "sector_header")
         ctev_item.setData(Qt.UserRole + 1, sector)
-        self.table.setItem(row, 5, ctev_item)
-
-        # Empty items for middle columns (for click handling)
-        for col in range(1, 5):
-            empty_item = QTableWidgetItem("")
-            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEditable)
-            empty_item.setData(Qt.UserRole, "sector_header")
-            empty_item.setData(Qt.UserRole + 1, sector)
-            self.table.setItem(row, col, empty_item)
+        self.table.setItem(row, 7, ctev_item)
 
         # Apply header styling
         self._style_header_row(row)
 
         return row
 
-    def _add_security_row(self, ticker: str, name: str, metrics: Dict[str, float]):
-        """Add a security data row."""
+    def _add_security_row(
+        self, ticker: str, name: str, metrics: Dict[str, float]
+    ):
+        """Add a security data row with all columns."""
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        # Name column (indented)
+        # Column 0: Name (indented)
         name_item = QTableWidgetItem(f"    {name}")
         name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
         self.table.setItem(row, 0, name_item)
 
-        # Ticker column
+        # Column 1: Ticker
         ticker_item = QTableWidgetItem(ticker)
         ticker_item.setFlags(ticker_item.flags() & ~Qt.ItemIsEditable)
         self.table.setItem(row, 1, ticker_item)
 
-        # Net Weight column
-        weight = metrics.get("net_weight", 0)
-        weight_item = QTableWidgetItem(f"{weight:.2f}")
-        weight_item.setFlags(weight_item.flags() & ~Qt.ItemIsEditable)
-        weight_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 2, weight_item)
+        # Column 2: Portfolio Weight
+        port_wt = metrics.get("portfolio_weight", 0)
+        port_wt_item = QTableWidgetItem(f"{port_wt:.2f}")
+        port_wt_item.setFlags(port_wt_item.flags() & ~Qt.ItemIsEditable)
+        port_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.setItem(row, 2, port_wt_item)
 
-        # Factor TEV column
-        factor_tev = metrics.get("factor_tev", 0)
-        factor_item = QTableWidgetItem(f"{factor_tev:.2f}")
-        factor_item.setFlags(factor_item.flags() & ~Qt.ItemIsEditable)
-        factor_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 3, factor_item)
+        # Column 3: Benchmark Weight
+        bench_wt = metrics.get("benchmark_weight", 0)
+        bench_wt_item = QTableWidgetItem(f"{bench_wt:.2f}")
+        bench_wt_item.setFlags(bench_wt_item.flags() & ~Qt.ItemIsEditable)
+        bench_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.setItem(row, 3, bench_wt_item)
 
-        # Idio TEV column
+        # Column 4: Active Weight (Port - Bench)
+        active_wt = metrics.get("active_weight", port_wt - bench_wt)
+        active_wt_item = QTableWidgetItem(f"{active_wt:.2f}")
+        active_wt_item.setFlags(active_wt_item.flags() & ~Qt.ItemIsEditable)
+        active_wt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.setItem(row, 4, active_wt_item)
+
+        # Column 5: Idio Vol (idiosyncratic volatility)
+        idio_vol = metrics.get("idio_vol", 0)
+        idio_vol_item = QTableWidgetItem(f"{idio_vol:.2f}")
+        idio_vol_item.setFlags(idio_vol_item.flags() & ~Qt.ItemIsEditable)
+        idio_vol_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.setItem(row, 5, idio_vol_item)
+
+        # Column 6: Idio TEV
         idio_tev = metrics.get("idio_tev", 0)
-        idio_item = QTableWidgetItem(f"{idio_tev:.2f}")
-        idio_item.setFlags(idio_item.flags() & ~Qt.ItemIsEditable)
-        idio_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 4, idio_item)
+        idio_tev_item = QTableWidgetItem(f"{idio_tev:.2f}")
+        idio_tev_item.setFlags(idio_tev_item.flags() & ~Qt.ItemIsEditable)
+        idio_tev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.table.setItem(row, 6, idio_tev_item)
 
-        # Idio CTEV column
+        # Column 7: Idio CTEV
         idio_ctev = metrics.get("idio_ctev", 0)
         ctev_item = QTableWidgetItem(f"{idio_ctev:.2f}")
         ctev_item.setFlags(ctev_item.flags() & ~Qt.ItemIsEditable)
         ctev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 5, ctev_item)
+        self.table.setItem(row, 7, ctev_item)
 
         # Apply data row styling
         self._style_data_row(row)
@@ -290,6 +471,26 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         else:  # dark
             bg_color = QColor("#3d3d3d")
             fg_color = QColor("#00d4ff")
+
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                item.setBackground(bg_color)
+                item.setForeground(fg_color)
+
+    def _style_total_row(self, row: int):
+        """Apply styling to the total row (more prominent than sector headers)."""
+        theme = self.theme_manager.current_theme
+
+        if theme == "light":
+            bg_color = QColor("#c0c0c0")
+            fg_color = QColor("#000000")
+        elif theme == "bloomberg":
+            bg_color = QColor("#0d1830")
+            fg_color = QColor("#FFa000")
+        else:  # dark
+            bg_color = QColor("#2a2a2a")
+            fg_color = QColor("#00e4ff")
 
         for col in range(self.table.columnCount()):
             item = self.table.item(row, col)
@@ -331,6 +532,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
     def clear_data(self):
         """Clear all table data."""
         self._security_data.clear()
+        self._benchmark_weights.clear()
         self._sector_rows.clear()
         self.table.setRowCount(0)
 

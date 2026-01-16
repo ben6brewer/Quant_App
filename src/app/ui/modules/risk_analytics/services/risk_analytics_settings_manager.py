@@ -24,6 +24,7 @@ class RiskAnalyticsSettingsManager(BaseSettingsManager):
         "custom_start_date",
         "custom_end_date",
         "portfolio_universe_sectors",
+        "benchmark_universe_sectors",
     ])
 
     @property
