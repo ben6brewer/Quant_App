@@ -148,6 +148,24 @@ from app.services.market_data import fetch_price_history
 df = fetch_price_history("AAPL", period="1y", interval="1d")
 ```
 
+### Live Price Updates
+```python
+from app.services.yahoo_finance_service import YahooFinanceService
+from app.services.returns_data_service import ReturnsDataService
+
+# Batch fetch current prices (for live polling)
+prices = YahooFinanceService.fetch_batch_current_prices(["AAPL", "MSFT", "BTC-USD"])
+# Returns: {"AAPL": 175.50, "MSFT": 380.25, "BTC-USD": 98234.56}
+
+# Append today's live return to a returns series
+returns = ReturnsDataService.get_ticker_returns("AAPL")
+returns = ReturnsDataService.append_live_return(returns, "AAPL")
+
+# Append today's live portfolio return (weighted)
+returns = ReturnsDataService.get_time_varying_portfolio_returns("My Portfolio")
+returns = ReturnsDataService.append_live_portfolio_return(returns, "My Portfolio")
+```
+
 ---
 
 ## Architecture Notes

@@ -193,19 +193,69 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
             else:
                 risk_free_rate = PerformanceMetricsService.get_risk_free_rate()
 
-            # Calculate metrics for each time period
+            # Pre-calculate all date ranges to find the earliest start date
+            date_ranges: Dict[str, Tuple[str, str]] = {}
+            for period_name, trading_days in self.TIME_PERIODS:
+                date_ranges[period_name] = self._get_date_range(trading_days)
+
+            # Find the earliest start date across all periods
+            earliest_start = min(dr[0] for dr in date_ranges.values())
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+            # Fetch portfolio returns ONCE for the full range
+            full_portfolio_returns = self._get_returns(
+                self._current_portfolio,
+                self._is_ticker_mode,
+                earliest_start,
+                end_date,
+            )
+
+            if full_portfolio_returns is None or full_portfolio_returns.empty:
+                self.table.show_placeholder("No data available for selected portfolio")
+                return
+
+            # Fetch benchmark returns ONCE for the full range (if selected)
+            full_benchmark_returns = None
+            benchmark_failed = False
+            if self._current_benchmark:
+                benchmark_name = self._current_benchmark
+                is_portfolio = self._is_benchmark_portfolio
+
+                if is_portfolio:
+                    # Remove "[Port] " prefix
+                    benchmark_name = benchmark_name.replace("[Port] ", "")
+
+                full_benchmark_returns = self._get_returns(
+                    benchmark_name,
+                    not is_portfolio,  # is_ticker = not is_portfolio
+                    earliest_start,
+                    end_date,
+                )
+
+                # Check if benchmark data was loaded successfully
+                if full_benchmark_returns is None or full_benchmark_returns.empty:
+                    CustomMessageBox.warning(
+                        self.theme_manager,
+                        self,
+                        "Benchmark Not Found",
+                        f"Could not load data for benchmark '{self._current_benchmark}'. "
+                        "Please check the ticker symbol.",
+                    )
+                    self._current_benchmark = ""
+                    self.controls.reset_benchmark()
+                    self.table.set_has_benchmark(False)
+                    full_benchmark_returns = None
+                    benchmark_failed = True
+
+            # Calculate metrics for each time period by filtering pre-fetched data
             metrics_by_period: Dict[str, Dict[str, Any]] = {}
 
             for period_name, trading_days in self.TIME_PERIODS:
-                # Get date range
-                start_date, end_date = self._get_date_range(trading_days)
+                start_date, period_end = date_ranges[period_name]
 
-                # Get portfolio returns
-                portfolio_returns = self._get_returns(
-                    self._current_portfolio,
-                    self._is_ticker_mode,
-                    start_date,
-                    end_date,
+                # Filter portfolio returns by date range
+                portfolio_returns = self._filter_returns_by_date(
+                    full_portfolio_returns, start_date, period_end
                 )
 
                 if portfolio_returns is None or portfolio_returns.empty:
@@ -213,38 +263,12 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
                     metrics_by_period[period_name] = {}
                     continue
 
-                # Get benchmark returns if selected
+                # Filter benchmark returns by date range
                 benchmark_returns = None
-                if self._current_benchmark:
-                    benchmark_name = self._current_benchmark
-                    is_portfolio = self._is_benchmark_portfolio
-
-                    if is_portfolio:
-                        # Remove "[Port] " prefix
-                        benchmark_name = benchmark_name.replace("[Port] ", "")
-
-                    benchmark_returns = self._get_returns(
-                        benchmark_name,
-                        not is_portfolio,  # is_ticker = not is_portfolio
-                        start_date,
-                        end_date,
+                if full_benchmark_returns is not None:
+                    benchmark_returns = self._filter_returns_by_date(
+                        full_benchmark_returns, start_date, period_end
                     )
-
-                    # Check if benchmark data was loaded successfully
-                    if benchmark_returns is None or benchmark_returns.empty:
-                        # Show error and reset benchmark
-                        if period_name == "3 Months":  # Only show once
-                            CustomMessageBox.warning(
-                                self.theme_manager,
-                                self,
-                                "Benchmark Not Found",
-                                f"Could not load data for benchmark '{self._current_benchmark}'. "
-                                "Please check the ticker symbol.",
-                            )
-                            self._current_benchmark = ""
-                            self.controls.reset_benchmark()
-                            self.table.set_has_benchmark(False)
-                        benchmark_returns = None
 
                 # Calculate all metrics for this period
                 metrics = PerformanceMetricsService.calculate_all_metrics(
@@ -266,6 +290,36 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
 
         finally:
             self._hide_loading_overlay()
+
+    def _filter_returns_by_date(
+        self,
+        returns: "pd.Series",
+        start_date: str,
+        end_date: str,
+    ) -> "pd.Series":
+        """
+        Filter a returns series by date range.
+
+        Args:
+            returns: Series of returns with DatetimeIndex
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+
+        Returns:
+            Filtered returns series
+        """
+        import pandas as pd
+
+        if returns is None or returns.empty:
+            return returns
+
+        # Ensure datetime index
+        if not isinstance(returns.index, pd.DatetimeIndex):
+            returns.index = pd.to_datetime(returns.index)
+
+        # Filter by date range
+        mask = (returns.index >= start_date) & (returns.index <= end_date)
+        return returns[mask]
 
     def _get_date_range(self, trading_days: Optional[int]) -> Tuple[str, str]:
         """
@@ -301,6 +355,9 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
         """
         Get returns for a portfolio or ticker.
 
+        Automatically appends today's live return if within market hours
+        (for stocks) or anytime (for crypto).
+
         Args:
             name: Portfolio name or ticker symbol
             is_ticker: True if name is a ticker, False if portfolio
@@ -308,23 +365,31 @@ class PerformanceMetricsModule(LazyThemeMixin, QWidget):
             end_date: End date (YYYY-MM-DD)
 
         Returns:
-            Series of daily returns
+            Series of daily returns (with today's live return appended if eligible)
         """
         if is_ticker:
-            return ReturnsDataService.get_ticker_returns(
+            returns = ReturnsDataService.get_ticker_returns(
                 name,
                 start_date=start_date,
                 end_date=end_date,
                 interval="daily",
             )
+            # Append today's live return if eligible
+            returns = ReturnsDataService.append_live_return(returns, name)
         else:
-            return ReturnsDataService.get_time_varying_portfolio_returns(
+            returns = ReturnsDataService.get_time_varying_portfolio_returns(
                 name,
                 start_date=start_date,
                 end_date=end_date,
                 include_cash=False,
                 interval="daily",
             )
+            # Append today's live portfolio return if eligible
+            returns = ReturnsDataService.append_live_portfolio_return(
+                returns, name, include_cash=False
+            )
+
+        return returns
 
     def _apply_theme(self):
         """Apply theme-specific styling."""

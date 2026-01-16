@@ -28,12 +28,14 @@ DEFAULT_PERIOD = "max"
 DATA_FETCH_THREADS = True
 SHOW_DOWNLOAD_PROGRESS = False
 
-# Polygon.io API Configuration
+# Polygon.io API Configuration (Unlimited tier - no rate limiting)
 POLYGON_BASE_URL = "https://api.polygon.io"
-POLYGON_RATE_LIMIT_CALLS = 5  # Starter plan: 5 calls/minute
+POLYGON_RATE_LIMIT_ENABLED = False  # Set True for Starter plan (5 calls/min)
+POLYGON_RATE_LIMIT_CALLS = 5  # Only used if POLYGON_RATE_LIMIT_ENABLED=True
 POLYGON_RATE_LIMIT_PERIOD = 60  # seconds
-POLYGON_MAX_HISTORY_YEARS = 5  # Polygon Starter plan limit
+POLYGON_MAX_HISTORY_YEARS = 5  # Polygon plan limit
 POLYGON_MAX_HISTORY_DAYS = 1825  # 5 years in days
+POLYGON_BATCH_CONCURRENCY = 100  # Concurrent workers for batch fetching
 
 # Yahoo Finance Configuration (for backfill and crypto)
 YAHOO_HISTORICAL_START = "1970-01-01"  # Earliest date to try fetching

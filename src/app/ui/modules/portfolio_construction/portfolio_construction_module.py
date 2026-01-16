@@ -1,11 +1,12 @@
 """Portfolio Construction Module - Main Orchestrator"""
 
 import csv
+import threading
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QApplication, QFileDialog
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common import CustomMessageBox
@@ -33,6 +34,12 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
     Orchestrates all widgets and services for portfolio management.
     """
 
+    # Signal emitted when live prices are received (from background thread)
+    _live_prices_received = Signal(dict)  # {ticker: price}
+
+    # Live polling interval (1 minute)
+    _POLL_INTERVAL_MS = 60000
+
     def __init__(self, theme_manager: ThemeManager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
@@ -58,6 +65,9 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
         # Loading overlay (created on demand)
         self._loading_overlay = None
 
+        # Live price polling timer
+        self._live_poll_timer: Optional[QTimer] = None
+
         self._setup_ui()
 
         # Apply persisted settings to widgets
@@ -75,9 +85,17 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
         self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
 
     def showEvent(self, event):
-        """Handle show event - apply pending theme if needed."""
+        """Handle show event - apply pending theme and resume live updates."""
         super().showEvent(event)
         self._check_theme_dirty()
+        # Resume live price updates when module becomes visible
+        if self.current_portfolio:
+            self._start_live_updates()
+
+    def hideEvent(self, event):
+        """Handle hide event - pause live updates when module is hidden."""
+        self._stop_live_updates()
+        super().hideEvent(event)
 
     def _setup_ui(self):
         """Setup main UI layout."""
@@ -129,6 +147,9 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
 
         # View tab bar
         self.view_tab_bar.view_changed.connect(self._on_view_changed)
+
+        # Live price updates from background thread
+        self._live_prices_received.connect(self._apply_live_prices)
 
     def _on_view_changed(self, index: int):
         """Handle view tab change."""
@@ -220,6 +241,11 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
 
             # Fetch prices and names only for tickers that need it
             if tickers_to_fetch:
+                # Batch fetch all tickers first (single Yahoo call)
+                # This pre-populates the cache so individual lookups are instant
+                from app.services.market_data import fetch_price_history_batch
+                fetch_price_history_batch(tickers_to_fetch)
+
                 new_prices = PortfolioService.fetch_current_prices(tickers_to_fetch)
                 new_names = PortfolioService.fetch_ticker_names(tickers_to_fetch)
                 # Update caches
@@ -368,6 +394,9 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
             portfolios = PortfolioPersistence.list_portfolios_by_recent()
             self.controls.update_portfolio_list(portfolios, name)
             self.controls._update_button_states(True)
+
+            # Start live price updates for this portfolio
+            self._start_live_updates()
         finally:
             # Hide loading overlay
             self._hide_loading_overlay()
@@ -697,6 +726,101 @@ class PortfolioConstructionModule(LazyThemeMixin, QWidget):
                 background-color: {bg_color};
             }}
         """)
+
+    # ========== Live Price Updates ==========
+
+    def _start_live_updates(self) -> None:
+        """Start live price polling for holdings."""
+        if self._live_poll_timer is not None:
+            return  # Already running
+
+        # Get tickers to poll - only start if there are eligible tickers
+        tickers = self._get_eligible_tickers_for_update()
+        if not tickers:
+            print(f"[Live Updates] No eligible tickers for update (cached: {len(self._cached_tickers)})")
+            return
+
+        print(f"[Live Updates] Starting polling for {len(tickers)} tickers: {tickers}")
+
+        self._live_poll_timer = QTimer(self)
+        self._live_poll_timer.timeout.connect(self._on_live_poll_tick)
+        self._live_poll_timer.start(self._POLL_INTERVAL_MS)
+
+        # Do immediate update
+        self._on_live_poll_tick()
+
+    def _stop_live_updates(self) -> None:
+        """Stop live price polling."""
+        if self._live_poll_timer is not None:
+            print("[Live Updates] Stopping polling")
+            self._live_poll_timer.stop()
+            self._live_poll_timer.deleteLater()
+            self._live_poll_timer = None
+
+    def _get_eligible_tickers_for_update(self) -> List[str]:
+        """
+        Get tickers eligible for live update based on market hours.
+
+        - Crypto tickers (-USD, -USDT): Always eligible (24/7)
+        - Stock tickers: Only during extended market hours (4am-8pm ET on trading days)
+
+        Returns:
+            List of tickers that should be polled for live prices
+        """
+        from app.utils.market_hours import is_crypto_ticker, is_market_open_extended
+
+        all_tickers = list(self._cached_tickers)
+        eligible = []
+
+        for ticker in all_tickers:
+            if is_crypto_ticker(ticker):
+                eligible.append(ticker)  # Crypto: 24/7
+            elif is_market_open_extended():
+                eligible.append(ticker)  # Stocks: only during market hours
+
+        return eligible
+
+    def _on_live_poll_tick(self) -> None:
+        """Handle live poll timer tick - fetch and update prices in background thread."""
+        tickers = self._get_eligible_tickers_for_update()
+        if not tickers:
+            return
+
+        print(f"[Live Updates] Fetching prices for: {tickers}")
+
+        # Run in background thread to avoid blocking UI
+        def fetch_and_update():
+            try:
+                from app.services.yahoo_finance_service import YahooFinanceService
+
+                prices = YahooFinanceService.fetch_batch_current_prices(tickers)
+                if prices:
+                    print(f"[Live Updates] Received prices: {prices}")
+                    # Emit signal to update UI on main thread
+                    self._live_prices_received.emit(prices)
+                else:
+                    print("[Live Updates] No prices returned")
+            except Exception as e:
+                print(f"[Live Updates] Failed: {e}")
+
+        thread = threading.Thread(target=fetch_and_update, daemon=True)
+        thread.start()
+
+    def _apply_live_prices(self, prices: Dict[str, float]) -> None:
+        """
+        Apply live prices to Holdings tab (called on main thread via signal).
+
+        Args:
+            prices: Dict mapping ticker -> current price
+        """
+        # Update cached prices
+        self._cached_prices.update(prices)
+
+        # Update aggregate table with new prices
+        self.aggregate_table.update_live_prices(prices)
+
+        # Update transaction table current prices
+        self.transaction_table.update_current_prices(prices)
 
     def _open_settings_dialog(self):
         """Open settings dialog."""

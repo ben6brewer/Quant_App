@@ -108,6 +108,15 @@ class TickerMetadataService:
                 print(f"Warning: Could not save ticker metadata cache: {e}")
 
     @classmethod
+    def clear_cache(cls) -> None:
+        """Clear all cached ticker metadata."""
+        with cls._lock:
+            if cls._CACHE_FILE.exists():
+                cls._CACHE_FILE.unlink()
+            cls._cache = None
+        print("[TickerMetadataService] Cache cleared")
+
+    @classmethod
     def _is_cache_stale(cls, ticker: str) -> bool:
         """Check if cached metadata is older than CACHE_EXPIRY_DAYS."""
         cache = cls._load_cache()
@@ -367,3 +376,72 @@ class TickerMetadataService:
             cls._cache = {}
             if cls._CACHE_FILE.exists():
                 cls._CACHE_FILE.unlink()
+
+    @classmethod
+    def cache_from_etf_holdings(
+        cls,
+        holdings: Dict[str, Any],
+        overwrite: bool = False,
+    ) -> int:
+        """
+        Cache metadata for tickers from ETF holdings CSV (e.g., IWV).
+
+        Imports sector, name, currency, and location from ETF constituent data.
+        This avoids needing to fetch from yfinance for ~3000 benchmark tickers.
+
+        Args:
+            holdings: Dict mapping ticker -> ETFHolding object with:
+                - sector: str (GICS-normalized)
+                - name: str (company name)
+                - currency: str
+                - location: str (country)
+            overwrite: If True, overwrite existing entries. Default False (skip existing).
+
+        Returns:
+            Number of tickers cached (new or updated)
+        """
+        if not holdings:
+            return 0
+
+        cache = cls._load_cache()
+        cached_count = 0
+        total = len(holdings)
+
+        print(f"[Metadata] Caching metadata for {total} ETF holdings...")
+
+        for ticker, holding in holdings.items():
+            ticker_upper = ticker.upper()
+
+            # Skip if already in cache and not overwriting
+            if not overwrite and ticker_upper in cache and not cls._is_cache_stale(ticker_upper):
+                continue
+
+            # Extract fields from ETFHolding
+            # ETFHolding has: ticker, name, sector, weight, currency, asset_class, location
+            metadata: Dict[str, Any] = {
+                "sector": getattr(holding, "sector", None),
+                "shortName": getattr(holding, "name", None),
+                "currency": getattr(holding, "currency", "USD"),
+                "country": getattr(holding, "location", None),
+                # Mark source as ETF for reference
+                "source": "etf_holdings",
+                "last_updated": datetime.now().isoformat(),
+            }
+
+            # Preserve existing fields if we have them (don't overwrite with None)
+            if ticker_upper in cache:
+                existing = cache[ticker_upper]
+                for field in cls.ALL_FIELDS:
+                    if field not in metadata or metadata.get(field) is None:
+                        metadata[field] = existing.get(field)
+
+            cache[ticker_upper] = metadata
+            cached_count += 1
+
+        # Save to disk
+        cls._save_cache()
+
+        existing_count = total - cached_count
+        print(f"[Metadata] Cached {cached_count} tickers ({existing_count} already existed)")
+
+        return cached_count

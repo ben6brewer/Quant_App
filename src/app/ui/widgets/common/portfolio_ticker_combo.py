@@ -276,9 +276,11 @@ class PortfolioComboBox(QComboBox):
         """Handle dropdown selection."""
         if text and text != self._last_value:
             self._last_value = text
-            # Show name without prefix in display
+            # Show name without prefix in display (block signals to prevent re-trigger)
             if text.startswith(self.PORTFOLIO_PREFIX):
+                self.blockSignals(True)
                 self.lineEdit().setText(text[len(self.PORTFOLIO_PREFIX):])
+                self.blockSignals(False)
             self.value_changed.emit(text)
 
     def set_portfolios(self, portfolios: List[str], current: Optional[str] = None):

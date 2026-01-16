@@ -149,9 +149,10 @@ class TickerNameCache:
         return [t for t in tickers if t.upper() not in cache]
 
     @classmethod
-    def clear(cls) -> None:
-        """Clear all cached names (useful for testing)."""
+    def clear_cache(cls) -> None:
+        """Clear all cached ticker names."""
         with cls._lock:
             cls._cache = {}
             if cls._CACHE_FILE.exists():
                 cls._CACHE_FILE.unlink()
+        print("[TickerNameCache] Cache cleared")

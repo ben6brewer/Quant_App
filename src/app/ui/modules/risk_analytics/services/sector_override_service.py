@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .ticker_metadata_service import TickerMetadataService
+from app.services.ticker_metadata_service import TickerMetadataService
 
 
 class SectorOverrideService:

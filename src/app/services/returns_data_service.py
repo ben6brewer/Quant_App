@@ -138,22 +138,30 @@ class ReturnsDataService:
         """
         Compute daily returns for all tickers in a portfolio.
 
+        Uses batch fetching for optimal performance with large portfolios.
+
         Returns:
             DataFrame with daily returns for each ticker
         """
         import pandas as pd
+        from app.services.market_data import fetch_price_history_batch
 
         tickers = PortfolioDataService.get_tickers(portfolio_name)
         if not tickers:
             return pd.DataFrame()
 
+        # Batch fetch all ticker data at once (much faster than sequential)
+        price_data = fetch_price_history_batch(tickers)
+
         returns_dict: Dict[str, Any] = {}
 
         for ticker in tickers:
             try:
-                # Fetch price history (uses existing cache)
-                df = fetch_price_history(ticker, period="max", interval="1d")
-                if df.empty:
+                if ticker not in price_data:
+                    continue
+
+                df = price_data[ticker]
+                if df is None or df.empty:
                     continue
 
                 # Calculate daily returns from Close prices
@@ -163,7 +171,7 @@ class ReturnsDataService:
                 returns_dict[ticker] = daily_returns
 
             except Exception as e:
-                print(f"Warning: Could not fetch returns for {ticker}: {e}")
+                print(f"Warning: Could not compute returns for {ticker}: {e}")
                 continue
 
         if not returns_dict:
@@ -311,6 +319,12 @@ class ReturnsDataService:
                         cache_file.unlink()
                     except OSError:
                         pass
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear all cached portfolio returns."""
+        cls.invalidate_all_caches()
+        print("[ReturnsDataService] Cache cleared")
 
     @classmethod
     def get_correlation_matrix(
@@ -517,22 +531,21 @@ class ReturnsDataService:
 
         tickers = positions.columns.tolist()
 
-        # Fetch daily close prices for all tickers (except FREE CASH)
+        # Batch fetch daily close prices for all tickers (except FREE CASH)
+        from app.services.market_data import fetch_price_history_batch
+
+        tickers_to_fetch = [t for t in tickers if t.upper() != "FREE CASH"]
+        batch_data = fetch_price_history_batch(tickers_to_fetch)
+
+        # Extract close prices from batch results
         price_data: Dict[str, Any] = {}
-
-        for ticker in tickers:
-            if ticker.upper() == "FREE CASH":
-                # FREE CASH: quantity IS the dollar value (price = $1)
-                continue
-
-            try:
-                df = fetch_price_history(ticker, period="max", interval="1d")
-                if not df.empty:
+        for ticker in tickers_to_fetch:
+            if ticker in batch_data:
+                df = batch_data[ticker]
+                if df is not None and not df.empty:
                     close = df["Close"]
                     close.index = pd.to_datetime(close.index)
                     price_data[ticker] = close
-            except Exception as e:
-                print(f"Warning: Could not fetch prices for {ticker}: {e}")
 
         # Calculate market values for each position on each day
         market_values = pd.DataFrame(index=positions.index, columns=tickers, dtype=float)
@@ -598,21 +611,41 @@ class ReturnsDataService:
             portfolio_name, start_date, end_date, include_cash
         )
         if weights.empty:
+            print(f"[DEBUG] get_time_varying_portfolio_returns: weights empty for '{portfolio_name}'")
             return pd.Series(dtype=float)
+
+        print(f"[DEBUG] Weights shape: {weights.shape}, date range: {weights.index.min()} to {weights.index.max()}")
 
         # Get daily returns for all tickers (excluding FREE CASH - it has 0% return)
         tickers = [t for t in weights.columns if t.upper() != "FREE CASH"]
 
         if not tickers:
             # Only cash in portfolio - return zeros
+            print(f"[DEBUG] Only cash in portfolio, returning zeros")
             return pd.Series(0.0, index=weights.index, name="portfolio_return")
 
         # Get daily returns
         returns = cls.get_daily_returns(portfolio_name, start_date, end_date)
+        print(f"[DEBUG] Returns shape: {returns.shape if not returns.empty else 'empty'}")
+
+        # Normalize both indices to date-only (remove time component and timezone)
+        # This fixes mismatches like 2026-01-15 00:00:00 vs 2026-01-15 05:00:00
+        weights_idx = pd.to_datetime(weights.index).normalize()
+        returns_idx = pd.to_datetime(returns.index).normalize()
+        # Remove timezone if present
+        if weights_idx.tz is not None:
+            weights_idx = weights_idx.tz_localize(None)
+        if returns_idx.tz is not None:
+            returns_idx = returns_idx.tz_localize(None)
+        weights.index = weights_idx
+        returns.index = returns_idx
 
         # Ensure same index
         common_dates = weights.index.intersection(returns.index)
         if common_dates.empty:
+            print(f"[DEBUG] No common dates between weights and returns!")
+            if not returns.empty:
+                print(f"[DEBUG] Returns date range: {returns.index.min()} to {returns.index.max()}")
             return pd.Series(dtype=float)
 
         weights = weights.loc[common_dates]
@@ -1038,7 +1071,8 @@ class ReturnsDataService:
         """
         import pandas as pd
 
-        df = fetch_price_history(ticker, period="max", interval="1d")
+        # skip_live_bar=True - returns calculations use daily closes, not intraday
+        df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
         if df.empty:
             return pd.Series(dtype=float)
 
@@ -1600,6 +1634,169 @@ class ReturnsDataService:
             )
         else:
             return cls.get_ticker_returns(benchmark, start_date, end_date, interval)
+
+    @classmethod
+    def append_live_return(
+        cls,
+        returns: "pd.Series",
+        ticker: str,
+    ) -> "pd.Series":
+        """
+        Append today's live return to a returns series if eligible.
+
+        Only appends if:
+        - Today is a trading day (stocks) or any day (crypto)
+        - Current time is within extended market hours (stocks) or any time (crypto)
+        - Returns series doesn't already include today
+
+        Args:
+            returns: Existing returns series with DatetimeIndex
+            ticker: Ticker symbol to fetch live price for
+
+        Returns:
+            Returns series with today's live return appended (if applicable),
+            or original series if not eligible for update
+        """
+        import pandas as pd
+        from app.utils.market_hours import is_crypto_ticker, is_market_open_extended
+
+        if returns is None or returns.empty:
+            return returns
+
+        # Check if ticker is eligible for live update
+        is_crypto = is_crypto_ticker(ticker)
+        if not is_crypto and not is_market_open_extended():
+            return returns  # Stocks outside market hours
+
+        # Check if returns already includes today
+        today = pd.Timestamp.now().normalize()
+        if returns.index.max() >= today:
+            return returns  # Already have today's data
+
+        # Get yesterday's close (last value in the price series)
+        # We need to fetch the actual close price, not the return
+        from app.services.market_data import fetch_price_history
+
+        df = fetch_price_history(ticker, period="5d", interval="1d", skip_live_bar=True)
+        if df is None or df.empty or len(df) < 2:
+            return returns
+
+        yesterday_close = df["Close"].iloc[-1]
+
+        # Fetch live price
+        from app.services.yahoo_finance_service import YahooFinanceService
+
+        live_prices = YahooFinanceService.fetch_batch_current_prices([ticker])
+        if not live_prices or ticker not in live_prices:
+            return returns
+
+        live_price = live_prices[ticker]
+
+        # Calculate today's return
+        todays_return = (live_price / yesterday_close) - 1
+
+        # Append to returns series
+        new_entry = pd.Series([todays_return], index=[today], name=returns.name)
+        updated_returns = pd.concat([returns, new_entry])
+
+        print(f"[Live Return] {ticker}: yesterday=${yesterday_close:.2f}, live=${live_price:.2f}, return={todays_return:.4f}")
+
+        return updated_returns
+
+    @classmethod
+    def append_live_portfolio_return(
+        cls,
+        returns: "pd.Series",
+        portfolio_name: str,
+        include_cash: bool = False,
+    ) -> "pd.Series":
+        """
+        Append today's live portfolio return based on current holdings.
+
+        Fetches live prices for all eligible tickers and calculates
+        the weighted portfolio return for today.
+
+        Args:
+            returns: Existing portfolio returns series
+            portfolio_name: Name of the portfolio
+            include_cash: Whether to include cash in weight calculation
+
+        Returns:
+            Returns series with today's live return appended (if applicable)
+        """
+        import pandas as pd
+        from app.utils.market_hours import is_crypto_ticker, is_market_open_extended
+        from app.services.yahoo_finance_service import YahooFinanceService
+        from app.services.market_data import fetch_price_history
+
+        if returns is None or returns.empty:
+            return returns
+
+        # Check if returns already includes today
+        today = pd.Timestamp.now().normalize()
+        if returns.index.max() >= today:
+            return returns
+
+        # Get current positions and weights from latest date
+        weights = cls.get_daily_weights(portfolio_name, include_cash=include_cash)
+        if weights.empty:
+            return returns
+
+        # Get latest weights (last row)
+        latest_weights = weights.iloc[-1]
+        tickers = [t for t in latest_weights.index if t.upper() != "FREE CASH" and latest_weights[t] > 0]
+
+        if not tickers:
+            return returns
+
+        # Determine which tickers are eligible for live update
+        is_extended_hours = is_market_open_extended()
+        eligible_tickers = []
+        for ticker in tickers:
+            if is_crypto_ticker(ticker) or is_extended_hours:
+                eligible_tickers.append(ticker)
+
+        if not eligible_tickers:
+            return returns
+
+        # Fetch live prices in batch
+        live_prices = YahooFinanceService.fetch_batch_current_prices(eligible_tickers)
+        if not live_prices:
+            return returns
+
+        # Get yesterday's closes for eligible tickers
+        yesterday_closes = {}
+        for ticker in eligible_tickers:
+            df = fetch_price_history(ticker, period="5d", interval="1d", skip_live_bar=True)
+            if df is not None and not df.empty:
+                yesterday_closes[ticker] = df["Close"].iloc[-1]
+
+        # Calculate weighted portfolio return for today
+        portfolio_return = 0.0
+        total_weight = 0.0
+
+        for ticker in eligible_tickers:
+            if ticker in live_prices and ticker in yesterday_closes:
+                weight = latest_weights[ticker]
+                yesterday = yesterday_closes[ticker]
+                live = live_prices[ticker]
+                ticker_return = (live / yesterday) - 1
+                portfolio_return += weight * ticker_return
+                total_weight += weight
+
+        if total_weight == 0:
+            return returns
+
+        # Note: Non-eligible tickers contribute 0 return but keep their weight
+        # This is a simplification - ideally we'd use yesterday's return for them
+
+        # Append to returns series
+        new_entry = pd.Series([portfolio_return], index=[today], name=returns.name)
+        updated_returns = pd.concat([returns, new_entry])
+
+        print(f"[Live Return] Portfolio {portfolio_name}: {len(eligible_tickers)} tickers updated, return={portfolio_return:.4f}")
+
+        return updated_returns
 
     @classmethod
     def get_risk_metrics(

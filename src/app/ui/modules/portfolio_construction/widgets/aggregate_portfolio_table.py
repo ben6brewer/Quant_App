@@ -388,6 +388,173 @@ class AggregatePortfolioTable(LazyThemeMixin, QTableWidget):
         header = self.horizontalHeader()
         header.setSortIndicator(column, self._current_sort_order)
 
+    def update_live_prices(self, prices: Dict[str, float]) -> None:
+        """
+        Update current prices in-place without full table refresh.
+
+        Updates Current Price, Market Value, P&L, and Weight columns
+        for tickers that have new prices. Also updates the TOTAL row.
+
+        Args:
+            prices: Dict mapping ticker -> current price
+        """
+        if not prices or not self._holdings_data:
+            return
+
+        # Track if any holding was updated
+        holdings_updated = False
+
+        # First, update holdings data and collect updated values
+        for holding in self._holdings_data:
+            ticker = holding["ticker"]
+
+            # Skip FREE CASH - price is always $1
+            if holding.get("_is_free_cash"):
+                continue
+
+            if ticker in prices:
+                new_price = prices[ticker]
+                old_price = holding.get("current_price")
+
+                # Skip if price unchanged
+                if old_price == new_price:
+                    continue
+
+                # Update holding data
+                holding["current_price"] = new_price
+                quantity = holding["total_quantity"]
+                cost_basis = holding["avg_cost_basis"]
+
+                # Recalculate derived values
+                holding["market_value"] = quantity * new_price
+                holding["total_pnl"] = (new_price - cost_basis) * quantity
+
+                holdings_updated = True
+
+        if not holdings_updated:
+            return
+
+        # Recalculate weights based on new total market value
+        holdings_market_value = sum(
+            h.get("market_value", 0) or 0
+            for h in self._holdings_data
+            if not h.get("_is_free_cash")
+        )
+        free_cash_value = 0
+        for h in self._holdings_data:
+            if h.get("_is_free_cash"):
+                free_cash_value = h.get("market_value", 0) or 0
+                break
+
+        total_market_value = holdings_market_value + free_cash_value
+
+        if total_market_value > 0:
+            for holding in self._holdings_data:
+                mv = holding.get("market_value", 0) or 0
+                holding["weight_pct"] = (mv / total_market_value) * 100
+
+        # Now update the displayed cells
+        # Row 0 is TOTAL row, holdings start at row 1
+        for row in range(1, self.rowCount()):
+            ticker_item = self.item(row, 0)  # Ticker column
+            if not ticker_item:
+                continue
+            ticker = ticker_item.text()
+
+            # Find corresponding holding
+            holding = None
+            for h in self._holdings_data:
+                if h["ticker"] == ticker:
+                    holding = h
+                    break
+
+            if not holding or ticker not in prices:
+                continue
+
+            # Skip FREE CASH
+            if holding.get("_is_free_cash"):
+                continue
+
+            # Update Current Price (column 4)
+            price = holding["current_price"]
+            price_item = QTableWidgetItem(f"${price:.2f}")
+            price_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.setItem(row, 4, price_item)
+
+            # Update Market Value (column 5)
+            market_value = holding.get("market_value")
+            if market_value is not None:
+                mv_item = QTableWidgetItem(f"${market_value:,.2f}")
+            else:
+                mv_item = QTableWidgetItem("N/A")
+            mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.setItem(row, 5, mv_item)
+
+            # Update P&L (column 6)
+            pnl = holding.get("total_pnl")
+            if pnl is not None:
+                if pnl == 0:
+                    pnl_item = QTableWidgetItem("--")
+                else:
+                    pnl_item = QTableWidgetItem(f"${abs(pnl):,.2f}")
+                    if pnl > 0:
+                        pnl_item.setForeground(QColor(76, 153, 0))  # Green
+                    elif pnl < 0:
+                        pnl_item.setForeground(QColor(200, 50, 50))  # Red
+            else:
+                pnl_item = QTableWidgetItem("N/A")
+            pnl_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.setItem(row, 6, pnl_item)
+
+            # Update Weight (column 7)
+            weight_item = QTableWidgetItem(f"{holding['weight_pct']:.2f}%")
+            weight_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.setItem(row, 7, weight_item)
+
+        # Update TOTAL row (row 0)
+        self._update_totals_row()
+
+    def _update_totals_row(self) -> None:
+        """Update the TOTAL row with current totals from holdings data."""
+        if self.rowCount() == 0:
+            return
+
+        # Calculate totals from holdings (excluding FREE CASH for P&L)
+        total_market_value = 0.0
+        total_pnl = 0.0
+
+        for holding in self._holdings_data:
+            market_value = holding.get("market_value", 0) or 0
+            total_market_value += market_value
+
+            # FREE CASH has no P&L
+            if not holding.get("_is_free_cash"):
+                pnl = holding.get("total_pnl", 0) or 0
+                total_pnl += pnl
+
+        # Update Market Value cell (column 5, row 0)
+        mv_item = QTableWidgetItem(f"${total_market_value:,.2f}")
+        mv_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        font = QFont()
+        font.setBold(True)
+        mv_item.setFont(font)
+        self.setItem(0, 5, mv_item)
+
+        # Update P&L cell (column 6, row 0)
+        if total_pnl == 0:
+            pnl_item = QTableWidgetItem("--")
+        else:
+            pnl_item = QTableWidgetItem(f"${abs(total_pnl):,.2f}")
+            if total_pnl > 0:
+                pnl_item.setForeground(QColor(76, 153, 0))
+            elif total_pnl < 0:
+                pnl_item.setForeground(QColor(200, 50, 50))
+        pnl_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        font = QFont()
+        font.setBold(True)
+        pnl_item.setFont(font)
+        self.setItem(0, 6, pnl_item)
+
     def _apply_theme(self):
         """Apply theme-specific styling."""
         theme = self.theme_manager.current_theme

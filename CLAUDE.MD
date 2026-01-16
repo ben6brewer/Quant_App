@@ -73,8 +73,10 @@ src/app/
 │
 ├── services/                  # SHARED ONLY
 │   ├── statistics_service.py       # 25+ financial calculations
-│   ├── market_data.py              # Yahoo Finance fetching
-│   ├── returns_data_service.py     # Cached daily returns
+│   ├── market_data.py              # Market data fetching + caching
+│   ├── yahoo_finance_service.py    # Yahoo Finance API wrapper
+│   ├── returns_data_service.py     # Cached returns + live injection
+│   ├── ticker_metadata_service.py  # Ticker name/sector/industry cache
 │   ├── portfolio_data_service.py   # Read-only portfolio access
 │   ├── theme_stylesheet_service.py # Centralized theme colors
 │   └── base_settings_manager.py    # Settings persistence base
@@ -89,6 +91,7 @@ src/app/
 │
 └── utils/
     ├── formatters.py          # Price, number, metric formatting
+    ├── market_hours.py        # NYSE hours, crypto detection, trading days
     └── screenshot_manager.py
 ```
 
@@ -174,7 +177,7 @@ StatisticsService.get_correlation(portfolio, benchmark)
 StatisticsService.get_capture_ratio(portfolio, benchmark)
 
 # Utility
-StatisticsService.get_risk_free_rate()  # Fetches ^IRX
+StatisticsService.get_risk_free_rate()  # Fetches ^IRX via Yahoo Finance
 StatisticsService.get_distribution_statistics(returns)
 StatisticsService.align_returns(portfolio, benchmark)
 ```
@@ -187,11 +190,27 @@ StatisticsService.align_returns(portfolio, benchmark)
 **BaseSettingsManager** - Settings persistence base class
 - Subclass with `DEFAULT_SETTINGS` and `settings_filename` properties
 
-**MarketDataService** - Yahoo Finance with caching
-- `fetch_price_history(ticker, period, interval)`
+**MarketDataService** - Yahoo-first with Polygon fallback, parquet caching
+- `fetch_price_history(ticker, period, interval, skip_live_bar=False)` - Single ticker
+- `fetch_price_history_batch(tickers)` - Multiple tickers (10x faster for portfolios)
+- `fetch_price_history_yahoo(ticker)` - Yahoo-only (for chart module)
 
-**ReturnsDataService** - Cached portfolio returns
-- `get_daily_returns(portfolio_name)`, `get_portfolio_returns()`
+**YahooFinanceService** - Yahoo Finance API wrapper
+- `fetch_full_history(ticker)` - Max history for a ticker
+- `fetch_batch_full_history(tickers)` - Batch max history (single API call)
+- `fetch_batch_current_prices(tickers)` - Live prices for multiple tickers
+- `fetch_today_ohlcv(ticker)` - Today's bar (for live polling)
+
+**ReturnsDataService** - Cached portfolio returns with live data
+- `get_daily_returns(portfolio_name)` - Cached daily returns DataFrame
+- `get_time_varying_portfolio_returns(name)` - Weighted portfolio returns
+- `get_ticker_returns(ticker)` - Single ticker returns
+- `append_live_return(returns, ticker)` - Add today's live return (crypto 24/7, stocks during market hours)
+- `append_live_portfolio_return(returns, portfolio_name)` - Add today's live portfolio return
+
+**TickerMetadataService** - Cached ticker info (name, sector, industry)
+- `get_metadata(ticker)` - Returns dict with shortName, sector, industry, etc.
+- `get_metadata_batch(tickers)` - Batch metadata fetch
 
 ---
 

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from app.core.config import (
     INTERVAL_MAP,
     DEFAULT_PERIOD,
     DATA_FETCH_THREADS,
+    POLYGON_BATCH_CONCURRENCY,
     SHOW_DOWNLOAD_PROGRESS,
     ERROR_EMPTY_TICKER,
     ERROR_NO_DATA,
@@ -16,6 +20,30 @@ from app.core.config import (
 
 if TYPE_CHECKING:
     import pandas as pd
+
+
+# ============================================================================
+# Batch Processing Types
+# ============================================================================
+
+
+class TickerGroup(Enum):
+    """Classification groups for batch ticker processing."""
+
+    CACHE_CURRENT = "cache_current"  # Cache is up-to-date, just read
+    NEED_YAHOO_BACKFILL = "need_yahoo_backfill"  # Need Yahoo full history
+    NEED_POLYGON_UPDATE = "need_polygon_update"  # Need Polygon incremental
+
+
+@dataclass
+class TickerClassification:
+    """Classification result for a single ticker."""
+
+    group: TickerGroup
+    ticker: str
+    cached_df: Optional["pd.DataFrame"] = None
+    update_from_date: Optional[str] = None
+    update_to_date: Optional[str] = None
 
 # Import the cache manager
 from app.services.market_data_cache import MarketDataCache
@@ -366,29 +394,452 @@ def _prepend_btc_historical(yf_df: "pd.DataFrame") -> "pd.DataFrame":
     return combined
 
 
+def _perform_yahoo_full_fetch_and_merge(
+    ticker: str, existing_df: "pd.DataFrame"
+) -> "pd.DataFrame":
+    """
+    Fetch full Yahoo Finance history and merge with existing data.
+
+    Used when parquet exists but doesn't have Yahoo backfill.
+    Fetches full Yahoo history and merges, prioritizing Yahoo data.
+
+    Args:
+        ticker: Ticker symbol
+        existing_df: Existing DataFrame from parquet (may be Polygon-only)
+
+    Returns:
+        Merged DataFrame with Yahoo historical data
+    """
+    import pandas as pd
+
+    print(f"Fetching full Yahoo history for {ticker} to merge with existing data...")
+
+    # Try to fetch full Yahoo history
+    yahoo_df, was_rate_limited = YahooFinanceService.fetch_full_history_safe(ticker)
+
+    if was_rate_limited or yahoo_df is None or yahoo_df.empty:
+        # Yahoo failed/rate-limited - keep existing data, don't set flag
+        print(f"Yahoo fetch failed for {ticker}, keeping existing Polygon data")
+        return existing_df
+
+    # Ensure proper datetime index
+    yahoo_df.index = pd.to_datetime(yahoo_df.index)
+    yahoo_df.sort_index(inplace=True)
+
+    # Merge: Yahoo data takes priority for overlaps
+    # This gives us Yahoo's full history + any recent Polygon data
+    combined = pd.concat([yahoo_df, existing_df])
+    combined = combined[~combined.index.duplicated(keep='first')]  # Yahoo wins
+    combined.sort_index(inplace=True)
+
+    print(f"Merged Yahoo history ({len(yahoo_df)} bars) with existing data for {ticker}")
+
+    # Mark as yahoo_backfilled
+    BackfillTracker.mark_yahoo_backfilled(ticker)
+
+    return combined
+
+
+# ============================================================================
+# Batch Processing Functions
+# ============================================================================
+
+
+def classify_tickers(
+    tickers: List[str],
+) -> Dict[TickerGroup, List[TickerClassification]]:
+    """
+    Classify tickers into processing groups based on cache state.
+
+    Groups:
+    - CACHE_CURRENT: yahoo_backfilled=True AND cache is current
+    - NEED_YAHOO_BACKFILL: yahoo_backfilled=False OR no cache
+    - NEED_POLYGON_UPDATE: yahoo_backfilled=True AND cache outdated
+
+    Args:
+        tickers: List of ticker symbols
+
+    Returns:
+        Dict mapping TickerGroup -> list of TickerClassification
+    """
+    from datetime import datetime, timedelta
+
+    groups: Dict[TickerGroup, List[TickerClassification]] = {
+        TickerGroup.CACHE_CURRENT: [],
+        TickerGroup.NEED_YAHOO_BACKFILL: [],
+        TickerGroup.NEED_POLYGON_UPDATE: [],
+    }
+
+    for ticker in tickers:
+        ticker = ticker.strip().upper()
+
+        # Check memory cache first
+        df = _get_from_memory_cache(ticker)
+        if df is not None and not df.empty and _cache.is_cache_current(ticker):
+            groups[TickerGroup.CACHE_CURRENT].append(
+                TickerClassification(TickerGroup.CACHE_CURRENT, ticker, df)
+            )
+            continue
+
+        # Check disk cache
+        has_parquet = _cache.has_cache(ticker)
+        is_yahoo_backfilled = BackfillTracker.is_yahoo_backfilled(ticker)
+
+        if not has_parquet or not is_yahoo_backfilled:
+            # Need full Yahoo backfill
+            cached_df = _cache.get_cached_data(ticker) if has_parquet else None
+            groups[TickerGroup.NEED_YAHOO_BACKFILL].append(
+                TickerClassification(
+                    TickerGroup.NEED_YAHOO_BACKFILL, ticker, cached_df
+                )
+            )
+        else:
+            # Has parquet and yahoo_backfilled - check if current
+            cached_df = _cache.get_cached_data(ticker)
+            if cached_df is not None and not cached_df.empty:
+                if _cache.is_cache_current(ticker):
+                    groups[TickerGroup.CACHE_CURRENT].append(
+                        TickerClassification(
+                            TickerGroup.CACHE_CURRENT, ticker, cached_df
+                        )
+                    )
+                else:
+                    # Need Polygon incremental update
+                    last_date = cached_df.index.max().date()
+                    from_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                    to_date = datetime.now().strftime("%Y-%m-%d")
+                    groups[TickerGroup.NEED_POLYGON_UPDATE].append(
+                        TickerClassification(
+                            TickerGroup.NEED_POLYGON_UPDATE,
+                            ticker,
+                            cached_df,
+                            from_date,
+                            to_date,
+                        )
+                    )
+            else:
+                # Empty cached data - need Yahoo backfill
+                groups[TickerGroup.NEED_YAHOO_BACKFILL].append(
+                    TickerClassification(
+                        TickerGroup.NEED_YAHOO_BACKFILL, ticker, None
+                    )
+                )
+
+    return groups
+
+
+def fetch_price_history_batch(
+    tickers: List[str],
+    progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+) -> Dict[str, "pd.DataFrame"]:
+    """
+    Fetch price history for multiple tickers with batch optimization.
+
+    Classifies tickers into groups and processes each group optimally:
+    - Group A (Cache Current): Direct parquet reads
+    - Group B (Need Yahoo Backfill): Single batch yf.download()
+    - Group C (Need Polygon Update): Parallel Polygon incremental fetches
+
+    Args:
+        tickers: List of ticker symbols
+        progress_callback: Optional callback(completed, total, ticker, phase)
+                          phase is one of: "classifying", "cache", "yahoo", "polygon"
+
+    Returns:
+        Dict mapping ticker -> DataFrame with OHLCV data
+    """
+    import pandas as pd
+
+    if not tickers:
+        return {}
+
+    # Ensure unique, uppercase tickers
+    tickers = list(dict.fromkeys(t.strip().upper() for t in tickers))
+    total = len(tickers)
+
+    print(f"\n=== Batch fetching {total} tickers ===")
+
+    results: Dict[str, pd.DataFrame] = {}
+
+    # Phase 1: Classification
+    if progress_callback:
+        progress_callback(0, total, "", "classifying")
+
+    groups = classify_tickers(tickers)
+
+    group_a = groups[TickerGroup.CACHE_CURRENT]
+    group_b = groups[TickerGroup.NEED_YAHOO_BACKFILL]
+    group_c = groups[TickerGroup.NEED_POLYGON_UPDATE]
+
+    print(f"  Group A (cache current): {len(group_a)} tickers")
+    print(f"  Group B (need Yahoo): {len(group_b)} tickers")
+    print(f"  Group C (need Polygon update): {len(group_c)} tickers")
+
+    # Phase 2: Process Group A (Cache Current) - just return cached data
+    if group_a:
+        print(f"\nReading {len(group_a)} tickers from cache...")
+        for i, classification in enumerate(group_a):
+            results[classification.ticker] = classification.cached_df
+            _set_memory_cache(classification.ticker, classification.cached_df)
+            if progress_callback:
+                progress_callback(i + 1, len(group_a), classification.ticker, "cache")
+
+    # Phase 3: Process Group B (Need Yahoo Backfill) - batch download
+    if group_b:
+        batch_tickers = [c.ticker for c in group_b]
+
+        def yahoo_progress(completed: int, yahoo_total: int, ticker: str) -> None:
+            if progress_callback:
+                progress_callback(completed, yahoo_total, ticker, "yahoo")
+
+        yahoo_results, failed = YahooFinanceService.fetch_batch_full_history(
+            batch_tickers, yahoo_progress
+        )
+
+        # Process successful Yahoo results
+        for classification in group_b:
+            ticker = classification.ticker
+            if ticker in yahoo_results:
+                df = yahoo_results[ticker]
+
+                # Legacy: Prepend BTC historical CSV if needed
+                if ticker == "BTC-USD":
+                    df = _prepend_btc_historical(df)
+
+                # Mark as yahoo_backfilled
+                BackfillTracker.mark_yahoo_backfilled(ticker)
+
+                # Save to caches
+                _cache.save_to_cache(ticker, df)
+                _set_memory_cache(ticker, df)
+
+                results[ticker] = df
+            elif ticker in failed:
+                # Yahoo failed - try Polygon fallback for this ticker
+                print(f"  {ticker}: Yahoo failed, trying Polygon fallback...")
+                try:
+                    df = PolygonDataService.fetch(ticker, period="max", interval="1d")
+                    if df is not None and not df.empty:
+                        df.index = pd.to_datetime(df.index)
+                        df.sort_index(inplace=True)
+
+                        if ticker == "BTC-USD":
+                            df = _prepend_btc_historical(df)
+
+                        # Save but DON'T mark yahoo_backfilled
+                        _cache.save_to_cache(ticker, df)
+                        _set_memory_cache(ticker, df)
+                        results[ticker] = df
+                        print(f"  {ticker}: Polygon fallback succeeded")
+                except Exception as e:
+                    print(f"  {ticker}: Both Yahoo and Polygon failed: {e}")
+
+    # Phase 4: Process Group C (Need Polygon Update) - batch incremental
+    if group_c:
+        print(f"\nBatch updating {len(group_c)} tickers from Polygon...")
+        date_ranges = {
+            c.ticker: (c.update_from_date, c.update_to_date) for c in group_c
+        }
+
+        def polygon_progress(completed: int, poly_total: int, ticker: str) -> None:
+            if progress_callback:
+                progress_callback(completed, poly_total, ticker, "polygon")
+
+        polygon_results = PolygonDataService.fetch_batch_date_range(
+            [c.ticker for c in group_c],
+            date_ranges,
+            polygon_progress,
+        )
+
+        # Merge incremental updates with cached data
+        for classification in group_c:
+            ticker = classification.ticker
+            cached_df = classification.cached_df
+
+            if ticker in polygon_results:
+                new_df = polygon_results[ticker]
+                combined = pd.concat([cached_df, new_df])
+                combined = combined[~combined.index.duplicated(keep="last")]
+                combined.sort_index(inplace=True)
+
+                # Save updated data
+                _cache.save_to_cache(ticker, combined)
+                _set_memory_cache(ticker, combined)
+                results[ticker] = combined
+            else:
+                # No new data from Polygon - use cached
+                results[ticker] = cached_df
+                _set_memory_cache(ticker, cached_df)
+
+    print(f"\n=== Batch complete: {len(results)}/{total} tickers loaded ===\n")
+    return results
+
+
+def fetch_price_history_batch_polygon_first(
+    tickers: List[str],
+    max_workers: int = POLYGON_BATCH_CONCURRENCY,
+) -> Dict[str, "pd.DataFrame"]:
+    """
+    Fetch price history for multiple tickers using Polygon as primary source.
+
+    Optimized for Risk Analytics Attribution with ~3000 IWV tickers.
+    Uses high concurrency (100 workers) for fast batch fetching.
+
+    Strategy:
+    1. Check cache first - return cached data if current
+    2. Fetch from Polygon (100 concurrent) for uncached/stale tickers
+    3. Yahoo fallback for Polygon failures only
+    4. Save all fetched data to cache
+
+    Args:
+        tickers: List of ticker symbols
+        max_workers: Polygon concurrent workers (default from config)
+
+    Returns:
+        Dict mapping ticker -> DataFrame with OHLCV data
+    """
+    import pandas as pd
+
+    if not tickers:
+        return {}
+
+    # Ensure unique, uppercase tickers
+    tickers = list(dict.fromkeys(t.strip().upper() for t in tickers))
+    total = len(tickers)
+
+    print(f"\n=== Polygon-First Batch: {total} tickers ===")
+
+    results: Dict[str, pd.DataFrame] = {}
+
+    # Phase 1: Check cache for all tickers (optimized with parallel reads)
+    cached_tickers: List[str] = []
+    need_fetch: List[str] = []
+    need_disk_check: List[str] = []
+
+    print(f"[Cache] Checking {total} tickers...")
+
+    # First pass: check memory cache (fast)
+    for ticker in tickers:
+        df = _get_from_memory_cache(ticker)
+        if df is not None and not df.empty and _cache.is_cache_current(ticker, df):
+            results[ticker] = df
+            cached_tickers.append(ticker)
+        elif _cache.has_cache(ticker):
+            need_disk_check.append(ticker)
+        else:
+            need_fetch.append(ticker)
+
+    # Second pass: parallel disk cache reads
+    if need_disk_check:
+        def _check_disk_cache(ticker: str):
+            df = _cache.get_cached_data(ticker)
+            if df is not None and not df.empty and _cache.is_cache_current(ticker, df):
+                return ticker, df, True  # cached and current
+            return ticker, df, False  # needs fetch (even if df exists but stale)
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            disk_results = list(executor.map(_check_disk_cache, need_disk_check))
+
+        for ticker, df, is_current in disk_results:
+            if is_current and df is not None:
+                _set_memory_cache(ticker, df)
+                results[ticker] = df
+                cached_tickers.append(ticker)
+            else:
+                need_fetch.append(ticker)
+
+    print(f"[Cache] {len(cached_tickers)} current, {len(need_fetch)} need fetch")
+
+    if not need_fetch:
+        print(f"=== Batch Complete: {len(results)}/{total} tickers loaded (all from cache) ===\n")
+        return results
+
+    # Phase 2: Fetch from Polygon (primary source)
+    polygon_results, failed_tickers = PolygonDataService.fetch_batch_full_history(
+        need_fetch, max_workers=max_workers
+    )
+
+    # Process successful Polygon results (parallel cache writes)
+    def _save_polygon_ticker(item):
+        ticker, df = item
+        if df is not None and not df.empty:
+            df.index = pd.to_datetime(df.index)
+            df.sort_index(inplace=True)
+            _cache.save_to_cache(ticker, df)
+            return ticker, df
+        return ticker, None
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        saved_items = list(executor.map(_save_polygon_ticker, polygon_results.items()))
+
+    for ticker, df in saved_items:
+        if df is not None:
+            _set_memory_cache(ticker, df)
+            results[ticker] = df
+
+    # Phase 3: Yahoo fallback for failed tickers
+    if failed_tickers:
+        print(f"[Yahoo Fallback] Fetching {len(failed_tickers)} failed tickers...")
+
+        def yahoo_progress(completed: int, yahoo_total: int, ticker: str) -> None:
+            pass  # Silent progress for fallback
+
+        yahoo_results, yahoo_failed = YahooFinanceService.fetch_batch_full_history(
+            failed_tickers, yahoo_progress
+        )
+
+        # Parallel cache writes for Yahoo results
+        def _save_yahoo_ticker(item):
+            ticker, df = item
+            if df is not None and not df.empty:
+                df.index = pd.to_datetime(df.index)
+                df.sort_index(inplace=True)
+                BackfillTracker.mark_yahoo_backfilled(ticker)
+                _cache.save_to_cache(ticker, df)
+                return ticker, df
+            return ticker, None
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            yahoo_saved = list(executor.map(_save_yahoo_ticker, yahoo_results.items()))
+
+        for ticker, df in yahoo_saved:
+            if df is not None:
+                _set_memory_cache(ticker, df)
+                results[ticker] = df
+
+        yahoo_succeeded = len(yahoo_results)
+        yahoo_failed_count = len(yahoo_failed)
+        print(f"[Yahoo Fallback] Complete: {yahoo_succeeded} succeeded, {yahoo_failed_count} failed")
+
+    print(f"=== Batch Complete: {len(results)}/{total} tickers loaded ===\n")
+    return results
+
+
 def fetch_price_history(
     ticker: str,
     period: str = DEFAULT_PERIOD,
     interval: str = "1d",
+    skip_live_bar: bool = False,
 ) -> "pd.DataFrame":
     """
     Fetch historical price data for a ticker with two-level caching.
 
-    Caching strategy (two levels for performance):
-    1. Memory cache: In-session cache to avoid repeated parquet reads
-    2. Disk cache: Parquet files for persistence across sessions
-
-    - Check memory cache first (instant)
-    - If not in memory, check disk cache
-    - If disk cache current, load to memory and return
-    - If outdated or missing, fetch from Yahoo Finance
-    - If fetch fails (offline), return cached data if available
-    - Resample cached daily data as needed for other intervals
+    NEW DATA FLOW (Yahoo-first with Polygon fallback):
+    1. Check memory cache -> if current, return
+    2. Check parquet cache:
+       a. If exists AND yahoo_backfilled AND up-to-date -> return cached
+       b. If exists but NOT yahoo_backfilled -> Pull Yahoo full history, set flag
+       c. If exists AND yahoo_backfilled but OUTDATED -> Polygon incremental update
+    3. If NO parquet:
+       a. Try Yahoo Finance for full history
+       b. If Yahoo rate-limited -> Polygon fallback (5-year), DON'T set flag
 
     Args:
         ticker: Ticker symbol (e.g., "BTC-USD", "AAPL")
         period: Time period (e.g., "max", "1y", "6mo")
         interval: Data interval (e.g., "1d", "daily", "weekly")
+        skip_live_bar: If True, skip fetching today's live bar from Polygon.
+            Use this for portfolio operations that don't need intraday precision.
 
     Returns:
         DataFrame with OHLCV data
@@ -397,8 +848,6 @@ def fetch_price_history(
         ValueError: If ticker is empty or no data is available
     """
     import pandas as pd
-    # Note: yfinance kept for potential fallback but not currently used
-    # import yfinance as yf
 
     # Check if data source has changed (auto-clears cache if switching providers)
     _check_data_source_version()
@@ -420,29 +869,42 @@ def fetch_price_history(
     # Helper to append live data (crypto vs stock)
     def _append_live_data(data: "pd.DataFrame") -> "pd.DataFrame":
         """Append today's data: Yahoo for crypto, Polygon snapshot for stocks."""
+        if skip_live_bar:
+            return data  # Skip live bar fetching for portfolio operations
         if is_crypto_ticker(ticker):
             return _append_crypto_today(data, ticker)
         return _append_live_bar(data, ticker)
+
+    # Helper to return data with appropriate resampling
+    def _return_data(data: "pd.DataFrame") -> "pd.DataFrame":
+        """Return data with live append and resampling if needed."""
+        df_with_live = _append_live_data(data)
+        if needs_daily:
+            return df_with_live
+        return _resample_data(df_with_live, interval_key)
 
     # LEVEL 1: Check memory cache first (instant, no disk I/O)
     df = _get_from_memory_cache(ticker)
     if df is not None and not df.empty:
         # Memory cache hit - check if still current
         if _cache.is_cache_current(ticker):
-            if needs_daily:
-                return _append_live_data(df)
-            else:
-                return _resample_data(_append_live_data(df), interval_key)
-        # Memory cache exists but outdated - try incremental update
-        print(f"Memory cache outdated for {ticker}, checking for incremental update...")
-        df = _perform_incremental_update(ticker, df)
+            return _return_data(df)
+
+        # Memory cache exists but outdated
+        # Check if yahoo_backfilled - determines update strategy
+        if BackfillTracker.is_yahoo_backfilled(ticker):
+            # Yahoo backfilled - use Polygon for incremental update
+            print(f"Memory cache outdated for {ticker}, Polygon incremental update...")
+            df = _perform_incremental_update(ticker, df)
+        else:
+            # Not backfilled - try Yahoo full history
+            print(f"Memory cache outdated for {ticker}, trying Yahoo backfill...")
+            df = _perform_yahoo_full_fetch_and_merge(ticker, df)
+
         # Update both caches
         _cache.save_to_cache(ticker, df)
         _set_memory_cache(ticker, df)
-        if needs_daily:
-            return _append_live_data(df)
-        else:
-            return _resample_data(_append_live_data(df), interval_key)
+        return _return_data(df)
 
     # LEVEL 2: Check disk cache (parquet)
     if _cache.has_cache(ticker):
@@ -450,29 +912,52 @@ def fetch_price_history(
         if df is not None and not df.empty:
             last_date = df.index.max().strftime("%Y-%m-%d")
 
+            # Check if yahoo_backfilled flag is set
+            if not BackfillTracker.is_yahoo_backfilled(ticker):
+                # Need to backfill with Yahoo full history
+                print(f"Parquet exists for {ticker} but not Yahoo backfilled, fetching full Yahoo history...")
+                df = _perform_yahoo_full_fetch_and_merge(ticker, df)
+                _cache.save_to_cache(ticker, df)
+
+            # Check if cache is current
             if _cache.is_cache_current(ticker):
-                # Cache is current
                 print(f"Using cached data for {ticker} (last date: {last_date})")
                 _set_memory_cache(ticker, df)
-                if needs_daily:
-                    return _append_live_data(df)
-                else:
-                    return _resample_data(_append_live_data(df), interval_key)
+                return _return_data(df)
             else:
-                # Cache exists but outdated - do incremental update
-                print(f"Cache outdated for {ticker} (last date: {last_date}), doing incremental update...")
+                # Cache outdated - use Polygon incremental (since yahoo_backfilled)
+                print(f"Cache outdated for {ticker} (last date: {last_date}), Polygon incremental update...")
                 df = _perform_incremental_update(ticker, df)
-                # Update both caches
                 _cache.save_to_cache(ticker, df)
                 _set_memory_cache(ticker, df)
-                if needs_daily:
-                    return _append_live_data(df)
-                else:
-                    return _resample_data(_append_live_data(df), interval_key)
+                return _return_data(df)
 
-    # Try to fetch fresh data from Polygon.io (primary data source)
+    # LEVEL 3: No parquet exists - fresh fetch
+    # Try Yahoo Finance first (primary source for new data)
+    print(f"No cache for {ticker}, trying Yahoo Finance...")
+    df, was_rate_limited = YahooFinanceService.fetch_full_history_safe(ticker)
+
+    if not was_rate_limited and df is not None and not df.empty:
+        # Yahoo succeeded - mark as backfilled
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+
+        # Legacy: Prepend historical CSV data for BTC-USD
+        if ticker == "BTC-USD":
+            df = _prepend_btc_historical(df)
+
+        # Mark as yahoo_backfilled and save
+        BackfillTracker.mark_yahoo_backfilled(ticker)
+        _cache.save_to_cache(ticker, df)
+        _set_memory_cache(ticker, df)
+
+        print(f"Fetched {len(df)} bars for {ticker} from Yahoo Finance")
+        return _return_data(df)
+
+    # Yahoo rate-limited or failed - Polygon fallback (5-year limit)
+    print(f"Yahoo rate-limited for {ticker}, using Polygon fallback (5-year limit)...")
     try:
-        # Always fetch daily data for max period (for caching)
         df = PolygonDataService.fetch(
             ticker=ticker,
             period="max",
@@ -486,65 +971,31 @@ def fetch_price_history(
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
 
-        # Perform one-time historical backfill from Yahoo Finance (pre-5-year data)
-        df = _perform_historical_backfill(ticker, df)
-
-        # Legacy: Prepend historical CSV data for BTC-USD (kept for backward compat)
+        # Legacy: Prepend historical CSV data for BTC-USD
         if ticker == "BTC-USD":
             df = _prepend_btc_historical(df)
 
-        # Cache the daily data (both disk and memory)
+        # Save to cache but DON'T set yahoo_backfilled flag
+        # (Next access will try Yahoo again for full history)
         _cache.save_to_cache(ticker, df)
         _set_memory_cache(ticker, df)
 
-        # Append today's live data (Yahoo for crypto, Polygon snapshot for stocks)
-        df_with_live = _append_live_data(df)
-
-        # If user needs non-daily interval, resample
-        if not needs_daily:
-            return _resample_data(df_with_live, interval_key)
-
-        return df_with_live
+        print(f"Fetched {len(df)} bars for {ticker} from Polygon (5-year limit)")
+        return _return_data(df)
 
     except Exception as e:
-        # Fetch failed - try to use cached data as fallback (even if outdated)
-        print(f"Failed to fetch {ticker} from Polygon.io: {e}")
+        print(f"Polygon fallback failed for {ticker}: {e}")
 
-        # ========================================================================
-        # YAHOO FINANCE FALLBACK (kept for reference, not currently used)
-        # ========================================================================
-        # import yfinance as yf
-        #
-        # df = yf.download(
-        #     tickers=ticker,
-        #     period="max",
-        #     interval="1d",
-        #     auto_adjust=False,
-        #     progress=SHOW_DOWNLOAD_PROGRESS,
-        #     threads=DATA_FETCH_THREADS,
-        # )
-        #
-        # # Sometimes yfinance returns MultiIndex columns
-        # if isinstance(df.columns, pd.MultiIndex):
-        #     df.columns = [c[0] for c in df.columns]
-        # ========================================================================
-
+        # Last resort: use any cached data (even if outdated)
         if _cache.has_cache(ticker):
             df = _cache.get_cached_data(ticker)
             if df is not None and not df.empty:
                 last_date = df.index.max().strftime("%Y-%m-%d")
                 print(f"Using outdated cached data for {ticker} (last date: {last_date})")
-                # Store in memory cache
                 _set_memory_cache(ticker, df)
+                return _return_data(df)
 
-                # Append live data and resample if needed
-                df_with_live = _append_live_data(df)
-                if not needs_daily:
-                    return _resample_data(df_with_live, interval_key)
-
-                return df_with_live
-
-        # No cache available, re-raise the error
+        # No data available
         raise ValueError(ERROR_NO_DATA.format(ticker=ticker))
 
 

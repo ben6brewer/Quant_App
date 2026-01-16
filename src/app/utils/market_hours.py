@@ -9,6 +9,7 @@ handled separately from stocks.
 from __future__ import annotations
 
 from datetime import datetime, date, time, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 # NYSE timezone
@@ -33,7 +34,7 @@ def is_crypto_ticker(ticker: str) -> bool:
     Returns:
         True if crypto ticker, False otherwise
     """
-    ticker = ticker.upper()
+    ticker = ticker.strip().upper()
     return ticker.endswith("-USD") or ticker.endswith("-USDT")
 
 
@@ -64,9 +65,10 @@ def easter_date(year: int) -> date:
     return date(year, month, day)
 
 
-def get_nyse_holidays(year: int) -> set[date]:
+@lru_cache(maxsize=10)
+def get_nyse_holidays(year: int) -> frozenset[date]:
     """
-    Get NYSE holidays for a given year.
+    Get NYSE holidays for a given year (cached).
 
     NYSE observes:
     - New Year's Day (Jan 1, or observed)
@@ -84,7 +86,7 @@ def get_nyse_holidays(year: int) -> set[date]:
         year: Year to get holidays for
 
     Returns:
-        Set of holiday dates
+        Frozenset of holiday dates (immutable for caching)
     """
     holidays = set()
 
@@ -143,7 +145,7 @@ def get_nyse_holidays(year: int) -> set[date]:
     # Christmas (December 25)
     holidays.add(observed(date(year, 12, 25)))
 
-    return holidays
+    return frozenset(holidays)
 
 
 def is_nyse_trading_day(d: date) -> bool:

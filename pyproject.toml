@@ -19,6 +19,7 @@ dependencies = [
   "scipy>=1.11",
   "python-dotenv>=1.0.0",
   "requests>=2.31",
+  "aiohttp>=3.9",
   "massive>=2.0",
 ]
 

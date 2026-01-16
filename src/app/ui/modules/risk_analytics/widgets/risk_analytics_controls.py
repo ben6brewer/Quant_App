@@ -2,15 +2,15 @@
 
 from typing import List
 
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QComboBox
 from PySide6.QtCore import Signal
 
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common import (
     LazyThemeMixin,
     PortfolioComboBox,
-    BenchmarkComboBox,
 )
+from app.services.ishares_holdings_service import ISharesHoldingsService
 
 
 class RiskAnalyticsControls(LazyThemeMixin, QWidget):
@@ -23,7 +23,7 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
     # Signals
     home_clicked = Signal()
     portfolio_changed = Signal(str)  # Emits portfolio name
-    benchmark_changed = Signal(str)  # Emits benchmark name/ticker or empty string
+    etf_benchmark_changed = Signal(str)  # Emits ETF symbol for benchmark/attribution
     analyze_clicked = Signal()  # Emits when Analyze button clicked
     settings_clicked = Signal()
 
@@ -71,15 +71,19 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
 
         layout.addSpacing(20)
 
-        # Benchmark selector (editable combo box)
+        # Benchmark selector (ETF dropdown)
         self.benchmark_label = QLabel("Benchmark:")
         self.benchmark_label.setObjectName("control_label")
         layout.addWidget(self.benchmark_label)
-        self.benchmark_combo = BenchmarkComboBox(placeholder="SPY")
-        self.benchmark_combo.setFixedWidth(250)
-        self.benchmark_combo.setFixedHeight(40)
-        self.benchmark_combo.value_changed.connect(self.benchmark_changed.emit)
-        layout.addWidget(self.benchmark_combo)
+        self.etf_benchmark_combo = QComboBox()
+        self.etf_benchmark_combo.setObjectName("etf_benchmark_combo")
+        self.etf_benchmark_combo.addItems(ISharesHoldingsService.get_available_etfs())
+        self.etf_benchmark_combo.setFixedWidth(100)
+        self.etf_benchmark_combo.setFixedHeight(40)
+        self.etf_benchmark_combo.currentTextChanged.connect(
+            self.etf_benchmark_changed.emit
+        )
+        layout.addWidget(self.etf_benchmark_combo)
 
         layout.addSpacing(15)
 
@@ -109,40 +113,19 @@ class RiskAnalyticsControls(LazyThemeMixin, QWidget):
         """
         self.portfolio_combo.set_portfolios(portfolios, current)
 
-    def update_benchmark_list(self, portfolios: List[str]):
-        """
-        Update the benchmark dropdown with available portfolios.
-
-        Args:
-            portfolios: List of portfolio names
-        """
-        self.benchmark_combo.set_portfolios(portfolios)
-
     def get_current_portfolio(self) -> str:
         """Get currently selected portfolio name (with [Port] prefix)."""
         return self.portfolio_combo.get_value()
 
-    def get_current_benchmark(self) -> str:
-        """
-        Get currently selected benchmark.
+    def get_current_etf_benchmark(self) -> str:
+        """Get currently selected ETF benchmark."""
+        return self.etf_benchmark_combo.currentText()
 
-        Returns:
-            Benchmark ticker/portfolio name, or empty string if none selected.
-        """
-        return self.benchmark_combo.get_value()
-
-    def set_benchmark(self, benchmark: str):
-        """
-        Set the benchmark value.
-
-        Args:
-            benchmark: Benchmark ticker or portfolio name
-        """
-        self.benchmark_combo.set_value(benchmark)
-
-    def reset_benchmark(self):
-        """Reset the benchmark dropdown to show placeholder."""
-        self.benchmark_combo.reset()
+    def set_etf_benchmark(self, etf: str):
+        """Set the ETF benchmark selection."""
+        index = self.etf_benchmark_combo.findText(etf)
+        if index >= 0:
+            self.etf_benchmark_combo.setCurrentIndex(index)
 
     def _apply_theme(self):
         """Apply theme-specific styling."""

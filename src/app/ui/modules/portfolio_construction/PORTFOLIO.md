@@ -111,6 +111,27 @@ self._get_transaction_sort_key(tx)  # (date, -priority, -sequence)
 - **Returns Cache**: `~/.quant_terminal/cache/returns/{name}.parquet`
 - **Settings**: `~/.quant_terminal/portfolio_settings.json`
 
+## Live Price Updates
+
+Holdings tab polls Yahoo Finance every 60 seconds for live price updates.
+
+**Trigger:** Portfolio load → `_start_live_updates()`
+
+**Logic:**
+- Crypto tickers (-USD, -USDT): Poll 24/7
+- Stock tickers: Poll only during extended hours (4am-8pm ET on trading days)
+- Pause when module hidden (`hideEvent`)
+- Resume when module shown (`showEvent`)
+
+**Flow:**
+```
+QTimer (60s) → _on_live_poll_tick() → fetch_batch_current_prices()
+            → _live_prices_received signal → _apply_live_prices()
+            → aggregate_table.update_live_prices(prices)
+```
+
+**Updated Columns:** Current Price, Market Value, P&L, Weight
+
 ## Future Integration
 
 Services ready but not yet integrated (for further line reduction):

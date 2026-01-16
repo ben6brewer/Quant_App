@@ -1,8 +1,11 @@
 """
 Backfill status tracker for hybrid market data system.
 
-Tracks which tickers have had their pre-5-year historical data
+Tracks which tickers have had their full historical data
 fetched from Yahoo Finance (one-time operation).
+
+Schema v2: Renamed "backfilled" -> "yahoo_backfilled" for clarity.
+Migration happens automatically on first load.
 """
 
 from __future__ import annotations
@@ -16,6 +19,9 @@ from typing import Dict, Optional
 # Status file location
 _STATUS_FILE = Path.home() / ".quant_terminal" / "cache" / "backfill_status.json"
 
+# Schema version for migration tracking
+_SCHEMA_VERSION = 2
+
 # Thread-safe cache
 _cache: Optional[Dict[str, dict]] = None
 _lock = threading.Lock()
@@ -23,38 +29,44 @@ _lock = threading.Lock()
 
 class BackfillTracker:
     """
-    Tracks backfill status for tickers.
+    Tracks Yahoo Finance backfill status for tickers.
 
     Stores status in JSON file at ~/.quant_terminal/cache/backfill_status.json
 
-    Format:
+    Format (v2):
     {
-        "AAPL": {"backfilled": true, "timestamp": "2024-01-15T10:30:00"},
-        "BTC-USD": {"backfilled": true, "timestamp": "2024-01-15T10:31:00"},
+        "schema_version": 2,
+        "AAPL": {"yahoo_backfilled": true, "timestamp": "2024-01-15T10:30:00"},
+        "BTC-USD": {"yahoo_backfilled": true, "timestamp": "2024-01-15T10:31:00"},
         ...
     }
+
+    The yahoo_backfilled flag indicates the ticker has full Yahoo Finance
+    historical data. If False or missing, the ticker only has Polygon data
+    (5-year limit) and needs Yahoo backfill on next access.
     """
 
     @classmethod
-    def is_backfilled(cls, ticker: str) -> bool:
+    def is_yahoo_backfilled(cls, ticker: str) -> bool:
         """
-        Check if ticker has been backfilled with pre-5-year Yahoo data.
+        Check if ticker has full Yahoo Finance historical data.
 
         Args:
             ticker: Ticker symbol (e.g., "AAPL", "BTC-USD")
 
         Returns:
-            True if backfill has been performed, False otherwise
+            True if Yahoo backfill has been performed, False otherwise
         """
         ticker = ticker.upper().strip()
         status = cls._load_status()
         entry = status.get(ticker, {})
-        return entry.get("backfilled", False)
+        # Support both old "backfilled" and new "yahoo_backfilled" keys
+        return entry.get("yahoo_backfilled", entry.get("backfilled", False))
 
     @classmethod
-    def mark_backfilled(cls, ticker: str) -> None:
+    def mark_yahoo_backfilled(cls, ticker: str) -> None:
         """
-        Mark ticker as backfilled (Yahoo historical data fetched).
+        Mark ticker as having full Yahoo Finance historical data.
 
         Args:
             ticker: Ticker symbol
@@ -64,10 +76,21 @@ class BackfillTracker:
         with _lock:
             status = cls._load_status()
             status[ticker] = {
-                "backfilled": True,
+                "yahoo_backfilled": True,
                 "timestamp": datetime.now().isoformat(),
             }
             cls._save_status(status)
+
+    # Legacy aliases for backward compatibility
+    @classmethod
+    def is_backfilled(cls, ticker: str) -> bool:
+        """Legacy alias for is_yahoo_backfilled()."""
+        return cls.is_yahoo_backfilled(ticker)
+
+    @classmethod
+    def mark_backfilled(cls, ticker: str) -> None:
+        """Legacy alias for mark_yahoo_backfilled()."""
+        cls.mark_yahoo_backfilled(ticker)
 
     @classmethod
     def clear_status(cls, ticker: Optional[str] = None) -> None:
@@ -96,6 +119,8 @@ class BackfillTracker:
         """
         Load status from disk (with in-memory caching).
 
+        Automatically migrates old schema (v1) to new schema (v2).
+
         Returns:
             Dict mapping tickers to status entries
         """
@@ -116,7 +141,42 @@ class BackfillTracker:
         else:
             _cache = {}
 
+        # Migrate schema if needed
+        _cache = cls._migrate_schema(_cache)
+
         return _cache
+
+    @classmethod
+    def _migrate_schema(cls, status: Dict[str, dict]) -> Dict[str, dict]:
+        """
+        Migrate old schema to new schema.
+
+        v1 -> v2: Rename "backfilled" to "yahoo_backfilled"
+
+        Args:
+            status: Status dict to migrate
+
+        Returns:
+            Migrated status dict
+        """
+        # Check if already migrated
+        if status.get("schema_version") == _SCHEMA_VERSION:
+            return status
+
+        # Migrate each ticker entry
+        for key, entry in list(status.items()):
+            if key == "schema_version":
+                continue
+            if isinstance(entry, dict) and "backfilled" in entry:
+                entry["yahoo_backfilled"] = entry.pop("backfilled")
+
+        # Mark as migrated
+        status["schema_version"] = _SCHEMA_VERSION
+
+        # Save migrated status
+        cls._save_status(status)
+
+        return status
 
     @classmethod
     def _save_status(cls, status: Dict[str, dict]) -> None:
@@ -141,7 +201,7 @@ class BackfillTracker:
     @classmethod
     def get_all_backfilled(cls) -> list[str]:
         """
-        Get list of all tickers that have been backfilled.
+        Get list of all tickers that have Yahoo Finance backfill.
 
         Returns:
             List of ticker symbols
@@ -150,5 +210,7 @@ class BackfillTracker:
         return [
             ticker
             for ticker, entry in status.items()
-            if entry.get("backfilled", False)
+            if ticker != "schema_version"
+            and isinstance(entry, dict)
+            and entry.get("yahoo_backfilled", entry.get("backfilled", False))
         ]

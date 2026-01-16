@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 from .sector_override_service import SectorOverrideService
-from .ticker_metadata_service import TickerMetadataService
+from app.services.ticker_metadata_service import TickerMetadataService
 
 
 class RiskAnalyticsService:

@@ -10,30 +10,43 @@ class MarketDataCache:
     Cache manager for market data using parquet format.
     Stores daily OHLCV data to speed up subsequent requests and enable offline usage.
     """
-    
+
     # Cache directory
     _CACHE_DIR = Path.home() / ".quant_terminal" / "cache"
-    
+
+    # Windows reserved filenames (case-insensitive)
+    # These cannot be used as filenames on Windows
+    _WINDOWS_RESERVED = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
+
     def __init__(self):
         """Initialize the cache manager and create cache directory if needed."""
         self._ensure_cache_dir()
-    
+
     def _ensure_cache_dir(self) -> None:
         """Create cache directory if it doesn't exist."""
         self._CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     def _get_cache_path(self, ticker: str) -> Path:
         """
         Get the cache file path for a ticker.
-        
+
         Args:
             ticker: Ticker symbol (e.g., "BTC-USD")
-        
+
         Returns:
             Path to the cache file
         """
         # Sanitize ticker for filename (replace problematic characters)
         safe_ticker = ticker.replace("/", "_").replace("\\", "_")
+
+        # Handle Windows reserved filenames (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+        if safe_ticker.upper() in self._WINDOWS_RESERVED:
+            safe_ticker = f"_{safe_ticker}_"
+
         return self._CACHE_DIR / f"{safe_ticker}.parquet"
     
     def has_cache(self, ticker: str) -> bool:
@@ -73,7 +86,7 @@ class MarketDataCache:
             print(f"Error reading cache for {ticker}: {e}")
             return None
     
-    def is_cache_current(self, ticker: str) -> bool:
+    def is_cache_current(self, ticker: str, df: "pd.DataFrame | None" = None) -> bool:
         """
         Check if cached data is current (no new data expected).
 
@@ -87,13 +100,16 @@ class MarketDataCache:
 
         Args:
             ticker: Ticker symbol
+            df: Optional pre-loaded DataFrame to avoid redundant parquet reads
 
         Returns:
             True if cache is current, False otherwise
         """
         from app.utils.market_hours import is_crypto_ticker, is_stock_cache_current
 
-        df = self.get_cached_data(ticker)
+        # Use provided DataFrame or load from cache
+        if df is None:
+            df = self.get_cached_data(ticker)
 
         if df is None or df.empty:
             return False

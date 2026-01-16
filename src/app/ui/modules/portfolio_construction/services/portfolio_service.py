@@ -6,7 +6,6 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.services.market_data import fetch_price_history
-from app.services.ticker_name_cache import TickerNameCache
 
 
 class PortfolioService:
@@ -302,7 +301,8 @@ class PortfolioService:
 
         def fetch_single_price(ticker: str) -> Tuple[str, Optional[float]]:
             try:
-                df = fetch_price_history(ticker, period="max", interval="1d")
+                # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+                df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
                 if df is not None and not df.empty:
                     return ticker, float(df["Close"].iloc[-1])
             except Exception as e:
@@ -321,10 +321,10 @@ class PortfolioService:
     @staticmethod
     def fetch_ticker_names(tickers: List[str]) -> Dict[str, Optional[str]]:
         """
-        Fetch short names for tickers, using persistent cache for efficiency.
+        Fetch short names for tickers using TickerMetadataService cache.
 
-        Uses TickerNameCache to avoid refetching names that rarely change.
-        Missing names are fetched in parallel using ThreadPoolExecutor.
+        Uses the shared metadata cache populated during Yahoo backfill.
+        If not cached, fetches from yfinance and caches for future use.
 
         Args:
             tickers: List of ticker symbols
@@ -332,73 +332,36 @@ class PortfolioService:
         Returns:
             Dict mapping ticker -> short name (or None if fetch failed)
         """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
         if not tickers:
             return {}
 
-        # Filter out empty and FREE CASH tickers
-        valid_tickers = [
-            t for t in tickers
-            if t and t.upper() != PortfolioService.FREE_CASH_TICKER
-        ]
+        result: Dict[str, Optional[str]] = {}
 
-        # Check persistent cache first
-        cached_names = TickerNameCache.get_names(valid_tickers)
+        # Separate FREE CASH (special case) from real tickers
+        real_tickers = []
+        for t in tickers:
+            if not t:
+                continue
+            if t.upper() == PortfolioService.FREE_CASH_TICKER:
+                result[t] = None
+            else:
+                real_tickers.append(t)
 
-        # Find tickers not in cache
-        missing_tickers = [
-            t for t in valid_tickers
-            if cached_names.get(t.upper()) is None
-        ]
-
-        # If all names are cached, return immediately
-        if not missing_tickers:
-            # Build result dict with original case
-            result = {t: cached_names.get(t.upper()) for t in valid_tickers}
-            # Add None for FREE CASH if it was in original list
-            for t in tickers:
-                if t and t.upper() == PortfolioService.FREE_CASH_TICKER:
-                    result[t] = None
+        if not real_tickers:
             return result
 
-        # Fetch missing names in parallel
-        def fetch_single_name(ticker: str) -> Tuple[str, Optional[str]]:
-            import yfinance as yf
-            try:
-                info = yf.Ticker(ticker).info
-                name = info.get("shortName") or info.get("longName")
-                return ticker, name
-            except Exception as e:
-                print(f"Error fetching name for {ticker}: {e}")
-                return ticker, None
+        # Get metadata for all tickers (uses cache, fetches if missing)
+        metadata_batch = TickerMetadataService.get_metadata_batch(real_tickers)
 
-        new_names = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {
-                executor.submit(fetch_single_name, t): t
-                for t in missing_tickers
-            }
-            for future in as_completed(futures):
-                ticker, name = future.result()
-                new_names[ticker] = name
-
-        # Update persistent cache with newly fetched names
-        names_to_cache = {t: n for t, n in new_names.items() if n is not None}
-        if names_to_cache:
-            TickerNameCache.update_names(names_to_cache)
-
-        # Build final result
-        result = {}
-        for t in valid_tickers:
-            upper_t = t.upper()
-            if upper_t in new_names:
-                result[t] = new_names[upper_t]
+        # Extract shortName from metadata
+        for ticker in real_tickers:
+            ticker_upper = ticker.upper()
+            if ticker_upper in metadata_batch:
+                result[ticker] = metadata_batch[ticker_upper].get("shortName")
             else:
-                result[t] = cached_names.get(upper_t)
-
-        # Add None for FREE CASH if it was in original list
-        for t in tickers:
-            if t and t.upper() == PortfolioService.FREE_CASH_TICKER:
-                result[t] = None
+                result[ticker] = None
 
         return result
 
@@ -429,7 +392,8 @@ class PortfolioService:
             return False, f"Invalid ticker '{ticker}'. Ticker symbols cannot contain spaces."
 
         try:
-            df = fetch_price_history(ticker, period="max", interval="1d")
+            # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+            df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
 
             if df is None or df.empty:
                 return False, f"No data found for ticker '{ticker}'"
@@ -477,7 +441,8 @@ class PortfolioService:
                 return False, f"{date_str} is a {day_name}. Stock markets are closed on weekends."
 
             # Fetch historical data to check if it's a trading day
-            df = fetch_price_history(ticker, period="max", interval="1d")
+            # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+            df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
 
             if df is None or df.empty:
                 # Can't validate without data, allow it
@@ -538,7 +503,8 @@ class PortfolioService:
 
         try:
             # Fetch full history (uses cache if current)
-            df = fetch_price_history(ticker, period="max", interval="1d")
+            # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+            df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
 
             if df is None or df.empty:
                 return None
@@ -609,7 +575,8 @@ class PortfolioService:
             """Fetch all needed dates for a single ticker."""
             date_prices: Dict[str, Optional[float]] = {}
             try:
-                df = fetch_price_history(ticker, period="max", interval="1d")
+                # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+                df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
 
                 if df is None or df.empty:
                     return ticker, {d: None for d in dates}
@@ -657,7 +624,8 @@ class PortfolioService:
             Date string in YYYY-MM-DD format, or None if no data available
         """
         try:
-            df = fetch_price_history(ticker, period="max", interval="1d")
+            # skip_live_bar=True to avoid Polygon rate limiting for portfolio ops
+            df = fetch_price_history(ticker, period="max", interval="1d", skip_live_bar=True)
             if df is None or df.empty:
                 return None
             return df.index.min().strftime("%Y-%m-%d")
