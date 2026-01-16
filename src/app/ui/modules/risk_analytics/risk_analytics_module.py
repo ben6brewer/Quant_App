@@ -519,7 +519,17 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                         for ticker, holding in self._benchmark_holdings.items()
                     }
 
-            # Run full analysis (pass benchmark weights for active weight calculation)
+            # Build ticker price data dict for constructed factors
+            # Combine portfolio and benchmark price data
+            ticker_price_data = {}
+            for ticker in ticker_returns.columns:
+                ticker_upper = ticker.upper()
+                if ticker in batch_data and batch_data[ticker] is not None:
+                    ticker_price_data[ticker_upper] = batch_data[ticker]
+                elif ticker_upper in batch_data and batch_data[ticker_upper] is not None:
+                    ticker_price_data[ticker_upper] = batch_data[ticker_upper]
+
+            # Run full analysis (pass benchmark weights and price data for factor model)
             analysis = RiskAnalyticsService.get_full_analysis(
                 portfolio_returns,
                 benchmark_returns,
@@ -527,6 +537,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 tickers,
                 weights,
                 benchmark_weights,
+                ticker_price_data,
             )
 
             # Update displays (pass benchmark weights to table)

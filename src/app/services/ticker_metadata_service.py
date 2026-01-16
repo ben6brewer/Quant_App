@@ -44,6 +44,7 @@ class TickerMetadataService:
         "revenueGrowth",
         "earningsGrowth",
         "fiftyTwoWeekChange",
+        "dividendYield",
     ]
 
     ALL_FIELDS = CORE_FIELDS + STYLE_FIELDS
