@@ -28,7 +28,7 @@ CTEV by Factor Group:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -510,6 +510,140 @@ class FactorRiskService:
             results[ticker_upper] = security_risk
 
         return results
+
+    # Friendly names for factors
+    FACTOR_NAMES = {
+        "Mkt-RF": "Market",
+        "SMB": "Size",
+        "HML": "Value",
+        "RMW": "Profitability",
+        "CMA": "Investment",
+        "UMD": "Momentum",
+    }
+
+    @classmethod
+    def calculate_factor_contributions(
+        cls,
+        regression_results: Dict[str, "FactorRegressionResult"],
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        total_active_risk: float,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate per-factor contributions with top securities for each factor.
+
+        For each Fama-French factor, calculates:
+        - Total factor contribution to TEV
+        - Top 20 securities contributing to that factor's TEV
+
+        Args:
+            regression_results: Dict mapping ticker to regression result
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            total_active_risk: Total tracking error (percentage)
+
+        Returns:
+            Dict mapping factor name to {ctev, securities: [{ticker, name, beta, active_weight, contribution}]}
+        """
+        import numpy as np
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        factors = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "UMD"]
+        result: Dict[str, Dict[str, Any]] = {}
+
+        for factor in factors:
+            # Calculate weighted average beta for portfolio and benchmark
+            port_beta = 0.0
+            bench_beta = 0.0
+            port_total = 0.0
+            bench_total = 0.0
+
+            # Per-security contributions
+            security_contributions = []
+
+            for ticker, reg_result in regression_results.items():
+                ticker_upper = ticker.upper()
+                pw = portfolio_weights.get(ticker_upper, 0.0)
+                bw = benchmark_weights.get(ticker_upper, 0.0)
+                beta = reg_result.betas.get(factor, 0.0)
+
+                if pw > 0:
+                    port_beta += beta * pw
+                    port_total += pw
+                if bw > 0:
+                    bench_beta += beta * bw
+                    bench_total += bw
+
+                # Active weight
+                active_weight = pw - bw
+                if active_weight == 0:
+                    continue
+
+                # Security's contribution = active_weight × beta
+                # This captures how much the security tilts the portfolio toward this factor
+                contribution = active_weight * beta
+
+                # Get security name
+                metadata = TickerMetadataService.get_metadata(ticker_upper)
+                name = metadata.get("shortName") or ticker_upper
+
+                security_contributions.append({
+                    "ticker": ticker_upper,
+                    "name": name,
+                    "beta": round(beta, 3),
+                    "active_weight": round(active_weight * 100, 2),
+                    "contribution": contribution,
+                })
+
+            # Normalize portfolio/benchmark betas
+            if port_total > 0:
+                port_beta /= port_total
+            if bench_total > 0:
+                bench_beta /= bench_total
+
+            # Active factor exposure
+            active_beta = port_beta - bench_beta
+
+            # Sort securities by absolute contribution (descending)
+            security_contributions.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+
+            # Take top 20
+            top_securities = security_contributions[:20]
+
+            # Calculate total contribution to TEV for this factor
+            # Use sum of absolute contributions as proxy for factor's TEV contribution
+            total_contribution = sum(abs(s["contribution"]) for s in security_contributions)
+
+            # Scale to percentage of total active risk (rough approximation)
+            # The actual factor variance contribution would require factor covariance matrix
+            # Here we use relative contribution as a proxy
+            factor_ctev = abs(active_beta) * total_active_risk * 0.2  # Scale factor
+
+            # Get friendly name
+            friendly_name = cls.FACTOR_NAMES.get(factor, factor)
+
+            result[friendly_name] = {
+                "factor_code": factor,
+                "ctev": round(factor_ctev, 2),
+                "active_beta": round(active_beta, 3),
+                "portfolio_beta": round(port_beta, 3),
+                "benchmark_beta": round(bench_beta, 3),
+                "securities": [
+                    {
+                        "ticker": s["ticker"],
+                        "name": s["name"],
+                        "beta": s["beta"],
+                        "active_weight": s["active_weight"],
+                        "contribution": round(s["contribution"] * 100, 3),  # Convert to percentage
+                    }
+                    for s in top_securities
+                ],
+            }
+
+        # Sort factors by CTEV (descending)
+        result = dict(sorted(result.items(), key=lambda x: x[1]["ctev"], reverse=True))
+
+        return result
 
     @classmethod
     def validate_risk_decomposition(

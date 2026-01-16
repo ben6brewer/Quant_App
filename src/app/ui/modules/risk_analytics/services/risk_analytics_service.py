@@ -288,6 +288,14 @@ class RiskAnalyticsService:
                 summary["total_active_risk"],
             )
 
+            # Calculate per-factor contributions with top securities
+            factor_contributions = FactorRiskService.calculate_factor_contributions(
+                regression_results,
+                weights,
+                benchmark_weights,
+                summary["total_active_risk"],
+            )
+
             # Calculate per-security risks
             security_risks = FactorRiskService.calculate_all_security_risks(
                 regression_results,
@@ -329,6 +337,7 @@ class RiskAnalyticsService:
             "security_risks": security_risks,
             "top_securities": top_securities,
             "regression_results": regression_results,  # Include for debugging
+            "factor_contributions": factor_contributions,  # Per-factor breakdown with top securities
         }
 
     @staticmethod

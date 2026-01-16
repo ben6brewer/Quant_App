@@ -799,10 +799,12 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self.decomposition_panel.update_sector_ctev(analysis.get("ctev_by_sector"))
         self.decomposition_panel.update_security_ctev(analysis.get("top_securities"))
 
-        # Security table (pass benchmark weights as fallback)
+        # Security table (pass benchmark weights, regression results, and factor contributions)
         self.security_table.set_data(
             analysis.get("security_risks", {}),
             benchmark_weights,
+            analysis.get("regression_results"),
+            analysis.get("factor_contributions"),
         )
 
     def _clear_displays(self):
