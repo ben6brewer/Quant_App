@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QScrollArea,
-    QStackedWidget,
     QApplication,
 )
 from PySide6.QtCore import Signal, Qt
@@ -30,8 +29,6 @@ from .widgets.risk_summary_panel import RiskSummaryPanel
 from .widgets.risk_decomposition_panel import RiskDecompositionPanel
 from .widgets.security_risk_table import SecurityRiskTable
 from .widgets.risk_analytics_settings_dialog import RiskAnalyticsSettingsDialog
-from .widgets.risk_analytics_tab_bar import RiskAnalyticsTabBar
-from .widgets.attribution_table import AttributionTable
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -67,6 +64,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self._current_weights: Dict[str, float] = {}
         self._current_ticker_returns: Optional["pd.DataFrame"] = None
         self._benchmark_holdings: Optional[Dict] = None  # Cached ETF holdings
+        self._benchmark_weights_normalized: Dict[str, float] = {}  # Renormalized benchmark weights
         self._period_start: str = ""
         self._period_end: str = ""
 
@@ -92,7 +90,17 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self._check_theme_dirty()
 
     def _setup_ui(self):
-        """Setup the module UI."""
+        """Setup the module UI.
+
+        New layout (Bloomberg-style):
+        ┌─────────────────────────────────────┐
+        │ Controls (Portfolio, Benchmark)     │
+        ├─────────────────────────────────────┤
+        │ Risk Summary │ Top CTEV panels (3)  │  ← ALWAYS VISIBLE
+        ├─────────────────────────────────────┤
+        │ Idiosyncratic Risk Table            │  ← SECURITY TABLE
+        └─────────────────────────────────────┘
+        """
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -101,32 +109,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self.controls = RiskAnalyticsControls(self.theme_manager)
         layout.addWidget(self.controls)
 
-        # Tab bar for switching views
-        self.tab_bar = RiskAnalyticsTabBar(self.theme_manager)
-        layout.addWidget(self.tab_bar)
-
-        # Stacked widget for tab content
-        self.content_stack = QStackedWidget()
-        layout.addWidget(self.content_stack, stretch=1)
-
-        # Page 0: Summary (existing risk summary + decomposition)
-        self.summary_page = self._create_summary_page()
-        self.content_stack.addWidget(self.summary_page)
-
-        # Page 1: Attribution (Brinson analysis)
-        self.attribution_page = self._create_attribution_page()
-        self.content_stack.addWidget(self.attribution_page)
-
-        # Page 2: Selection (detailed selection effects - placeholder)
-        self.selection_page = self._create_selection_page()
-        self.content_stack.addWidget(self.selection_page)
-
-        # Page 3: Risk (security risk table)
-        self.risk_page = self._create_risk_page()
-        self.content_stack.addWidget(self.risk_page)
-
-    def _create_summary_page(self) -> QWidget:
-        """Create the Summary tab content (existing panels)."""
+        # Scroll area for main content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -137,7 +120,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         content_layout.setContentsMargins(20, 20, 20, 20)
         content_layout.setSpacing(20)
 
-        # Top row: Risk Summary + 3 CTEV panels
+        # Top section: Risk Summary + 3 CTEV panels (always visible)
         top_row = QWidget()
         top_row.setFixedHeight(280)
         top_row_layout = QHBoxLayout(top_row)
@@ -151,69 +134,13 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         top_row_layout.addWidget(self.decomposition_panel, stretch=3)
 
         content_layout.addWidget(top_row)
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        return scroll
 
-    def _create_attribution_page(self) -> QWidget:
-        """Create the Attribution tab content (Brinson analysis)."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(20)
-
-        self.attribution_table = AttributionTable(self.theme_manager)
-        content_layout.addWidget(self.attribution_table, stretch=1)
-
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        return scroll
-
-    def _create_selection_page(self) -> QWidget:
-        """Create the Selection tab content (detailed selection effects)."""
-        # For now, use a simple placeholder - will expand later
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(20)
-
-        from PySide6.QtWidgets import QLabel
-
-        placeholder = QLabel("Selection effects analysis coming soon...")
-        placeholder.setStyleSheet("color: #888888; font-size: 14px;")
-        content_layout.addWidget(placeholder)
-        content_layout.addStretch()
-        scroll.setWidget(content)
-        return scroll
-
-    def _create_risk_page(self) -> QWidget:
-        """Create the Risk tab content (security risk table)."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(20)
-
+        # Bottom section: Idiosyncratic Risk Table
         self.security_table = SecurityRiskTable(self.theme_manager)
         content_layout.addWidget(self.security_table, stretch=1)
 
-        content_layout.addStretch()
         scroll.setWidget(content)
-        return scroll
+        layout.addWidget(scroll, stretch=1)
 
     def _connect_signals(self):
         """Connect signals to slots."""
@@ -224,21 +151,8 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self.controls.analyze_clicked.connect(self._update_risk_analysis)
         self.controls.settings_clicked.connect(self._show_settings_dialog)
 
-        # Tab bar
-        self.tab_bar.view_changed.connect(self._on_tab_changed)
-
         # Theme changes
         self.theme_manager.theme_changed.connect(self._on_theme_changed_lazy)
-
-    def _on_tab_changed(self, index: int):
-        """Handle tab selection."""
-        print(f"[RiskAnalytics] Tab changed to index {index}")
-        self.content_stack.setCurrentIndex(index)
-
-        # Trigger attribution calculation when Attribution tab is selected
-        if index == 1 and self._current_portfolio and self._current_etf_benchmark:
-            print(f"[RiskAnalytics] Triggering attribution for {self._current_portfolio} vs {self._current_etf_benchmark}")
-            self._update_attribution_analysis()
 
     def _on_etf_benchmark_changed(self, etf_symbol: str):
         """Handle ETF benchmark selection change."""
@@ -527,6 +441,37 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 tickers, lookback_days, custom_start_date, custom_end_date
             )
 
+            # Also fetch returns for ALL benchmark tickers NOT in portfolio
+            # These are needed to show underweight positions (negative active weight)
+            if self._benchmark_holdings:
+                import pandas as pd
+
+                # Get all benchmark tickers not in portfolio
+                portfolio_set = set(t.upper() for t in tickers)
+                benchmark_only_tickers = [
+                    ticker
+                    for ticker in self._benchmark_holdings.keys()
+                    if ticker.upper() not in portfolio_set
+                ]
+
+                if benchmark_only_tickers:
+                    print(f"[RiskAnalysis] Fetching returns for {len(benchmark_only_tickers)} benchmark-only tickers")
+                    benchmark_ticker_returns = self._get_ticker_returns(
+                        benchmark_only_tickers, lookback_days, custom_start_date, custom_end_date
+                    )
+
+                    # Merge with portfolio ticker returns
+                    if not benchmark_ticker_returns.empty:
+                        # Ensure indices are aligned
+                        if not ticker_returns.empty:
+                            ticker_returns = pd.concat(
+                                [ticker_returns, benchmark_ticker_returns], axis=1
+                            )
+                            # Remove any duplicate columns
+                            ticker_returns = ticker_returns.loc[:, ~ticker_returns.columns.duplicated()]
+                        else:
+                            ticker_returns = benchmark_ticker_returns
+
             # If universe filtering is active, recalculate portfolio returns from filtered tickers
             if universe_sectors and not ticker_returns.empty:
                 import pandas as pd
@@ -562,17 +507,30 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
             print(f"[RiskAnalysis] Stored {len(weights)} weights and returns with shape {ticker_returns.shape}")
             print(f"[RiskAnalysis] Attribution period: {self._period_start} to {self._period_end}")
 
-            # Run full analysis
+            # Use renormalized benchmark weights (calculated in _get_benchmark_returns)
+            # These are already normalized to sum to 1.0 for the filtered universe
+            benchmark_weights = getattr(self, '_benchmark_weights_normalized', {})
+            if not benchmark_weights and self._benchmark_holdings:
+                # Fallback: calculate from holdings if not already computed
+                total_weight = sum(h.weight for h in self._benchmark_holdings.values())
+                if total_weight > 0:
+                    benchmark_weights = {
+                        ticker.upper(): holding.weight / total_weight
+                        for ticker, holding in self._benchmark_holdings.items()
+                    }
+
+            # Run full analysis (pass benchmark weights for active weight calculation)
             analysis = RiskAnalyticsService.get_full_analysis(
                 portfolio_returns,
                 benchmark_returns,
                 ticker_returns,
                 tickers,
                 weights,
+                benchmark_weights,
             )
 
-            # Update displays
-            self._update_displays(analysis)
+            # Update displays (pass benchmark weights to table)
+            self._update_displays(analysis, benchmark_weights)
 
         except Exception as e:
             CustomMessageBox.critical(
@@ -653,8 +611,33 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         # Cache metadata from ETF holdings (sector, name, etc.)
         TickerMetadataService.cache_from_etf_holdings(holdings)
 
-        # Store holdings for later use by Attribution tab
+        # Apply benchmark universe sector filter if set
+        benchmark_universe_sectors = self.settings_manager.get_setting("benchmark_universe_sectors")
+        if benchmark_universe_sectors:
+            sector_set = set(benchmark_universe_sectors)
+            filtered_holdings = {
+                ticker: holding
+                for ticker, holding in holdings.items()
+                if holding.sector in sector_set
+            }
+            if not filtered_holdings:
+                print(f"[Benchmark] No holdings match selected benchmark universe sectors")
+                return None
+            print(f"[Benchmark] Filtered to {len(filtered_holdings)} constituents in selected sectors")
+            holdings = filtered_holdings
+
+        # Store holdings for later use (filtered if applicable)
         self._benchmark_holdings = holdings
+
+        # Calculate and store renormalized benchmark weights (sum to 1.0)
+        total_benchmark_weight = sum(h.weight for h in holdings.values())
+        if total_benchmark_weight > 0:
+            self._benchmark_weights_normalized = {
+                ticker.upper(): holding.weight / total_benchmark_weight
+                for ticker, holding in holdings.items()
+            }
+        else:
+            self._benchmark_weights_normalized = {}
 
         # Get all constituent tickers
         constituent_tickers = list(holdings.keys())
@@ -785,7 +768,11 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         df = df.ffill().bfill()    # Forward/backward fill remaining NaN
         return df
 
-    def _update_displays(self, analysis: Dict[str, Any]):
+    def _update_displays(
+        self,
+        analysis: Dict[str, Any],
+        benchmark_weights: Optional[Dict[str, float]] = None,
+    ):
         """Update all display widgets with analysis results."""
         # Summary panel
         self.summary_panel.update_metrics(analysis.get("summary"))
@@ -801,176 +788,17 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         self.decomposition_panel.update_sector_ctev(analysis.get("ctev_by_sector"))
         self.decomposition_panel.update_security_ctev(analysis.get("top_securities"))
 
-        # Security table
-        self.security_table.set_data(analysis.get("security_risks", {}))
+        # Security table (pass benchmark weights as fallback)
+        self.security_table.set_data(
+            analysis.get("security_risks", {}),
+            benchmark_weights,
+        )
 
     def _clear_displays(self):
         """Clear all display widgets."""
         self.summary_panel.clear_metrics()
         self.decomposition_panel.clear_all()
         self.security_table.clear_data()
-        self.attribution_table.clear_data()
-
-    def _update_attribution_analysis(self):
-        """Run Brinson attribution analysis when Attribution tab is active."""
-        print(f"[Attribution] Starting attribution analysis...")
-        if not self._current_portfolio or not self._current_etf_benchmark:
-            print(f"[Attribution] Missing portfolio or benchmark: portfolio={self._current_portfolio}, benchmark={self._current_etf_benchmark}")
-            return
-
-        # Check if we have the required data from risk analysis
-        if not self._current_weights or self._current_ticker_returns is None:
-            # Run risk analysis first to get weights and returns
-            print(f"[Attribution] Missing weights or returns. weights={bool(self._current_weights)}, returns={self._current_ticker_returns is not None}")
-            print(f"[Attribution] Please run 'Analyze' first to calculate portfolio data")
-            return
-
-        self._show_loading_overlay("Calculating attribution...")
-
-        try:
-            from app.services.ishares_holdings_service import ISharesHoldingsService
-            from .services.brinson_attribution_service import BrinsonAttributionService
-
-            # Use cached holdings from benchmark calculation if available
-            if self._benchmark_holdings and self._current_etf_benchmark == self._current_benchmark:
-                print(f"[Attribution] Using cached {len(self._benchmark_holdings)} ETF holdings")
-                holdings = self._benchmark_holdings
-            else:
-                # Fetch ETF holdings
-                print(f"[Attribution] Fetching ETF holdings for {self._current_etf_benchmark}...")
-                holdings = ISharesHoldingsService.fetch_holdings(self._current_etf_benchmark)
-                if not holdings:
-                    CustomMessageBox.warning(
-                        self.theme_manager,
-                        self,
-                        "ETF Data Error",
-                        f"Could not fetch holdings for {self._current_etf_benchmark}.",
-                    )
-                    return
-                print(f"[Attribution] Got {len(holdings)} ETF holdings")
-
-                # Cache metadata from ETF holdings (sector, name, etc.)
-                from app.services.ticker_metadata_service import TickerMetadataService
-                TickerMetadataService.cache_from_etf_holdings(holdings)
-
-            # Get relevant tickers for attribution (portfolio + overlapping benchmark)
-            portfolio_tickers = set(self._current_weights.keys())
-            benchmark_tickers = set(holdings.keys())
-
-            # Only fetch returns for tickers we have in portfolio OR that overlap
-            # Plus top benchmark holdings for sector return calculations
-            relevant_tickers = portfolio_tickers & benchmark_tickers  # Overlap
-            print(f"[Attribution] Portfolio has {len(portfolio_tickers)} tickers, {len(relevant_tickers)} overlap with benchmark")
-
-            # Add top N benchmark holdings per sector (for sector return calculation)
-            from collections import defaultdict
-            sector_tickers = defaultdict(list)
-            for ticker, holding in holdings.items():
-                sector_tickers[holding.sector].append((ticker, holding.weight))
-
-            # Get top 10 tickers per sector
-            TOP_PER_SECTOR = 10
-            for sector, ticker_weights in sector_tickers.items():
-                ticker_weights.sort(key=lambda x: x[1], reverse=True)
-                for ticker, _ in ticker_weights[:TOP_PER_SECTOR]:
-                    relevant_tickers.add(ticker)
-
-            # Also include all portfolio tickers (in case some don't overlap)
-            relevant_tickers.update(portfolio_tickers)
-            print(f"[Attribution] Fetching returns for {len(relevant_tickers)} relevant tickers")
-
-            # Use cached portfolio returns - they're already in self._current_ticker_returns
-            # For benchmark tickers not in portfolio, use the market data service
-            import pandas as pd
-            from app.services.market_data import fetch_price_history_batch_polygon_first
-
-            # Only fetch benchmark tickers we don't already have
-            need_to_fetch = relevant_tickers - set(self._current_ticker_returns.columns if self._current_ticker_returns is not None else [])
-
-            benchmark_returns = pd.DataFrame()
-            if need_to_fetch:
-                print(f"[Attribution] Fetching {len(need_to_fetch)} benchmark-only tickers...")
-                batch_data = fetch_price_history_batch_polygon_first(list(need_to_fetch))
-                outlier_count = 0
-                for ticker in need_to_fetch:
-                    if ticker in batch_data and batch_data[ticker] is not None:
-                        df = batch_data[ticker]
-                        if not df.empty:
-                            returns = df["Close"].pct_change().dropna()
-                            if not returns.empty:
-                                # Clip extreme returns (>100% daily is likely data error)
-                                extreme_mask = (returns > 1.0) | (returns < -1.0)
-                                if extreme_mask.any():
-                                    outlier_count += extreme_mask.sum()
-                                    returns = returns.clip(lower=-1.0, upper=1.0)
-                                benchmark_returns[ticker] = returns
-                if outlier_count > 0:
-                    print(f"[Attribution] Clipped {outlier_count} extreme return values")
-
-            # Normalize benchmark_returns index and remove duplicates before concat
-            if not benchmark_returns.empty:
-                benchmark_returns.index = benchmark_returns.index.normalize()
-                if benchmark_returns.index.duplicated().any():
-                    benchmark_returns = benchmark_returns[~benchmark_returns.index.duplicated(keep="last")]
-
-            # Combine with portfolio returns
-            if self._current_ticker_returns is not None and not self._current_ticker_returns.empty:
-                if benchmark_returns.empty:
-                    benchmark_returns = self._current_ticker_returns.copy()
-                else:
-                    # Ensure both DataFrames have normalized, non-duplicate indices before concat
-                    portfolio_rets = self._current_ticker_returns.copy()
-                    portfolio_rets.index = portfolio_rets.index.normalize()
-                    if portfolio_rets.index.duplicated().any():
-                        portfolio_rets = portfolio_rets[~portfolio_rets.index.duplicated(keep="last")]
-
-                    benchmark_returns = pd.concat([portfolio_rets, benchmark_returns], axis=1)
-                    benchmark_returns = benchmark_returns.loc[:, ~benchmark_returns.columns.duplicated()]
-
-            print(f"[Attribution] Combined returns shape: {benchmark_returns.shape}")
-
-            if benchmark_returns.empty:
-                CustomMessageBox.warning(
-                    self.theme_manager,
-                    self,
-                    "Benchmark Data Error",
-                    "Could not fetch returns for benchmark constituents.",
-                )
-                return
-
-            # Get daily weights for holding-period-aware return calculation
-            # This ensures we only count returns for days when each ticker was held
-            daily_weights = ReturnsDataService.get_daily_weights(
-                self._current_portfolio,
-                start_date=self._period_start,
-                end_date=self._period_end,
-                include_cash=False,
-            )
-            print(f"[Attribution] Daily weights shape: {daily_weights.shape if not daily_weights.empty else 'empty'}")
-
-            # Calculate attribution
-            analysis = BrinsonAttributionService.calculate_attribution(
-                portfolio_weights=self._current_weights,
-                benchmark_holdings=holdings,
-                portfolio_returns=self._current_ticker_returns,
-                benchmark_returns=benchmark_returns,
-                period_start=self._period_start,
-                period_end=self._period_end,
-                daily_weights=daily_weights,
-            )
-
-            # Update attribution table
-            self.attribution_table.set_data(analysis)
-
-        except Exception as e:
-            CustomMessageBox.critical(
-                self.theme_manager,
-                self,
-                "Attribution Error",
-                f"Error calculating attribution: {str(e)}",
-            )
-        finally:
-            self._hide_loading_overlay()
 
     def _show_loading_overlay(self, message: str = "Loading..."):
         """Show loading overlay."""

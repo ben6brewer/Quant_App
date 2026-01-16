@@ -156,7 +156,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
 
         universe_layout.addLayout(portfolio_universe_layout)
 
-        # Benchmark Universe (disabled for now)
+        # Benchmark Universe
         benchmark_universe_layout = QVBoxLayout()
         benchmark_universe_label = QLabel("Benchmark Universe:")
         benchmark_universe_label.setObjectName("settingsSubLabel")
@@ -167,25 +167,26 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self.benchmark_universe_list.setSelectionMode(QListWidget.MultiSelection)
         self.benchmark_universe_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.benchmark_universe_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.benchmark_universe_list.setEnabled(False)  # Disabled for now
-        for sector in self.universe_sectors:
+        # Use all standard sectors for benchmark (not just portfolio sectors)
+        all_sectors = [s for s in SectorOverrideService.SECTORS if s != "Not Classified"]
+        for sector in all_sectors:
             item = QListWidgetItem(sector)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
             self.benchmark_universe_list.addItem(item)
         benchmark_universe_layout.addWidget(self.benchmark_universe_list)
 
-        # Select All / Clear buttons for benchmark (disabled)
+        # Select All / Clear buttons for benchmark
         benchmark_btn_row = QHBoxLayout()
         benchmark_btn_row.setContentsMargins(0, 20, 0, 0)
         self.benchmark_select_all_btn = QPushButton("Select All")
         self.benchmark_select_all_btn.setFixedWidth(80)
-        self.benchmark_select_all_btn.setEnabled(False)
+        self.benchmark_select_all_btn.clicked.connect(self._select_all_benchmark_sectors)
         benchmark_btn_row.addWidget(self.benchmark_select_all_btn)
 
         self.benchmark_clear_btn = QPushButton("Clear")
         self.benchmark_clear_btn.setFixedWidth(80)
-        self.benchmark_clear_btn.setEnabled(False)
+        self.benchmark_clear_btn.clicked.connect(self._clear_benchmark_sectors)
         benchmark_btn_row.addWidget(self.benchmark_clear_btn)
         benchmark_btn_row.addStretch()
         benchmark_universe_layout.addLayout(benchmark_btn_row)
@@ -323,6 +324,37 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         sector_set = set(sectors) if sectors else set(self.universe_sectors)
         for i in range(self.portfolio_universe_list.count()):
             item = self.portfolio_universe_list.item(i)
+            if item.text() in sector_set:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+
+    def _select_all_benchmark_sectors(self):
+        """Select all sectors in benchmark universe."""
+        for i in range(self.benchmark_universe_list.count()):
+            self.benchmark_universe_list.item(i).setCheckState(Qt.Checked)
+
+    def _clear_benchmark_sectors(self):
+        """Clear all sectors in benchmark universe."""
+        for i in range(self.benchmark_universe_list.count()):
+            self.benchmark_universe_list.item(i).setCheckState(Qt.Unchecked)
+
+    def _get_checked_benchmark_sectors(self) -> List[str]:
+        """Get list of checked sectors in benchmark universe."""
+        checked = []
+        for i in range(self.benchmark_universe_list.count()):
+            item = self.benchmark_universe_list.item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    def _set_checked_benchmark_sectors(self, sectors: List[str]):
+        """Set checked state for benchmark universe sectors."""
+        # If no sectors specified, default to all sectors
+        all_sectors = [s for s in SectorOverrideService.SECTORS if s != "Not Classified"]
+        sector_set = set(sectors) if sectors else set(all_sectors)
+        for i in range(self.benchmark_universe_list.count()):
+            item = self.benchmark_universe_list.item(i)
             if item.text() in sector_set:
                 item.setCheckState(Qt.Checked)
             else:
@@ -539,10 +571,15 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         portfolio_sectors = self.current_settings.get("portfolio_universe_sectors")
         self._set_checked_portfolio_sectors(portfolio_sectors)
 
+        # Benchmark universe sectors (default to all sectors if not set)
+        benchmark_sectors = self.current_settings.get("benchmark_universe_sectors")
+        self._set_checked_benchmark_sectors(benchmark_sectors)
+
     def _save_settings(self):
         """Save settings and close dialog."""
-        # Get checked portfolio universe sectors
+        # Get checked universe sectors
         portfolio_sectors = self._get_checked_portfolio_sectors()
+        benchmark_sectors = self._get_checked_benchmark_sectors()
 
         # Check if custom date range is selected
         current_text = self.lookback_combo.currentText()
@@ -554,6 +591,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
                 "custom_end_date": self._custom_end_date,
                 "show_currency_factor": self.currency_check.isChecked(),
                 "portfolio_universe_sectors": portfolio_sectors,
+                "benchmark_universe_sectors": benchmark_sectors,
             }
         else:
             # Standard lookback period - use text-based lookup (more robust than index)
@@ -571,6 +609,7 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
                 "custom_end_date": None,
                 "show_currency_factor": self.currency_check.isChecked(),
                 "portfolio_universe_sectors": portfolio_sectors,
+                "benchmark_universe_sectors": benchmark_sectors,
             }
 
         # Emit signal first, then close dialog

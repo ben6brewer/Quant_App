@@ -8,7 +8,7 @@ Implements a simplified factor model for risk decomposition:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -286,6 +286,7 @@ class RiskAnalyticsService:
         portfolio_returns: "pd.Series",
         benchmark_returns: "pd.Series",
         weights: Dict[str, float],
+        benchmark_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Dict[str, float]]:
         """
         Calculate per-security risk metrics.
@@ -296,14 +297,17 @@ class RiskAnalyticsService:
             ticker_returns: DataFrame with ticker returns (columns = tickers)
             portfolio_returns: Series of portfolio returns
             benchmark_returns: Series of benchmark returns
-            weights: Dict mapping ticker to weight
+            weights: Dict mapping ticker to portfolio weight (decimal)
+            benchmark_weights: Dict mapping ticker to benchmark weight (decimal)
 
         Returns:
             Dict mapping ticker to risk metrics:
             {
                 "AAPL": {
-                    "net_weight": 5.2,
-                    "factor_tev": 1.2,
+                    "portfolio_weight": 5.2,
+                    "benchmark_weight": 3.1,
+                    "active_weight": 2.1,
+                    "idio_vol": 25.5,
                     "idio_tev": 0.8,
                     "idio_ctev": 0.15,
                 },
@@ -314,6 +318,7 @@ class RiskAnalyticsService:
         import pandas as pd
 
         result: Dict[str, Dict[str, float]] = {}
+        benchmark_weights = benchmark_weights or {}
 
         # Calculate active returns
         aligned = pd.concat(
@@ -335,10 +340,15 @@ class RiskAnalyticsService:
 
         for ticker in ticker_returns.columns:
             ticker_upper = ticker.upper()
-            weight = weights.get(ticker_upper, 0.0)
+            port_weight = weights.get(ticker_upper, 0.0)
+            bench_weight = benchmark_weights.get(ticker_upper, 0.0)
 
-            if weight is None or weight <= 0:
+            # Include securities with any portfolio or benchmark weight
+            if (port_weight is None or port_weight <= 0) and bench_weight <= 0:
                 continue
+
+            port_weight = port_weight if port_weight else 0.0
+            active_weight = port_weight - bench_weight
 
             # Align ticker returns with active returns
             ticker_ret = ticker_returns[ticker]
@@ -355,7 +365,7 @@ class RiskAnalyticsService:
 
             # Calculate CTEV contribution
             cov_with_active = ticker_active.cov(combined["active"])
-            ctev_contribution = (weight * cov_with_active / active_var) * total_te
+            ctev_contribution = (abs(active_weight) * cov_with_active / active_var) * total_te
 
             # Estimate factor vs idio split based on beta
             beta = TickerMetadataService.get_beta(ticker)
@@ -366,12 +376,14 @@ class RiskAnalyticsService:
             factor_proportion = min(abs(beta) / 2, 0.8)
 
             ticker_vol = ticker_active.std() * np.sqrt(252) * 100
-            factor_tev = ticker_vol * factor_proportion
-            idio_tev = ticker_vol * (1 - factor_proportion)
+            idio_vol = ticker_vol * (1 - factor_proportion)
+            idio_tev = idio_vol  # Idio TEV approximation
 
             result[ticker_upper] = {
-                "net_weight": weight * 100,
-                "factor_tev": round(factor_tev, 2),
+                "portfolio_weight": round(port_weight * 100, 2),
+                "benchmark_weight": round(bench_weight * 100, 2),
+                "active_weight": round(active_weight * 100, 2),
+                "idio_vol": round(idio_vol, 2),
                 "idio_tev": round(idio_tev, 2),
                 "idio_ctev": round(abs(ctev_contribution) * (1 - factor_proportion), 2),
             }
@@ -512,6 +524,7 @@ class RiskAnalyticsService:
         ticker_returns: "pd.DataFrame",
         tickers: List[str],
         weights: Dict[str, float],
+        benchmark_weights: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Run complete risk analysis and return all results.
@@ -521,7 +534,8 @@ class RiskAnalyticsService:
             benchmark_returns: Series of benchmark returns
             ticker_returns: DataFrame with individual ticker returns
             tickers: List of ticker symbols
-            weights: Dict mapping ticker to weight
+            weights: Dict mapping ticker to portfolio weight (decimal)
+            benchmark_weights: Dict mapping ticker to benchmark weight (decimal)
 
         Returns:
             Dict with all analysis results
@@ -541,9 +555,9 @@ class RiskAnalyticsService:
             summary["total_active_risk"], factor_exposures
         )
 
-        # CTEV by security
+        # CTEV by security (with benchmark weights for active weight calculation)
         security_risks = RiskAnalyticsService.calculate_ctev_by_security(
-            ticker_returns, portfolio_returns, benchmark_returns, weights
+            ticker_returns, portfolio_returns, benchmark_returns, weights, benchmark_weights
         )
 
         # CTEV by sector
