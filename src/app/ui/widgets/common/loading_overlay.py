@@ -171,6 +171,19 @@ class LoadingOverlay(QWidget):
         self._message = message
         self.update()
 
+    def set_progress(self, current: int, total: int, base_message: str = "Loading") -> None:
+        """
+        Update message with progress info.
+
+        Args:
+            current: Current progress count
+            total: Total count
+            base_message: Base message to display (default: "Loading")
+        """
+        pct = int(current / total * 100) if total > 0 else 0
+        self._message = f"{base_message} {current}/{total} ({pct}%)"
+        self.update()
+
     def stop(self) -> None:
         """Stop animations and cleanup."""
         if self._pulse_animation:

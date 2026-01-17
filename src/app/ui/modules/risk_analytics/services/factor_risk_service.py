@@ -28,7 +28,9 @@ CTEV by Factor Group:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Set
+
+from app.services.ticker_metadata_service import TickerMetadataService
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -202,7 +204,7 @@ class FactorRiskService:
         portfolio_weights: Dict[str, float],
         benchmark_weights: Dict[str, float],
         total_active_risk: float,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Dict[str, float]]:
         """
         Calculate CTEV breakdown by factor group.
 
@@ -216,10 +218,16 @@ class FactorRiskService:
             total_active_risk: Total tracking error (percentage)
 
         Returns:
-            Dict mapping factor group to CTEV contribution
+            Dict mapping factor group to {"ctev": float, "active_weight": float}
         """
         if total_active_risk <= 0:
-            return {"Market": 0.0, "Sector": 0.0, "Style": 0.0, "Country": 0.0}
+            return {
+                "Market": {"ctev": 0.0, "active_weight": 0.0},
+                "Style": {"ctev": 0.0, "active_weight": 0.0},
+                "Sector": {"ctev": 0.0, "active_weight": 0.0},
+                "Industry": {"ctev": 0.0, "active_weight": 0.0},
+                "Country": {"ctev": 0.0, "active_weight": 0.0},
+            }
 
         # Calculate weighted average factor exposures for portfolio and benchmark
         port_market_exp = 0.0
@@ -232,6 +240,10 @@ class FactorRiskService:
         # Sector concentration
         port_sectors: Dict[str, float] = {}
         bench_sectors: Dict[str, float] = {}
+
+        # Industry concentration
+        port_industries: Dict[str, float] = {}
+        bench_industries: Dict[str, float] = {}
 
         # Country (US vs non-US)
         port_nonus_weight = 0.0
@@ -264,6 +276,14 @@ class FactorRiskService:
             if bw > 0:
                 bench_sectors[sector] = bench_sectors.get(sector, 0.0) + bw
 
+            # Industry from metadata
+            metadata = TickerMetadataService.get_metadata(ticker.upper())
+            industry = metadata.get("industry") or "Not Classified"
+            if pw > 0:
+                port_industries[industry] = port_industries.get(industry, 0.0) + pw
+            if bw > 0:
+                bench_industries[industry] = bench_industries.get(industry, 0.0) + bw
+
             # Country from metadata
             country = result.country or "US"
             if country.upper() not in ["US", "USA", "UNITED STATES"]:
@@ -293,6 +313,13 @@ class FactorRiskService:
             for s in all_sectors
         )
 
+        # Industry: concentration difference (more granular than sector)
+        all_industries = set(port_industries.keys()) | set(bench_industries.keys())
+        industry_diff = sum(
+            abs(port_industries.get(ind, 0) - bench_industries.get(ind, 0))
+            for ind in all_industries
+        )
+
         # Country: difference in non-US exposure
         country_diff = abs(port_nonus_weight - bench_nonus_weight)
 
@@ -309,21 +336,23 @@ class FactorRiskService:
         factor_risk = total_active_risk * avg_r2
 
         # Distribute factor risk
-        total_diff = market_diff + sector_diff + style_diff + country_diff
+        total_diff = market_diff + sector_diff + industry_diff + style_diff + country_diff
         if total_diff < 0.001:
             # If no differences, use typical allocation
             return {
-                "Market": round(factor_risk * 0.40, 2),
-                "Sector": round(factor_risk * 0.30, 2),
-                "Style": round(factor_risk * 0.25, 2),
-                "Country": round(factor_risk * 0.05, 2),
+                "Market": {"ctev": round(factor_risk * 0.35, 2), "active_weight": round(market_diff * 100, 2)},
+                "Style": {"ctev": round(factor_risk * 0.25, 2), "active_weight": round(style_diff * 100, 2)},
+                "Sector": {"ctev": round(factor_risk * 0.15, 2), "active_weight": round(sector_diff * 100, 2)},
+                "Industry": {"ctev": round(factor_risk * 0.15, 2), "active_weight": round(industry_diff * 100, 2)},
+                "Country": {"ctev": round(factor_risk * 0.10, 2), "active_weight": round(country_diff * 100, 2)},
             }
 
         return {
-            "Market": round((market_diff / total_diff) * factor_risk, 2),
-            "Sector": round((sector_diff / total_diff) * factor_risk, 2),
-            "Style": round((style_diff / total_diff) * factor_risk, 2),
-            "Country": round((country_diff / total_diff) * factor_risk, 2),
+            "Market": {"ctev": round((market_diff / total_diff) * factor_risk, 2), "active_weight": round(market_diff * 100, 2)},
+            "Style": {"ctev": round((style_diff / total_diff) * factor_risk, 2), "active_weight": round(style_diff * 100, 2)},
+            "Sector": {"ctev": round((sector_diff / total_diff) * factor_risk, 2), "active_weight": round(sector_diff * 100, 2)},
+            "Industry": {"ctev": round((industry_diff / total_diff) * factor_risk, 2), "active_weight": round(industry_diff * 100, 2)},
+            "Country": {"ctev": round((country_diff / total_diff) * factor_risk, 2), "active_weight": round(country_diff * 100, 2)},
         }
 
     @classmethod
@@ -528,6 +557,7 @@ class FactorRiskService:
         portfolio_weights: Dict[str, float],
         benchmark_weights: Dict[str, float],
         total_active_risk: float,
+        ctev_by_factor: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Calculate per-factor contributions with top securities for each factor.
@@ -541,6 +571,7 @@ class FactorRiskService:
             portfolio_weights: Portfolio weights (decimal)
             benchmark_weights: Benchmark weights (decimal)
             total_active_risk: Total tracking error (percentage)
+            ctev_by_factor: Optional dict with CTEV by factor group (Market, Style) for consistency
 
         Returns:
             Dict mapping factor name to {ctev, securities: [{ticker, name, beta, active_weight, contribution}]}
@@ -549,7 +580,20 @@ class FactorRiskService:
         from app.services.ticker_metadata_service import TickerMetadataService
 
         factors = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "UMD"]
+        style_factors = ["SMB", "HML", "RMW", "CMA", "UMD"]
         result: Dict[str, Dict[str, Any]] = {}
+
+        # Get CTEV values from ctev_by_factor for consistency
+        market_ctev_total = 0.0
+        style_ctev_total = 0.0
+        if ctev_by_factor:
+            market_data = ctev_by_factor.get("Market", {})
+            market_ctev_total = market_data.get("ctev", 0) if isinstance(market_data, dict) else 0
+            style_data = ctev_by_factor.get("Style", {})
+            style_ctev_total = style_data.get("ctev", 0) if isinstance(style_data, dict) else 0
+
+        # First pass: collect all factor data
+        factor_data: Dict[str, Dict[str, Any]] = {}
 
         for factor in factors:
             # Calculate weighted average beta for portfolio and benchmark
@@ -607,17 +651,42 @@ class FactorRiskService:
             # Sort securities by absolute contribution (descending)
             security_contributions.sort(key=lambda x: abs(x["contribution"]), reverse=True)
 
-            # Take top 20
-            top_securities = security_contributions[:20]
+            # Take top 50
+            top_securities = security_contributions[:50]
 
-            # Calculate total contribution to TEV for this factor
-            # Use sum of absolute contributions as proxy for factor's TEV contribution
-            total_contribution = sum(abs(s["contribution"]) for s in security_contributions)
+            factor_data[factor] = {
+                "active_beta": active_beta,
+                "portfolio_beta": port_beta,
+                "benchmark_beta": bench_beta,
+                "securities": top_securities,
+            }
 
-            # Scale to percentage of total active risk (rough approximation)
-            # The actual factor variance contribution would require factor covariance matrix
-            # Here we use relative contribution as a proxy
-            factor_ctev = abs(active_beta) * total_active_risk * 0.2  # Scale factor
+        # Second pass: calculate CTEV values using ctev_by_factor for consistency
+        # Calculate total abs(active_beta) for style factors to distribute Style CTEV proportionally
+        total_style_abs_beta = sum(
+            abs(factor_data[f]["active_beta"]) for f in style_factors
+        )
+
+        for factor in factors:
+            data = factor_data[factor]
+            active_beta = data["active_beta"]
+
+            # Determine CTEV based on factor type
+            if factor == "Mkt-RF":
+                # Market factor uses Market CTEV directly from ctev_by_factor
+                if market_ctev_total > 0:
+                    factor_ctev = market_ctev_total
+                else:
+                    # Fallback to rough approximation
+                    factor_ctev = abs(active_beta) * total_active_risk * 0.2
+            else:
+                # Style factors share Style CTEV proportionally based on abs(active_beta)
+                if style_ctev_total > 0 and total_style_abs_beta > 0:
+                    proportion = abs(active_beta) / total_style_abs_beta
+                    factor_ctev = proportion * style_ctev_total
+                else:
+                    # Fallback to rough approximation
+                    factor_ctev = abs(active_beta) * total_active_risk * 0.2
 
             # Get friendly name
             friendly_name = cls.FACTOR_NAMES.get(factor, factor)
@@ -626,8 +695,8 @@ class FactorRiskService:
                 "factor_code": factor,
                 "ctev": round(factor_ctev, 2),
                 "active_beta": round(active_beta, 3),
-                "portfolio_beta": round(port_beta, 3),
-                "benchmark_beta": round(bench_beta, 3),
+                "portfolio_beta": round(data["portfolio_beta"], 3),
+                "benchmark_beta": round(data["benchmark_beta"], 3),
                 "securities": [
                     {
                         "ticker": s["ticker"],
@@ -636,7 +705,7 @@ class FactorRiskService:
                         "active_weight": s["active_weight"],
                         "contribution": round(s["contribution"] * 100, 3),  # Convert to percentage
                     }
-                    for s in top_securities
+                    for s in data["securities"]
                 ],
             }
 
@@ -646,11 +715,752 @@ class FactorRiskService:
         return result
 
     @classmethod
+    def calculate_industry_contributions(
+        cls,
+        regression_results: Dict[str, "FactorRegressionResult"],
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        benchmark_holdings: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate industry factor contributions with top securities.
+
+        Groups securities by industry and calculates active weight differences.
+        Industry data comes from Yahoo Finance metadata.
+
+        Args:
+            regression_results: Dict mapping ticker to regression result
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            benchmark_holdings: Optional iShares holdings for additional metadata
+
+        Returns:
+            Dict mapping industry name to {active_weight, securities: [...]}
+            Sorted by absolute active weight, top 20 industries
+        """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        # Group securities by industry
+        industry_data: Dict[str, Dict[str, Any]] = {}
+
+        # Get all tickers from both portfolio and benchmark
+        all_tickers = set(portfolio_weights.keys()) | set(benchmark_weights.keys())
+
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            active_weight = pw - bw
+
+            # Skip if no position
+            if pw <= 0 and bw <= 0:
+                continue
+
+            # Get industry from metadata
+            metadata = TickerMetadataService.get_metadata(ticker_upper)
+            industry = metadata.get("industry") or "Not Classified"
+            name = metadata.get("shortName") or ticker_upper
+
+            if industry not in industry_data:
+                industry_data[industry] = {
+                    "portfolio_weight": 0.0,
+                    "benchmark_weight": 0.0,
+                    "active_weight": 0.0,
+                    "securities": [],
+                }
+
+            industry_data[industry]["portfolio_weight"] += pw
+            industry_data[industry]["benchmark_weight"] += bw
+            industry_data[industry]["active_weight"] += active_weight
+            industry_data[industry]["securities"].append({
+                "ticker": ticker_upper,
+                "name": name,
+                "portfolio_weight": round(pw * 100, 2),
+                "benchmark_weight": round(bw * 100, 2),
+                "active_weight": round(active_weight * 100, 2),
+            })
+
+        # Sort securities within each industry by absolute active weight
+        for industry in industry_data:
+            industry_data[industry]["securities"].sort(
+                key=lambda x: abs(x["active_weight"]), reverse=True
+            )
+            # Keep top 50 securities per industry
+            industry_data[industry]["securities"] = industry_data[industry]["securities"][:50]
+            # Round industry-level weights
+            industry_data[industry]["portfolio_weight"] = round(
+                industry_data[industry]["portfolio_weight"] * 100, 2
+            )
+            industry_data[industry]["benchmark_weight"] = round(
+                industry_data[industry]["benchmark_weight"] * 100, 2
+            )
+            industry_data[industry]["active_weight"] = round(
+                industry_data[industry]["active_weight"] * 100, 2
+            )
+
+        # Sort industries by absolute active weight and take top 50
+        sorted_industries = sorted(
+            industry_data.items(),
+            key=lambda x: abs(x[1]["active_weight"]),
+            reverse=True
+        )[:50]
+
+        return dict(sorted_industries)
+
+    @classmethod
+    def calculate_sector_industry_contributions(
+        cls,
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        total_active_risk: float,
+        regression_results: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate hierarchical Sector → Industry factor contributions.
+
+        Returns a nested structure where:
+        - Sector (parent level): Collapsible header showing CTEV, contains industries
+        - Industry (child level): Collapsible sub-header showing CTEV, contains securities
+        - Securities: Individual holdings under each industry with their CTEV contribution
+
+        CTEV Calculation:
+        - Sector CTEV = |sector_active_weight| × (sector_active_weight / total_sector_diff) × factor_risk
+        - Industry CTEV = |industry_active_weight| × (industry_active_weight / sector_diff) × sector_ctev
+        - Security CTEV = (|security_active_weight| / industry_total_diff) × industry_ctev
+
+        Args:
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            total_active_risk: Total tracking error (percentage)
+            regression_results: Optional regression results for R² calculation
+
+        Returns:
+            Dict mapping sector name to:
+            {
+                "ctev": float,
+                "active_weight": float,
+                "portfolio_weight": float,
+                "benchmark_weight": float,
+                "industries": {
+                    "Industry Name": {
+                        "ctev": float,
+                        "active_weight": float,
+                        "portfolio_weight": float,
+                        "benchmark_weight": float,
+                        "securities": [
+                            {"ticker": str, "name": str, "portfolio_weight": float,
+                             "benchmark_weight": float, "active_weight": float, "ctev": float},
+                            ...
+                        ]
+                    },
+                    ...
+                }
+            }
+            Sorted by CTEV with "Not Classified" always last.
+        """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        # Build hierarchical structure: Sector → Industry → Securities
+        sector_data: Dict[str, Dict[str, Any]] = {}
+
+        # Get all tickers from both portfolio and benchmark
+        all_tickers = set(portfolio_weights.keys()) | set(benchmark_weights.keys())
+
+        # DEBUG: Comprehensive logging
+        print(f"[SectorIndustry] === DEBUG START ===")
+        print(f"[SectorIndustry] portfolio_weights dict size: {len(portfolio_weights)}")
+        print(f"[SectorIndustry] benchmark_weights dict size: {len(benchmark_weights)}")
+        print(f"[SectorIndustry] all_tickers set size: {len(all_tickers)}")
+
+        # Count non-zero weights in each dict
+        port_nonzero = sum(1 for v in portfolio_weights.values() if v > 0)
+        bench_nonzero = sum(1 for v in benchmark_weights.values() if v > 0)
+        print(f"[SectorIndustry] Portfolio non-zero weights: {port_nonzero}")
+        print(f"[SectorIndustry] Benchmark non-zero weights: {bench_nonzero}")
+
+        # Sample some benchmark weights to check values
+        bench_samples = list(benchmark_weights.items())[:5]
+        print(f"[SectorIndustry] Sample benchmark weights: {bench_samples}")
+
+        # Pre-fetch industry data from Yahoo Finance for tickers missing it
+        # The iShares CSV only has sector, not industry - so we need Yahoo for detailed breakdown
+        tickers_needing_industry = []
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            if pw <= 0 and bw <= 0:
+                continue
+            # Check if this ticker is missing industry data
+            cached = TickerMetadataService._load_cache().get(ticker_upper, {})
+            if not cached.get("industry"):
+                tickers_needing_industry.append(ticker_upper)
+
+        if tickers_needing_industry:
+            print(f"[SectorIndustry] Fetching industry data from Yahoo Finance for {len(tickers_needing_industry)} tickers...")
+            print(f"[SectorIndustry] This may take several minutes (rate-limited to avoid Yahoo throttling)...")
+            # Batch fetch from Yahoo with force_refresh since these are in cache but missing industry
+            # Use only 5 workers to avoid Yahoo rate limiting
+            TickerMetadataService.get_metadata_batch(tickers_needing_industry, force_refresh=True, max_workers=5)
+            # Verify fetch success
+            cache = TickerMetadataService._load_cache()
+            has_industry = sum(1 for t in tickers_needing_industry if cache.get(t, {}).get("industry"))
+            print(f"[SectorIndustry] Industry data fetch complete: {has_industry}/{len(tickers_needing_industry)} now have industry")
+
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            active_weight = pw - bw
+
+            # Skip if no position
+            if pw <= 0 and bw <= 0:
+                continue
+
+            # Get sector and industry from metadata
+            metadata = TickerMetadataService.get_metadata(ticker_upper)
+            sector = metadata.get("sector") or "Not Classified"
+            industry = metadata.get("industry") or "Not Classified"
+            name = metadata.get("shortName") or ticker_upper
+
+            # Initialize sector if needed
+            if sector not in sector_data:
+                sector_data[sector] = {
+                    "portfolio_weight": 0.0,
+                    "benchmark_weight": 0.0,
+                    "active_weight": 0.0,
+                    "ctev": 0.0,
+                    "industries": {},
+                }
+
+            # Initialize industry if needed
+            if industry not in sector_data[sector]["industries"]:
+                sector_data[sector]["industries"][industry] = {
+                    "portfolio_weight": 0.0,
+                    "benchmark_weight": 0.0,
+                    "active_weight": 0.0,
+                    "ctev": 0.0,
+                    "securities": [],
+                }
+
+            # Aggregate weights at sector level
+            sector_data[sector]["portfolio_weight"] += pw
+            sector_data[sector]["benchmark_weight"] += bw
+            sector_data[sector]["active_weight"] += active_weight
+
+            # Aggregate weights at industry level
+            sector_data[sector]["industries"][industry]["portfolio_weight"] += pw
+            sector_data[sector]["industries"][industry]["benchmark_weight"] += bw
+            sector_data[sector]["industries"][industry]["active_weight"] += active_weight
+
+            # Add security (CTEV will be calculated after industry CTEV is known)
+            sector_data[sector]["industries"][industry]["securities"].append({
+                "ticker": ticker_upper,
+                "name": name,
+                "portfolio_weight": pw,  # Keep as decimal for now
+                "benchmark_weight": bw,
+                "active_weight": active_weight,
+                "ctev": 0.0,  # Will be calculated later
+            })
+
+        # DEBUG: Count how many securities were actually added (before top-10 limit)
+        total_securities_added = sum(
+            len(ind["securities"])
+            for s in sector_data.values()
+            for ind in s["industries"].values()
+        )
+        total_industries = sum(len(s["industries"]) for s in sector_data.values())
+        not_classified_sectors_count = 1 if "Not Classified" in sector_data else 0
+        not_classified_industries_count = sum(
+            1 for s in sector_data.values()
+            for ind in s["industries"].keys()
+            if ind == "Not Classified"
+        )
+        print(f"[SectorIndustry] Total securities ADDED (before top-10): {total_securities_added}")
+        print(f"[SectorIndustry] Total sectors: {len(sector_data)}")
+        print(f"[SectorIndustry] Total industries: {total_industries}")
+        print(f"[SectorIndustry] 'Not Classified' sectors: {not_classified_sectors_count}")
+        print(f"[SectorIndustry] 'Not Classified' industries: {not_classified_industries_count}")
+        print(f"[SectorIndustry] === DEBUG END ===")
+
+        # Calculate CTEV for sectors and industries
+        # Estimate factor risk as R² percentage of total active risk
+        avg_r2 = 0.5  # Default 50%
+        if regression_results:
+            total_r2 = sum(r.r_squared for r in regression_results.values())
+            count = len(regression_results)
+            if count > 0:
+                avg_r2 = total_r2 / count
+
+        factor_risk = total_active_risk * avg_r2
+
+        # Calculate total sector weight difference for proportional allocation
+        total_sector_diff = sum(
+            abs(s["active_weight"]) for s in sector_data.values()
+        )
+
+        # Allocate CTEV proportionally to sectors
+        for sector_name, sector_info in sector_data.items():
+            sector_active_weight = sector_info["active_weight"]
+
+            if total_sector_diff > 0.001:
+                # Sector CTEV proportional to its active weight difference
+                sector_ctev = (abs(sector_active_weight) / total_sector_diff) * factor_risk
+            else:
+                sector_ctev = 0.0
+
+            sector_info["ctev"] = round(sector_ctev, 2)
+
+            # Calculate total industry weight difference within this sector
+            total_industry_diff = sum(
+                abs(i["active_weight"]) for i in sector_info["industries"].values()
+            )
+
+            # Allocate sector CTEV proportionally to industries
+            for industry_name, industry_info in sector_info["industries"].items():
+                industry_active_weight = industry_info["active_weight"]
+
+                if total_industry_diff > 0.001 and sector_ctev > 0:
+                    # Industry CTEV proportional to its active weight within sector
+                    industry_ctev = (abs(industry_active_weight) / total_industry_diff) * sector_ctev
+                else:
+                    industry_ctev = 0.0
+
+                industry_info["ctev"] = round(industry_ctev, 2)
+
+                # Calculate security-level CTEV
+                # Total active weight difference within this industry
+                industry_security_diff = sum(
+                    abs(s["active_weight"]) for s in industry_info["securities"]
+                )
+
+                for security in industry_info["securities"]:
+                    if industry_security_diff > 0.0001 and industry_ctev > 0:
+                        # Security CTEV proportional to its active weight within industry
+                        security_ctev = (abs(security["active_weight"]) / industry_security_diff) * industry_ctev
+                    else:
+                        security_ctev = 0.0
+                    security["ctev"] = round(security_ctev, 4)
+
+                    # Convert weights to percentages
+                    security["portfolio_weight"] = round(security["portfolio_weight"] * 100, 2)
+                    security["benchmark_weight"] = round(security["benchmark_weight"] * 100, 2)
+                    security["active_weight"] = round(security["active_weight"] * 100, 2)
+
+                # Sort securities by CTEV descending (not active weight)
+                industry_info["securities"].sort(
+                    key=lambda x: x["ctev"], reverse=True
+                )
+
+                # Show all securities (no limit)
+
+                # Round weights to percentages
+                industry_info["portfolio_weight"] = round(industry_info["portfolio_weight"] * 100, 2)
+                industry_info["benchmark_weight"] = round(industry_info["benchmark_weight"] * 100, 2)
+                industry_info["active_weight"] = round(industry_info["active_weight"] * 100, 2)
+
+            # Round sector-level weights to percentages
+            sector_info["portfolio_weight"] = round(sector_info["portfolio_weight"] * 100, 2)
+            sector_info["benchmark_weight"] = round(sector_info["benchmark_weight"] * 100, 2)
+            sector_info["active_weight"] = round(sector_info["active_weight"] * 100, 2)
+
+            # Sort industries by CTEV descending, with "Not Classified" always last
+            classified_industries = {
+                k: v for k, v in sector_info["industries"].items() if k != "Not Classified"
+            }
+            not_classified_industries = {
+                k: v for k, v in sector_info["industries"].items() if k == "Not Classified"
+            }
+
+            sorted_classified = dict(sorted(
+                classified_industries.items(),
+                key=lambda x: x[1]["ctev"],
+                reverse=True
+            ))
+            # Append "Not Classified" at the end
+            sorted_industries = {**sorted_classified, **not_classified_industries}
+            sector_info["industries"] = sorted_industries
+
+        # Sort sectors by CTEV descending, with "Not Classified" always last
+        classified_sectors = {k: v for k, v in sector_data.items() if k != "Not Classified"}
+        not_classified_sectors = {k: v for k, v in sector_data.items() if k == "Not Classified"}
+
+        sorted_classified = dict(sorted(
+            classified_sectors.items(),
+            key=lambda x: x[1]["ctev"],
+            reverse=True
+        ))
+        # Append "Not Classified" at the end
+        sorted_sectors = {**sorted_classified, **not_classified_sectors}
+
+        return sorted_sectors
+
+    @classmethod
+    def calculate_currency_contributions(
+        cls,
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        benchmark_holdings: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate binary USD vs non-USD currency factor with contributing securities.
+
+        Currency data comes from iShares holdings (primary) or metadata (fallback).
+
+        Args:
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            benchmark_holdings: iShares holdings for currency field
+
+        Returns:
+            Dict with "USD" and "Non-USD" entries, each containing:
+            {portfolio_weight, benchmark_weight, active_weight, securities: [...]}
+        """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        result = {
+            "USD": {
+                "portfolio_weight": 0.0,
+                "benchmark_weight": 0.0,
+                "active_weight": 0.0,
+                "securities": [],
+            },
+            "Non-USD": {
+                "portfolio_weight": 0.0,
+                "benchmark_weight": 0.0,
+                "active_weight": 0.0,
+                "securities": [],
+            },
+        }
+
+        # Get all tickers from both portfolio and benchmark
+        all_tickers = set(portfolio_weights.keys()) | set(benchmark_weights.keys())
+
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            active_weight = pw - bw
+
+            # Skip if no position
+            if pw <= 0 and bw <= 0:
+                continue
+
+            # Get currency - prefer iShares holdings, fallback to metadata
+            currency = "USD"  # Default
+            if benchmark_holdings and ticker_upper in benchmark_holdings:
+                holding = benchmark_holdings[ticker_upper]
+                currency = getattr(holding, "currency", "USD") or "USD"
+            else:
+                metadata = TickerMetadataService.get_metadata(ticker_upper)
+                currency = metadata.get("currency") or "USD"
+
+            # Get security name
+            metadata = TickerMetadataService.get_metadata(ticker_upper)
+            name = metadata.get("shortName") or ticker_upper
+
+            # Classify as USD or Non-USD
+            bucket = "USD" if currency.upper() == "USD" else "Non-USD"
+
+            result[bucket]["portfolio_weight"] += pw
+            result[bucket]["benchmark_weight"] += bw
+            result[bucket]["active_weight"] += active_weight
+            result[bucket]["securities"].append({
+                "ticker": ticker_upper,
+                "name": name,
+                "currency": currency,
+                "portfolio_weight": round(pw * 100, 2),
+                "benchmark_weight": round(bw * 100, 2),
+                "active_weight": round(active_weight * 100, 2),
+            })
+
+        # Sort securities within each bucket by absolute active weight, show all
+        for bucket in result:
+            result[bucket]["securities"].sort(
+                key=lambda x: abs(x["active_weight"]), reverse=True
+            )
+            # No limit - show all securities
+            # Round bucket-level weights
+            result[bucket]["portfolio_weight"] = round(
+                result[bucket]["portfolio_weight"] * 100, 2
+            )
+            result[bucket]["benchmark_weight"] = round(
+                result[bucket]["benchmark_weight"] * 100, 2
+            )
+            result[bucket]["active_weight"] = round(
+                result[bucket]["active_weight"] * 100, 2
+            )
+
+        return result
+
+    @classmethod
+    def calculate_sector_contributions(
+        cls,
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        total_active_risk: float,
+        regression_results: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate flat sector-level CTEV (no industry grouping).
+
+        Returns a flat structure where:
+        - Sector (top level): Shows CTEV, active weight, contains ALL securities
+        - Securities: Individual holdings under each sector with their CTEV contribution
+
+        This is different from calculate_sector_industry_contributions() which has
+        hierarchical Sector → Industry → Securities structure.
+
+        CTEV Calculation:
+        - Sector CTEV = |sector_active_weight| × (sector_active_weight / total_sector_diff) × factor_risk
+        - Security CTEV = (|security_active_weight| / sector_total_diff) × sector_ctev
+
+        Args:
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            total_active_risk: Total tracking error (percentage)
+            regression_results: Optional regression results for R² calculation
+
+        Returns:
+            Dict mapping sector name to:
+            {
+                "ctev": float,
+                "active_weight": float,
+                "portfolio_weight": float,
+                "benchmark_weight": float,
+                "securities": [
+                    {"ticker": str, "name": str, "portfolio_weight": float,
+                     "benchmark_weight": float, "active_weight": float, "ctev": float},
+                    ...
+                ]
+            }
+            Sorted by CTEV with "Not Classified" always last.
+        """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        # Build flat structure: Sector → Securities (no industry level)
+        sector_data: Dict[str, Dict[str, Any]] = {}
+
+        # Get all tickers from both portfolio and benchmark
+        all_tickers = set(portfolio_weights.keys()) | set(benchmark_weights.keys())
+
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            active_weight = pw - bw
+
+            # Skip if no position
+            if pw <= 0 and bw <= 0:
+                continue
+
+            # Get sector from metadata (no industry needed for flat view)
+            metadata = TickerMetadataService.get_metadata(ticker_upper)
+            sector = metadata.get("sector") or "Not Classified"
+            name = metadata.get("shortName") or ticker_upper
+
+            # Initialize sector if needed
+            if sector not in sector_data:
+                sector_data[sector] = {
+                    "portfolio_weight": 0.0,
+                    "benchmark_weight": 0.0,
+                    "active_weight": 0.0,
+                    "ctev": 0.0,
+                    "securities": [],
+                }
+
+            # Aggregate weights at sector level
+            sector_data[sector]["portfolio_weight"] += pw
+            sector_data[sector]["benchmark_weight"] += bw
+            sector_data[sector]["active_weight"] += active_weight
+
+            # Add security (CTEV will be calculated after sector CTEV is known)
+            sector_data[sector]["securities"].append({
+                "ticker": ticker_upper,
+                "name": name,
+                "portfolio_weight": pw,  # Keep as decimal for now
+                "benchmark_weight": bw,
+                "active_weight": active_weight,
+                "ctev": 0.0,  # Will be calculated later
+            })
+
+        # Calculate CTEV for sectors
+        # Estimate factor risk as R² percentage of total active risk
+        avg_r2 = 0.5  # Default 50%
+        if regression_results:
+            total_r2 = sum(r.r_squared for r in regression_results.values())
+            count = len(regression_results)
+            if count > 0:
+                avg_r2 = total_r2 / count
+
+        factor_risk = total_active_risk * avg_r2
+
+        # Calculate total sector weight difference for proportional allocation
+        total_sector_diff = sum(
+            abs(s["active_weight"]) for s in sector_data.values()
+        )
+
+        # Allocate CTEV proportionally to sectors
+        for sector_name, sector_info in sector_data.items():
+            sector_active_weight = sector_info["active_weight"]
+
+            if total_sector_diff > 0.001:
+                # Sector CTEV proportional to its active weight difference
+                sector_ctev = (abs(sector_active_weight) / total_sector_diff) * factor_risk
+            else:
+                sector_ctev = 0.0
+
+            sector_info["ctev"] = round(sector_ctev, 2)
+
+            # Calculate security-level CTEV within this sector
+            sector_security_diff = sum(
+                abs(s["active_weight"]) for s in sector_info["securities"]
+            )
+
+            for security in sector_info["securities"]:
+                if sector_security_diff > 0.0001 and sector_ctev > 0:
+                    # Security CTEV proportional to its active weight within sector
+                    security_ctev = (abs(security["active_weight"]) / sector_security_diff) * sector_ctev
+                else:
+                    security_ctev = 0.0
+                security["ctev"] = round(security_ctev, 4)
+
+                # Convert weights to percentages
+                security["portfolio_weight"] = round(security["portfolio_weight"] * 100, 2)
+                security["benchmark_weight"] = round(security["benchmark_weight"] * 100, 2)
+                security["active_weight"] = round(security["active_weight"] * 100, 2)
+
+            # Sort securities by CTEV descending
+            sector_info["securities"].sort(
+                key=lambda x: x["ctev"], reverse=True
+            )
+
+            # Round sector-level weights to percentages
+            sector_info["portfolio_weight"] = round(sector_info["portfolio_weight"] * 100, 2)
+            sector_info["benchmark_weight"] = round(sector_info["benchmark_weight"] * 100, 2)
+            sector_info["active_weight"] = round(sector_info["active_weight"] * 100, 2)
+
+        # Sort sectors by CTEV descending, with "Not Classified" always last
+        classified_sectors = {k: v for k, v in sector_data.items() if k != "Not Classified"}
+        not_classified_sectors = {k: v for k, v in sector_data.items() if k == "Not Classified"}
+
+        sorted_classified = dict(sorted(
+            classified_sectors.items(),
+            key=lambda x: x[1]["ctev"],
+            reverse=True
+        ))
+        # Append "Not Classified" at the end
+        sorted_sectors = {**sorted_classified, **not_classified_sectors}
+
+        return sorted_sectors
+
+    @classmethod
+    def calculate_country_contributions(
+        cls,
+        portfolio_weights: Dict[str, float],
+        benchmark_weights: Dict[str, float],
+        benchmark_holdings: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate binary US vs non-US country factor with contributing securities.
+
+        Country data comes from iShares holdings location field (primary) or metadata.
+
+        Args:
+            portfolio_weights: Portfolio weights (decimal)
+            benchmark_weights: Benchmark weights (decimal)
+            benchmark_holdings: iShares holdings for location field
+
+        Returns:
+            Dict with "US" and "Non-US" entries, each containing:
+            {portfolio_weight, benchmark_weight, active_weight, securities: [...]}
+        """
+        from app.services.ticker_metadata_service import TickerMetadataService
+
+        result = {
+            "US": {
+                "portfolio_weight": 0.0,
+                "benchmark_weight": 0.0,
+                "active_weight": 0.0,
+                "securities": [],
+            },
+            "Non-US": {
+                "portfolio_weight": 0.0,
+                "benchmark_weight": 0.0,
+                "active_weight": 0.0,
+                "securities": [],
+            },
+        }
+
+        # US location values from iShares
+        US_LOCATIONS = {"United States", "USA", "US"}
+
+        # Get all tickers from both portfolio and benchmark
+        all_tickers = set(portfolio_weights.keys()) | set(benchmark_weights.keys())
+
+        for ticker in all_tickers:
+            ticker_upper = ticker.upper()
+            pw = portfolio_weights.get(ticker_upper, 0.0)
+            bw = benchmark_weights.get(ticker_upper, 0.0)
+            active_weight = pw - bw
+
+            # Skip if no position
+            if pw <= 0 and bw <= 0:
+                continue
+
+            # Get location - prefer iShares holdings, fallback to metadata country
+            location = "United States"  # Default for US stocks
+            if benchmark_holdings and ticker_upper in benchmark_holdings:
+                holding = benchmark_holdings[ticker_upper]
+                location = getattr(holding, "location", "United States") or "United States"
+            else:
+                metadata = TickerMetadataService.get_metadata(ticker_upper)
+                location = metadata.get("country") or "United States"
+
+            # Get security name
+            metadata = TickerMetadataService.get_metadata(ticker_upper)
+            name = metadata.get("shortName") or ticker_upper
+
+            # Classify as US or Non-US
+            bucket = "US" if location in US_LOCATIONS else "Non-US"
+
+            result[bucket]["portfolio_weight"] += pw
+            result[bucket]["benchmark_weight"] += bw
+            result[bucket]["active_weight"] += active_weight
+            result[bucket]["securities"].append({
+                "ticker": ticker_upper,
+                "name": name,
+                "country": location,
+                "portfolio_weight": round(pw * 100, 2),
+                "benchmark_weight": round(bw * 100, 2),
+                "active_weight": round(active_weight * 100, 2),
+            })
+
+        # Sort securities within each bucket by absolute active weight, show all
+        for bucket in result:
+            result[bucket]["securities"].sort(
+                key=lambda x: abs(x["active_weight"]), reverse=True
+            )
+            # No limit - show all securities
+            # Round bucket-level weights
+            result[bucket]["portfolio_weight"] = round(
+                result[bucket]["portfolio_weight"] * 100, 2
+            )
+            result[bucket]["benchmark_weight"] = round(
+                result[bucket]["benchmark_weight"] * 100, 2
+            )
+            result[bucket]["active_weight"] = round(
+                result[bucket]["active_weight"] * 100, 2
+            )
+
+        return result
+
+    @classmethod
     def validate_risk_decomposition(
         cls,
         security_risks: Dict[str, Dict[str, float]],
         summary: Dict[str, float],
-        ctev_by_factor: Dict[str, float],
+        ctev_by_factor: Dict[str, Dict[str, float]],
     ) -> List[str]:
         """
         Validate that risk decomposition sums correctly.
@@ -658,7 +1468,7 @@ class FactorRiskService:
         Args:
             security_risks: Per-security risk metrics
             summary: Portfolio summary metrics
-            ctev_by_factor: CTEV by factor group
+            ctev_by_factor: CTEV by factor group ({"Factor": {"ctev": X, "active_weight": Y}})
 
         Returns:
             List of warning messages (empty if all valid)

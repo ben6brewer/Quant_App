@@ -93,56 +93,62 @@ class CTEVTable(SmoothScrollTableWidget):
         # Set default row height for consistency
         self.verticalHeader().setDefaultSectionSize(28)
 
-        # Column sizing
+        # Column sizing - 3 columns: Name, CTEV, Bar
         header = self.horizontalHeader()
         # Name column stretches
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        # Value column fixed width
+        # CTEV column fixed width
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         self.setColumnWidth(1, 55)  # Width for xx.xx format
         # Bar column stretches
         header.setSectionResizeMode(2, QHeaderView.Stretch)
 
-        # Set delegate for bar column
+        # Set delegate for bar column (column 2)
         self.setItemDelegateForColumn(2, self._bar_delegate)
 
     def set_bar_color(self, color: str):
         """Set the bar color for the visualization."""
         self._bar_delegate.set_bar_color(color)
 
-    def set_data(self, data: Dict[str, float]):
+    def set_data(self, data: Dict[str, Dict[str, float]]):
         """
         Set table data from dict.
 
         Args:
-            data: Dict mapping name to value
+            data: Dict mapping name to {"active_weight": float, "ctev": float}
+                  Also handles legacy format: Dict mapping name to float (CTEV only)
         """
         self.setRowCount(len(data))
 
-        # Find max value for scaling
-        max_value = max(data.values()) if data else 1.0
-        self._bar_delegate.set_max_value(max_value)
+        # Helper to extract CTEV value (handles both dict and float formats)
+        def get_ctev(v):
+            if isinstance(v, dict):
+                return v.get("ctev", 0)
+            return float(v) if v is not None else 0
 
-        for row, (name, value) in enumerate(data.items()):
-            # Name column
+        # Find max CTEV value for scaling bars
+        max_ctev = max(get_ctev(d) for d in data.values()) if data else 1.0
+        self._bar_delegate.set_max_value(max_ctev)
+
+        for row, (name, metrics) in enumerate(data.items()):
+            ctev = get_ctev(metrics)
+
+            # Col 0: Name
             name_item = QTableWidgetItem(name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
             self.setItem(row, 0, name_item)
 
-            # Value column
-            if isinstance(value, (int, float)):
-                value_str = f"{value:.2f}"
-            else:
-                value_str = str(value)
-            value_item = QTableWidgetItem(value_str)
-            value_item.setFlags(value_item.flags() & ~Qt.ItemIsEditable)
-            value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.setItem(row, 1, value_item)
+            # Col 1: CTEV (format: X.XX)
+            ctev_str = f"{ctev:.2f}"
+            ctev_item = QTableWidgetItem(ctev_str)
+            ctev_item.setFlags(ctev_item.flags() & ~Qt.ItemIsEditable)
+            ctev_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.setItem(row, 1, ctev_item)
 
-            # Bar column - store value for delegate to use
+            # Col 2: Bar - store CTEV value for delegate to use
             bar_item = QTableWidgetItem()
             bar_item.setFlags(bar_item.flags() & ~Qt.ItemIsEditable)
-            bar_item.setData(Qt.UserRole, value if isinstance(value, (int, float)) else 0)
+            bar_item.setData(Qt.UserRole, ctev)
             self.setItem(row, 2, bar_item)
 
         self.resizeRowsToContents()
@@ -182,7 +188,7 @@ class CTEVPanel(QFrame):
         """Set the bar color for the table."""
         self.table.set_bar_color(color)
 
-    def set_data(self, data: Dict[str, float]):
+    def set_data(self, data: Dict[str, Dict[str, float]]):
         """Set table data."""
         self.table.set_data(data)
 
@@ -240,19 +246,34 @@ class RiskDecompositionPanel(LazyThemeMixin, QWidget):
         )
         layout.addWidget(self.security_panel, stretch=1)
 
-    def update_factor_ctev(self, data: Optional[Dict[str, float]]):
-        """Update CTEV by factor group."""
+    def update_factor_ctev(self, data: Optional[Dict[str, Dict[str, float]]]):
+        """Update CTEV by factor group.
+
+        Args:
+            data: Dict mapping factor name to {"ctev": float, "active_weight": float}
+        """
         if data:
             self.factor_panel.set_data(data)
         else:
             self.factor_panel.clear_data()
 
-    def update_sector_ctev(self, data: Optional[Dict[str, float]]):
-        """Update CTEV by sector."""
+    def update_sector_ctev(self, data: Optional[Dict[str, Dict[str, float]]]):
+        """Update CTEV by sector.
+
+        Args:
+            data: Dict mapping sector name to {"ctev": float, "active_weight": float}
+                  Also handles legacy format: Dict mapping name to float
+        """
         if data:
-            # Limit to top 10
+            # Helper to extract CTEV (handles both dict and float formats)
+            def get_ctev(v):
+                if isinstance(v, dict):
+                    return v.get("ctev", 0)
+                return float(v) if v is not None else 0
+
+            # Limit to top 10 by CTEV
             sorted_data = dict(
-                sorted(data.items(), key=lambda x: x[1], reverse=True)[:10]
+                sorted(data.items(), key=lambda x: get_ctev(x[1]), reverse=True)[:10]
             )
             self.sector_panel.set_data(sorted_data)
         else:
@@ -263,16 +284,19 @@ class RiskDecompositionPanel(LazyThemeMixin, QWidget):
         Update CTEV by security.
 
         Args:
-            data: Dict mapping ticker to metrics dict with 'idio_ctev' key
+            data: Dict mapping ticker to {"ctev": float, "active_weight": float}
+                  Also handles legacy format: Dict mapping name to float
         """
         if data:
-            # Extract just the CTEV values and limit to top 10
-            ctev_data = {
-                ticker: metrics.get("idio_ctev", 0)
-                for ticker, metrics in data.items()
-            }
+            # Helper to extract CTEV (handles both dict and float formats)
+            def get_ctev(v):
+                if isinstance(v, dict):
+                    return v.get("ctev", 0)
+                return float(v) if v is not None else 0
+
+            # Sort by CTEV and limit to top 10
             sorted_data = dict(
-                sorted(ctev_data.items(), key=lambda x: x[1], reverse=True)[:10]
+                sorted(data.items(), key=lambda x: get_ctev(x[1]), reverse=True)[:10]
             )
             self.security_panel.set_data(sorted_data)
         else:

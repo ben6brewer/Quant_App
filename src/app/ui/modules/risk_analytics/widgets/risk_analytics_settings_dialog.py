@@ -22,6 +22,7 @@ from PySide6.QtCore import Signal, Qt, QDate
 from app.core.theme_manager import ThemeManager
 from app.ui.widgets.common.themed_dialog import ThemedDialog
 from app.services.theme_stylesheet_service import ThemeStylesheetService
+from app.services.ticker_metadata_service import TickerMetadataService
 from ..services.sector_override_service import SectorOverrideService
 
 
@@ -209,38 +210,64 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         override_desc.setObjectName("settingsDescription")
         override_layout.addWidget(override_desc)
 
-        # Add override controls
-        add_row = QHBoxLayout()
+        # Add override controls - vertical form layout
+        form_container = QWidget()
+        form_layout = QVBoxLayout(form_container)
+        form_layout.setContentsMargins(0, 0, 0, 8)
+        form_layout.setSpacing(6)
 
-        # Ticker input
+        # Row 1: Ticker input
+        ticker_row = QHBoxLayout()
         ticker_label = QLabel("Ticker:")
-        add_row.addWidget(ticker_label)
+        ticker_label.setFixedWidth(60)
+        ticker_row.addWidget(ticker_label)
         self.ticker_input = QLineEdit()
         self.ticker_input.setPlaceholderText("e.g., COIN")
-        self.ticker_input.setFixedWidth(100)
         self.ticker_input.textChanged.connect(self._on_ticker_text_changed)
         self.ticker_input.editingFinished.connect(self._on_ticker_editing_finished)
-        add_row.addWidget(self.ticker_input)
+        ticker_row.addWidget(self.ticker_input)
+        ticker_row.addStretch()
+        form_layout.addLayout(ticker_row)
 
-        # Sector dropdown
+        # Row 2: Sector dropdown
+        sector_row = QHBoxLayout()
         sector_label = QLabel("Sector:")
-        add_row.addWidget(sector_label)
+        sector_label.setFixedWidth(60)
+        sector_row.addWidget(sector_label)
         self.sector_combo = QComboBox()
         self.sector_combo.addItems(SectorOverrideService.SECTORS)
-        self.sector_combo.setFixedWidth(180)
-        smooth_view = SmoothScrollListView(self.sector_combo)
-        self.sector_combo.setView(smooth_view)
-        add_row.addWidget(self.sector_combo)
+        sector_smooth_view = SmoothScrollListView(self.sector_combo)
+        self.sector_combo.setView(sector_smooth_view)
+        sector_row.addWidget(self.sector_combo)
+        sector_row.addStretch()
+        form_layout.addLayout(sector_row)
 
-        # Add button
+        # Row 3: Industry editable combo
+        industry_row = QHBoxLayout()
+        industry_label = QLabel("Industry:")
+        industry_label.setFixedWidth(60)
+        industry_row.addWidget(industry_label)
+        self.industry_combo = QComboBox()
+        self.industry_combo.setEditable(True)
+        self.industry_combo.lineEdit().setPlaceholderText("Optional - type or select")
+        industry_smooth_view = SmoothScrollListView(self.industry_combo)
+        self.industry_combo.setView(industry_smooth_view)
+        self._populate_industry_suggestions()
+        industry_row.addWidget(self.industry_combo)
+        industry_row.addStretch()
+        form_layout.addLayout(industry_row)
+
+        # Row 4: Add button (right-aligned)
+        button_row = QHBoxLayout()
+        button_row.addStretch()
         self.add_override_btn = QPushButton("Add Override")
         self.add_override_btn.setFixedWidth(120)
         self.add_override_btn.clicked.connect(self._add_override)
         self.add_override_btn.setEnabled(False)
-        add_row.addWidget(self.add_override_btn)
+        button_row.addWidget(self.add_override_btn)
+        form_layout.addLayout(button_row)
 
-        add_row.addStretch()
-        override_layout.addLayout(add_row)
+        override_layout.addWidget(form_container)
 
         # Current overrides list
         list_label = QLabel("Current Overrides:")
@@ -432,6 +459,14 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
                 self.lookback_combo.setCurrentIndex(index)
         self.lookback_combo.blockSignals(False)
 
+    def _populate_industry_suggestions(self):
+        """Populate industry combo with suggestions from metadata cache."""
+        self.industry_combo.clear()
+        self.industry_combo.addItem("")  # Empty option first
+        industries = TickerMetadataService.get_unique_industries()
+        for industry in industries:
+            self.industry_combo.addItem(industry)
+
     def _on_ticker_text_changed(self, text: str):
         """Enable/disable add button based on ticker input."""
         self.add_override_btn.setEnabled(len(text.strip()) > 0)
@@ -460,21 +495,25 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         self.remove_btn.setEnabled(has_selection)
 
     def _add_override(self):
-        """Add a new sector override."""
+        """Add a new sector/industry override."""
         ticker = self.ticker_input.text().strip().upper()
         sector = self.sector_combo.currentText()
+        industry = self.industry_combo.currentText().strip()
 
         if not ticker:
             return
 
-        # Save to service
-        SectorOverrideService.set_override(ticker, sector)
+        # Save to service (industry is optional, pass None if empty)
+        SectorOverrideService.set_override(
+            ticker, sector, industry=industry if industry else None
+        )
 
         # Update list
         self._load_overrides()
 
-        # Clear input
+        # Clear inputs
         self.ticker_input.clear()
+        self.industry_combo.setCurrentIndex(0)  # Reset to empty option
 
     def _edit_override(self):
         """Edit the selected override by loading it into the input fields."""
@@ -487,10 +526,11 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         if not ticker:
             return
 
-        # Get current sector for this ticker
+        # Get current sector/industry for this ticker
         override = SectorOverrideService.get_override(ticker)
         if override:
             sector = override.get("sector", "")
+            industry = override.get("industry", "")
 
             # Load into input fields
             self.ticker_input.setText(ticker)
@@ -499,6 +539,18 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
             index = self.sector_combo.findText(sector)
             if index >= 0:
                 self.sector_combo.setCurrentIndex(index)
+
+            # Set the industry combo to the current industry
+            if industry:
+                # Try to find existing item first
+                industry_index = self.industry_combo.findText(industry)
+                if industry_index >= 0:
+                    self.industry_combo.setCurrentIndex(industry_index)
+                else:
+                    # Custom industry - set the text directly
+                    self.industry_combo.setCurrentText(industry)
+            else:
+                self.industry_combo.setCurrentIndex(0)  # Empty option
 
     def _remove_override(self):
         """Remove selected override."""
@@ -521,7 +573,15 @@ class RiskAnalyticsSettingsDialog(ThemedDialog):
         overrides = SectorOverrideService.list_overrides()
         for ticker, data in sorted(overrides.items()):
             sector = data.get("sector", "Unknown")
-            item = QListWidgetItem(f"{ticker}: {sector}")
+            industry = data.get("industry")
+
+            # Format: "TICKER: Sector - Industry" or "TICKER: Sector"
+            if industry:
+                display_text = f"{ticker}: {sector} - {industry}"
+            else:
+                display_text = f"{ticker}: {sector}"
+
+            item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, ticker)
             self.overrides_list.addItem(item)
 

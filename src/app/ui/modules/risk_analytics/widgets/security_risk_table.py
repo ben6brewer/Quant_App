@@ -49,12 +49,36 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         self._theme_dirty = False
         self._collapsed_sectors: Set[str] = set()  # For idiosyncratic tab
         self._collapsed_factors: Set[str] = set()  # For factor tab (start collapsed)
+        self._collapsed_industries: Set[str] = set()  # For industry section (flat)
+        self._collapsed_currencies: Set[str] = set()  # For currency section
+        self._collapsed_countries: Set[str] = set()  # For country section
+        self._collapsed_factor_sectors: Set[str] = set()  # For hierarchical sector section in Factor tab (Industry display)
+        self._collapsed_factor_industries: Set[str] = set()  # For hierarchical industry (key: "Sector|Industry")
+        self._collapsed_sector_section: bool = True  # Top-level SECTOR section collapsed (flat)
+        self._collapsed_industry_section: bool = True  # Top-level INDUSTRY section collapsed (hierarchical)
+        self._collapsed_flat_sectors: Set[str] = set()  # For flat sector section (individual sectors)
+        self._collapsed_country_section: bool = True  # Top-level COUNTRY section collapsed
         self._security_data: Dict[str, Dict[str, float]] = {}
         self._regression_results: Dict[str, Any] = {}  # FactorRegressionResult objects
         self._factor_contributions: Dict[str, Any] = {}  # Per-factor breakdown
+        self._industry_contributions: Dict[str, Any] = {}  # Industry breakdown (flat)
+        self._sector_industry_contributions: Dict[str, Any] = {}  # Hierarchical sector→industry (for "Industry" display)
+        self._sector_contributions: Dict[str, Any] = {}  # Flat sector contributions (for "Sector" display)
+        self._currency_contributions: Dict[str, Any] = {}  # Currency breakdown
+        self._country_contributions: Dict[str, Any] = {}  # Country breakdown
+        self._ctev_by_factor: Dict[str, Any] = {}  # CTEV by factor group (for consistent top-level headers)
         self._benchmark_weights: Dict[str, float] = {}
         self._sector_rows: Dict[str, int] = {}
         self._factor_rows: Dict[str, int] = {}  # Track factor header rows
+        self._industry_rows: Dict[str, int] = {}  # Track industry header rows (flat)
+        self._factor_sector_rows: Dict[str, int] = {}  # Track hierarchical sector rows
+        self._factor_industry_rows: Dict[str, int] = {}  # Track hierarchical industry rows
+        self._currency_rows: Dict[str, int] = {}  # Track currency header rows
+        self._country_rows: Dict[str, int] = {}  # Track country header rows
+        self._flat_sector_rows: Dict[str, int] = {}  # Track flat sector header rows
+        self._sector_section_row: Optional[int] = None  # Track top-level SECTOR row (flat)
+        self._industry_section_row: Optional[int] = None  # Track top-level INDUSTRY row (hierarchical)
+        self._country_section_row: Optional[int] = None  # Track top-level COUNTRY row
         self._current_tab = "idiosyncratic"  # "idiosyncratic" or "factor"
 
         self._setup_ui()
@@ -169,6 +193,12 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         benchmark_weights: Optional[Dict[str, float]] = None,
         regression_results: Optional[Dict[str, Any]] = None,
         factor_contributions: Optional[Dict[str, Any]] = None,
+        industry_contributions: Optional[Dict[str, Any]] = None,
+        currency_contributions: Optional[Dict[str, Any]] = None,
+        country_contributions: Optional[Dict[str, Any]] = None,
+        sector_industry_contributions: Optional[Dict[str, Any]] = None,
+        sector_contributions: Optional[Dict[str, Any]] = None,
+        ctev_by_factor: Optional[Dict[str, Any]] = None,
     ):
         """
         Set security risk data and rebuild table.
@@ -178,11 +208,41 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             benchmark_weights: Optional dict mapping ticker to benchmark weight %
             regression_results: Optional dict mapping ticker to FactorRegressionResult
             factor_contributions: Optional dict with per-factor breakdown and top securities
+            industry_contributions: Optional dict with industry breakdown (flat)
+            currency_contributions: Optional dict with USD vs Non-USD breakdown
+            country_contributions: Optional dict with US vs Non-US breakdown
+            sector_industry_contributions: Optional dict with hierarchical sector→industry breakdown (for "Industry" display)
+            sector_contributions: Optional dict with flat sector breakdown (for "Sector" display)
+            ctev_by_factor: Optional dict with CTEV by factor group (Market, Style, Sector, Industry, Country)
         """
         self._security_data = security_risks
         self._benchmark_weights = benchmark_weights or {}
         self._regression_results = regression_results or {}
         self._factor_contributions = factor_contributions or {}
+        self._industry_contributions = industry_contributions or {}
+        self._sector_industry_contributions = sector_industry_contributions or {}
+        self._sector_contributions = sector_contributions or {}
+        self._currency_contributions = currency_contributions or {}
+        self._country_contributions = country_contributions or {}
+        self._ctev_by_factor = ctev_by_factor or {}
+
+        # Initialize all sections as collapsed by default
+        self._collapsed_factors = set(self._factor_contributions.keys())
+        self._collapsed_flat_sectors = set(self._sector_contributions.keys())  # Flat sectors
+        self._collapsed_factor_sectors = set(self._sector_industry_contributions.keys())  # Hierarchical sectors
+        # Collapse all industries within sectors
+        self._collapsed_factor_industries = set()
+        for sector_name, sector_data in self._sector_industry_contributions.items():
+            for industry_name in sector_data.get("industries", {}).keys():
+                self._collapsed_factor_industries.add(f"{sector_name}|{industry_name}")
+        self._collapsed_countries = set(self._country_contributions.keys())
+        # Idiosyncratic sectors also collapsed
+        if security_risks:
+            sectors = set()
+            for ticker in security_risks:
+                sectors.add(SectorOverrideService.get_effective_sector(ticker))
+            self._collapsed_sectors = sectors
+
         self._rebuild_table()
 
     def _rebuild_table(self):
@@ -190,6 +250,15 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         self.table.setRowCount(0)
         self._sector_rows.clear()
         self._factor_rows.clear()
+        self._industry_rows.clear()
+        self._factor_sector_rows.clear()
+        self._factor_industry_rows.clear()
+        self._currency_rows.clear()
+        self._country_rows.clear()
+        self._flat_sector_rows.clear()
+        self._sector_section_row = None
+        self._industry_section_row = None
+        self._country_section_row = None
 
         if self._current_tab == "idiosyncratic":
             if not self._security_data:
@@ -269,7 +338,7 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         if not self._factor_contributions:
             return
 
-        # Factors are already sorted by CTEV in the service
+        # Section 1: Fama-French Factors (already sorted by CTEV in the service)
         for factor_name, factor_data in self._factor_contributions.items():
             is_collapsed = factor_name in self._collapsed_factors
             securities = factor_data.get("securities", [])
@@ -287,6 +356,139 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             if not is_collapsed:
                 for security in securities:
                     self._add_factor_security_row(security, factor_data.get("factor_code", ""))
+
+        # Section 2: Sector (flat, no industry grouping)
+        if self._sector_contributions:
+            # Calculate totals for top-level SECTOR header (flat)
+            total_flat_sector_securities = sum(
+                len(s.get("securities", [])) for s in self._sector_contributions.values()
+            )
+            # Use CTEV from ctev_by_factor for consistency with "Top CTEV by Factor Group" panel
+            sector_factor_data = self._ctev_by_factor.get("Sector", {})
+            total_flat_sector_ctev = sector_factor_data.get("ctev", 0) if isinstance(sector_factor_data, dict) else 0
+
+            # Add top-level SECTOR header (collapsible like factors)
+            self._sector_section_row = self._add_top_level_section_header(
+                "Sector",
+                total_flat_sector_securities,
+                total_flat_sector_ctev,
+                self._collapsed_sector_section,
+            )
+
+            # Only show sectors if top-level is expanded
+            if not self._collapsed_sector_section:
+                for sector_name, sector_data in self._sector_contributions.items():
+                    is_sector_collapsed = sector_name in self._collapsed_flat_sectors
+                    securities = sector_data.get("securities", [])
+
+                    # Add flat sector header row
+                    header_row = self._add_flat_sector_header_row(
+                        sector_name,
+                        sector_data,
+                        len(securities),
+                        is_sector_collapsed,
+                    )
+                    self._flat_sector_rows[sector_name] = header_row
+
+                    # If sector is expanded, show securities (no industry level)
+                    if not is_sector_collapsed:
+                        for security in securities:
+                            self._add_flat_sector_security_row(security)
+
+        # Section 3: Industry (hierarchical: sector → industry → securities)
+        if self._sector_industry_contributions:
+            # Calculate totals for top-level INDUSTRY header
+            total_industry_securities = sum(
+                sum(len(ind.get("securities", [])) for ind in s.get("industries", {}).values())
+                for s in self._sector_industry_contributions.values()
+            )
+            # Use CTEV from ctev_by_factor for consistency with "Top CTEV by Factor Group" panel
+            industry_factor_data = self._ctev_by_factor.get("Industry", {})
+            total_industry_ctev = industry_factor_data.get("ctev", 0) if isinstance(industry_factor_data, dict) else 0
+
+            # Add top-level INDUSTRY header (collapsible like factors)
+            self._industry_section_row = self._add_top_level_section_header(
+                "Industry",
+                total_industry_securities,
+                total_industry_ctev,
+                self._collapsed_industry_section,
+            )
+
+            # Only show sectors if top-level is expanded
+            if not self._collapsed_industry_section:
+                for sector_name, sector_data in self._sector_industry_contributions.items():
+                    is_sector_collapsed = sector_name in self._collapsed_factor_sectors
+                    industries = sector_data.get("industries", {})
+                    total_securities = sum(
+                        len(ind.get("securities", [])) for ind in industries.values()
+                    )
+
+                    # Add sector header row (parent level, indented)
+                    header_row = self._add_factor_sector_header_row(
+                        sector_name,
+                        sector_data,
+                        total_securities,
+                        is_sector_collapsed,
+                    )
+                    self._factor_sector_rows[sector_name] = header_row
+
+                    # If sector is expanded, show industries
+                    if not is_sector_collapsed:
+                        for industry_name, industry_data in industries.items():
+                            industry_key = f"{sector_name}|{industry_name}"
+                            is_industry_collapsed = industry_key in self._collapsed_factor_industries
+                            securities = industry_data.get("securities", [])
+
+                            # Add industry header row (child level, indented)
+                            industry_row = self._add_factor_industry_header_row(
+                                industry_name,
+                                industry_data,
+                                len(securities),
+                                is_industry_collapsed,
+                                sector_name,
+                            )
+                            self._factor_industry_rows[industry_key] = industry_row
+
+                            # If industry is expanded, show securities
+                            if not is_industry_collapsed:
+                                for security in securities:
+                                    self._add_sector_industry_security_row(security)
+
+        # Section 4: Country (top-level collapsible) - Currency section removed (all USD)
+        if self._country_contributions:
+            # Calculate totals for top-level COUNTRY header
+            total_country_securities = sum(
+                len(c.get("securities", [])) for c in self._country_contributions.values()
+            )
+            # Use CTEV from ctev_by_factor for consistency with "Top CTEV by Factor Group" panel
+            country_factor_data = self._ctev_by_factor.get("Country", {})
+            total_country_ctev = country_factor_data.get("ctev", 0) if isinstance(country_factor_data, dict) else 0
+
+            # Add top-level COUNTRY header (collapsible like factors)
+            self._country_section_row = self._add_top_level_section_header(
+                "Country",
+                total_country_securities,
+                total_country_ctev if total_country_ctev > 0 else None,
+                self._collapsed_country_section,
+            )
+
+            # Only show countries if top-level is expanded
+            if not self._collapsed_country_section:
+                for country_name, country_data in self._country_contributions.items():
+                    is_collapsed = country_name in self._collapsed_countries
+                    securities = country_data.get("securities", [])
+
+                    header_row = self._add_country_header_row(
+                        country_name,
+                        country_data,
+                        len(securities),
+                        is_collapsed,
+                    )
+                    self._country_rows[country_name] = header_row
+
+                    if not is_collapsed:
+                        for security in securities:
+                            self._add_country_security_row(security)
 
     def _add_idio_total_row(self, count: int, totals: Dict[str, float]) -> int:
         """Add total row for idiosyncratic tab."""
@@ -330,18 +532,17 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
 
         arrow = "▶" if is_collapsed else "▼"
         active_beta = factor_data.get("active_beta", 0)
-        port_beta = factor_data.get("portfolio_beta", 0)
-        bench_beta = factor_data.get("benchmark_beta", 0)
+        ctev = factor_data.get("ctev", 0)
 
-        # Format beta info
-        beta_info = f"Port: {port_beta:.2f} | Bench: {bench_beta:.2f}"
+        # Show Active Weight (active_beta * 100) and CTEV
+        active_weight = active_beta * 100  # Convert to percentage
 
         items = [
             (f"{arrow} {factor_name} ({count} securities)", Qt.AlignLeft),
             ("", Qt.AlignLeft),
-            (f"{active_beta:+.3f}", Qt.AlignRight),  # Active beta exposure
-            (beta_info, Qt.AlignRight),
-            ("", Qt.AlignRight),  # Contribution column empty for header
+            (f"{active_weight:.2f}", Qt.AlignRight),  # Active weight %
+            ("", Qt.AlignRight),  # Empty
+            (f"{ctev:.2f}", Qt.AlignRight),  # CTEV in contribution column
         ]
 
         for col, (text, align) in enumerate(items):
@@ -351,6 +552,48 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             item.setFont(font)
             item.setData(Qt.UserRole, "factor_header")
             item.setData(Qt.UserRole + 1, factor_name)
+            self.table.setItem(row, col, item)
+
+        self._style_factor_header_row(row)
+        return row
+
+    def _add_top_level_section_header(
+        self, section_name: str, count: int, ctev: Optional[float], is_collapsed: bool
+    ) -> int:
+        """Add top-level section header (Sector, Country) - collapsible like factors."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+
+        # Format with CTEV if available
+        if ctev is not None:
+            items = [
+                (f"{arrow} {section_name} ({count} securities)", Qt.AlignLeft),
+                ("", Qt.AlignLeft),
+                ("", Qt.AlignRight),
+                ("", Qt.AlignRight),
+                (f"{ctev:.2f}", Qt.AlignRight),  # CTEV in contribution column
+            ]
+        else:
+            items = [
+                (f"{arrow} {section_name} ({count} securities)", Qt.AlignLeft),
+                ("", Qt.AlignLeft),
+                ("", Qt.AlignRight),
+                ("", Qt.AlignRight),
+                ("", Qt.AlignRight),
+            ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "section_header")
+            item.setData(Qt.UserRole + 1, section_name)
             self.table.setItem(row, col, item)
 
         self._style_factor_header_row(row)
@@ -430,7 +673,360 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             (ticker, Qt.AlignLeft),
             (f"{active_weight:+.2f}", Qt.AlignRight),
             (f"{beta:.3f}", Qt.AlignRight),
-            (f"{contribution:+.3f}", Qt.AlignRight),
+            (f"{contribution:.3f}", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            self.table.setItem(row, col, item)
+
+        self._style_data_row(row)
+
+    def _add_industry_header_row(
+        self, industry_name: str, industry_data: Dict[str, Any], count: int, is_collapsed: bool
+    ) -> int:
+        """Add industry header row (collapsible)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        active_weight = industry_data.get("active_weight", 0)
+        port_weight = industry_data.get("portfolio_weight", 0)
+        bench_weight = industry_data.get("benchmark_weight", 0)
+
+        items = [
+            (f"{arrow} {industry_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (f"Port: {port_weight:.1f}%", Qt.AlignRight),
+            (f"Bench: {bench_weight:.1f}%", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "industry_header")
+            item.setData(Qt.UserRole + 1, industry_name)
+            self.table.setItem(row, col, item)
+
+        self._style_factor_header_row(row)
+        return row
+
+    def _add_industry_security_row(self, security: Dict[str, Any]):
+        """Add security row under an industry header."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        name = security.get("name", "")
+        ticker = security.get("ticker", "")
+        active_weight = security.get("active_weight", 0)
+        port_weight = security.get("portfolio_weight", 0)
+        bench_weight = security.get("benchmark_weight", 0)
+
+        items = [
+            (f"    {name}", Qt.AlignLeft),
+            (ticker, Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{bench_weight:.2f}", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            self.table.setItem(row, col, item)
+
+        self._style_data_row(row)
+
+    def _add_factor_sector_header_row(
+        self, sector_name: str, sector_data: Dict[str, Any], count: int, is_collapsed: bool
+    ) -> int:
+        """Add sector header row for hierarchical sector→industry section (parent level)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        ctev = sector_data.get("ctev", 0)
+        active_weight = sector_data.get("active_weight", 0)
+        port_weight = sector_data.get("portfolio_weight", 0)
+
+        items = [
+            (f"{arrow} {sector_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{ctev:.2f}", Qt.AlignRight),  # CTEV in contribution column
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "factor_sector_header")
+            item.setData(Qt.UserRole + 1, sector_name)
+            self.table.setItem(row, col, item)
+
+        self._style_sector_header_row(row)
+        return row
+
+    def _add_factor_industry_header_row(
+        self, industry_name: str, industry_data: Dict[str, Any], count: int,
+        is_collapsed: bool, sector_name: str
+    ) -> int:
+        """Add industry header row for hierarchical sector→industry section (child level, indented)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        ctev = industry_data.get("ctev", 0)
+        active_weight = industry_data.get("active_weight", 0)
+        port_weight = industry_data.get("portfolio_weight", 0)
+
+        # Indented (4 spaces) to show it's under a sector
+        items = [
+            (f"    {arrow} {industry_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{ctev:.2f}", Qt.AlignRight),  # CTEV in contribution column
+        ]
+
+        industry_key = f"{sector_name}|{industry_name}"
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "factor_industry_header")
+            item.setData(Qt.UserRole + 1, industry_key)
+            self.table.setItem(row, col, item)
+
+        self._style_industry_header_row(row)
+        return row
+
+    def _add_sector_industry_security_row(self, security: Dict[str, Any]):
+        """Add security row under an industry in the hierarchical sector→industry section (double-indented)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        name = security.get("name", "")
+        ticker = security.get("ticker", "")
+        active_weight = security.get("active_weight", 0)
+        port_weight = security.get("portfolio_weight", 0)
+        ctev = security.get("ctev", 0)
+
+        # Double-indented (8 spaces) to show it's under an industry
+        # Columns: Name, Ticker, Active Wt, (Port Wt), CTEV
+        items = [
+            (f"        {name}", Qt.AlignLeft),
+            (ticker, Qt.AlignLeft),
+            (f"{active_weight:.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{ctev:.4f}", Qt.AlignRight),  # CTEV without prefix
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            self.table.setItem(row, col, item)
+
+        self._style_data_row(row)
+
+    def _add_flat_sector_header_row(
+        self, sector_name: str, sector_data: Dict[str, Any], count: int, is_collapsed: bool
+    ) -> int:
+        """Add sector header row for flat sector section (no industry grouping)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        ctev = sector_data.get("ctev", 0)
+        active_weight = sector_data.get("active_weight", 0)
+        port_weight = sector_data.get("portfolio_weight", 0)
+
+        items = [
+            (f"    {arrow} {sector_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{ctev:.2f}", Qt.AlignRight),  # CTEV in contribution column
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "flat_sector_header")
+            item.setData(Qt.UserRole + 1, sector_name)
+            self.table.setItem(row, col, item)
+
+        self._style_sector_header_row(row)
+        return row
+
+    def _add_flat_sector_security_row(self, security: Dict[str, Any]):
+        """Add security row under a flat sector (single indent)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        name = security.get("name", "")
+        ticker = security.get("ticker", "")
+        active_weight = security.get("active_weight", 0)
+        port_weight = security.get("portfolio_weight", 0)
+        ctev = security.get("ctev", 0)
+
+        # Single-indented (8 spaces) to show it's under a sector
+        # Columns: Name, Ticker, Active Wt, (Port Wt), CTEV
+        items = [
+            (f"        {name}", Qt.AlignLeft),
+            (ticker, Qt.AlignLeft),
+            (f"{active_weight:.2f}", Qt.AlignRight),
+            (f"{port_weight:.2f}", Qt.AlignRight),
+            (f"{ctev:.4f}", Qt.AlignRight),  # CTEV without prefix
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            self.table.setItem(row, col, item)
+
+        self._style_data_row(row)
+
+    def _add_currency_header_row(
+        self, currency_name: str, currency_data: Dict[str, Any], count: int, is_collapsed: bool
+    ) -> int:
+        """Add currency header row (collapsible)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        active_weight = currency_data.get("active_weight", 0)
+        port_weight = currency_data.get("portfolio_weight", 0)
+        bench_weight = currency_data.get("benchmark_weight", 0)
+
+        items = [
+            (f"{arrow} {currency_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (f"Port: {port_weight:.1f}%", Qt.AlignRight),
+            (f"Bench: {bench_weight:.1f}%", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "currency_header")
+            item.setData(Qt.UserRole + 1, currency_name)
+            self.table.setItem(row, col, item)
+
+        self._style_factor_header_row(row)
+        return row
+
+    def _add_currency_security_row(self, security: Dict[str, Any]):
+        """Add security row under a currency header."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        name = security.get("name", "")
+        ticker = security.get("ticker", "")
+        active_weight = security.get("active_weight", 0)
+        currency = security.get("currency", "USD")
+        bench_weight = security.get("benchmark_weight", 0)
+
+        items = [
+            (f"    {name}", Qt.AlignLeft),
+            (ticker, Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (currency, Qt.AlignRight),
+            (f"{bench_weight:.2f}", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            self.table.setItem(row, col, item)
+
+        self._style_data_row(row)
+
+    def _add_country_header_row(
+        self, country_name: str, country_data: Dict[str, Any], count: int, is_collapsed: bool
+    ) -> int:
+        """Add country header row (collapsible)."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        font = QFont()
+        font.setBold(True)
+
+        arrow = "▶" if is_collapsed else "▼"
+        active_weight = country_data.get("active_weight", 0)
+        port_weight = country_data.get("portfolio_weight", 0)
+        bench_weight = country_data.get("benchmark_weight", 0)
+
+        items = [
+            (f"{arrow} {country_name} ({count})", Qt.AlignLeft),
+            ("", Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (f"Port: {port_weight:.1f}%", Qt.AlignRight),
+            (f"Bench: {bench_weight:.1f}%", Qt.AlignRight),
+        ]
+
+        for col, (text, align) in enumerate(items):
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            item.setFont(font)
+            item.setData(Qt.UserRole, "country_header")
+            item.setData(Qt.UserRole + 1, country_name)
+            self.table.setItem(row, col, item)
+
+        self._style_factor_header_row(row)
+        return row
+
+    def _add_country_security_row(self, security: Dict[str, Any]):
+        """Add security row under a country header."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        name = security.get("name", "")
+        ticker = security.get("ticker", "")
+        active_weight = security.get("active_weight", 0)
+        country = security.get("country", "United States")
+        bench_weight = security.get("benchmark_weight", 0)
+
+        items = [
+            (f"    {name}", Qt.AlignLeft),
+            (ticker, Qt.AlignLeft),
+            (f"{active_weight:+.2f}", Qt.AlignRight),
+            (country, Qt.AlignRight),
+            (f"{bench_weight:.2f}", Qt.AlignRight),
         ]
 
         for col, (text, align) in enumerate(items):
@@ -454,6 +1050,20 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             self._toggle_sector(item_name)
         elif item_type == "factor_header":
             self._toggle_factor(item_name)
+        elif item_type == "industry_header":
+            self._toggle_industry(item_name)
+        elif item_type == "factor_sector_header":
+            self._toggle_factor_sector(item_name)
+        elif item_type == "factor_industry_header":
+            self._toggle_factor_industry(item_name)
+        elif item_type == "flat_sector_header":
+            self._toggle_flat_sector(item_name)
+        elif item_type == "currency_header":
+            self._toggle_currency(item_name)
+        elif item_type == "country_header":
+            self._toggle_country(item_name)
+        elif item_type == "section_header":
+            self._toggle_section(item_name)
 
     def _toggle_sector(self, sector: str):
         """Toggle collapsed state for a sector."""
@@ -469,6 +1079,68 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
             self._collapsed_factors.remove(factor)
         else:
             self._collapsed_factors.add(factor)
+        self._rebuild_table()
+
+    def _toggle_industry(self, industry: str):
+        """Toggle collapsed state for an industry."""
+        if industry in self._collapsed_industries:
+            self._collapsed_industries.remove(industry)
+        else:
+            self._collapsed_industries.add(industry)
+        self._rebuild_table()
+
+    def _toggle_factor_sector(self, sector: str):
+        """Toggle collapsed state for a sector in the hierarchical factor tab."""
+        if sector in self._collapsed_factor_sectors:
+            self._collapsed_factor_sectors.remove(sector)
+        else:
+            self._collapsed_factor_sectors.add(sector)
+        self._rebuild_table()
+
+    def _toggle_factor_industry(self, industry_key: str):
+        """Toggle collapsed state for an industry in the hierarchical factor tab.
+
+        Args:
+            industry_key: Key in format "Sector|Industry"
+        """
+        if industry_key in self._collapsed_factor_industries:
+            self._collapsed_factor_industries.remove(industry_key)
+        else:
+            self._collapsed_factor_industries.add(industry_key)
+        self._rebuild_table()
+
+    def _toggle_flat_sector(self, sector: str):
+        """Toggle collapsed state for a sector in the flat sector section."""
+        if sector in self._collapsed_flat_sectors:
+            self._collapsed_flat_sectors.remove(sector)
+        else:
+            self._collapsed_flat_sectors.add(sector)
+        self._rebuild_table()
+
+    def _toggle_currency(self, currency: str):
+        """Toggle collapsed state for a currency bucket."""
+        if currency in self._collapsed_currencies:
+            self._collapsed_currencies.remove(currency)
+        else:
+            self._collapsed_currencies.add(currency)
+        self._rebuild_table()
+
+    def _toggle_country(self, country: str):
+        """Toggle collapsed state for a country bucket."""
+        if country in self._collapsed_countries:
+            self._collapsed_countries.remove(country)
+        else:
+            self._collapsed_countries.add(country)
+        self._rebuild_table()
+
+    def _toggle_section(self, section_name: str):
+        """Toggle collapsed state for a top-level section (Sector, Industry, Country)."""
+        if section_name == "Sector":
+            self._collapsed_sector_section = not self._collapsed_sector_section
+        elif section_name == "Industry":
+            self._collapsed_industry_section = not self._collapsed_industry_section
+        elif section_name == "Country":
+            self._collapsed_country_section = not self._collapsed_country_section
         self._rebuild_table()
 
     def _style_header_row(self, row: int):
@@ -505,6 +1177,48 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         else:
             bg_color = QColor("#2a3540")
             fg_color = QColor("#00c8ff")
+
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                item.setBackground(bg_color)
+                item.setForeground(fg_color)
+
+    def _style_sector_header_row(self, row: int):
+        """Apply styling to a sector header row in hierarchical view (parent level)."""
+        theme = self.theme_manager.current_theme
+
+        # Sector headers: bold accent color, darker background
+        if theme == "light":
+            bg_color = QColor("#d0d8e0")
+            fg_color = QColor("#0055aa")
+        elif theme == "bloomberg":
+            bg_color = QColor("#162030")
+            fg_color = QColor("#FFa500")
+        else:
+            bg_color = QColor("#2a3540")
+            fg_color = QColor("#00c8ff")
+
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                item.setBackground(bg_color)
+                item.setForeground(fg_color)
+
+    def _style_industry_header_row(self, row: int):
+        """Apply styling to an industry header row in hierarchical view (child level)."""
+        theme = self.theme_manager.current_theme
+
+        # Industry headers: slightly dimmer than sector headers
+        if theme == "light":
+            bg_color = QColor("#e0e8f0")
+            fg_color = QColor("#3366aa")
+        elif theme == "bloomberg":
+            bg_color = QColor("#1a2838")
+            fg_color = QColor("#cc8800")
+        else:
+            bg_color = QColor("#323a45")
+            fg_color = QColor("#00b0e0")
 
         for col in range(self.table.columnCount()):
             item = self.table.item(row, col)
@@ -568,8 +1282,20 @@ class SecurityRiskTable(LazyThemeMixin, QWidget):
         self._benchmark_weights.clear()
         self._regression_results.clear()
         self._factor_contributions.clear()
+        self._industry_contributions.clear()
+        self._sector_industry_contributions.clear()
+        self._sector_contributions.clear()
+        self._currency_contributions.clear()
+        self._country_contributions.clear()
+        self._ctev_by_factor.clear()
         self._sector_rows.clear()
         self._factor_rows.clear()
+        self._industry_rows.clear()
+        self._factor_sector_rows.clear()
+        self._factor_industry_rows.clear()
+        self._flat_sector_rows.clear()
+        self._currency_rows.clear()
+        self._country_rows.clear()
         self.table.setRowCount(0)
 
     def set_collapsed_sectors(self, sectors: List[str]):

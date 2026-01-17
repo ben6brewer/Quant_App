@@ -140,16 +140,18 @@ class TickerMetadataService:
             return True
 
     @classmethod
-    def _fetch_from_yfinance(cls, ticker: str) -> Dict[str, Any]:
+    def _fetch_from_yfinance(cls, ticker: str, retry_count: int = 0) -> Dict[str, Any]:
         """
-        Fetch ticker info from yfinance.
+        Fetch ticker info from yfinance with retry logic.
 
         Args:
             ticker: Ticker symbol
+            retry_count: Current retry attempt (for rate limit handling)
 
         Returns:
             Dict with requested fields (values may be None if unavailable)
         """
+        import time
         import yfinance as yf
 
         result: Dict[str, Any] = {}
@@ -166,7 +168,17 @@ class TickerMetadataService:
             result["shortName"] = info.get("shortName")
 
         except Exception as e:
-            print(f"Warning: Could not fetch metadata for {ticker}: {e}")
+            error_str = str(e)
+            # Handle rate limiting with retry
+            if "Too Many Requests" in error_str or "Rate limited" in error_str:
+                if retry_count < 2:
+                    # Wait and retry (exponential backoff)
+                    wait_time = (retry_count + 1) * 2
+                    time.sleep(wait_time)
+                    return cls._fetch_from_yfinance(ticker, retry_count + 1)
+            # Only print warning for non-rate-limit errors or final retry failure
+            if retry_count == 0 or "Too Many Requests" not in error_str:
+                print(f"Warning: Could not fetch metadata for {ticker}: {e}")
             # Return empty dict with None values
             for field in cls.ALL_FIELDS:
                 result[field] = None
@@ -233,29 +245,50 @@ class TickerMetadataService:
             else:
                 tickers_to_fetch.append(ticker_upper)
 
-        # Fetch missing tickers in parallel
+        # Fetch missing tickers in parallel (in chunks to avoid rate limiting)
         if tickers_to_fetch:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_ticker = {
-                    executor.submit(cls._fetch_from_yfinance, t): t
-                    for t in tickers_to_fetch
-                }
+            import time
 
-                for future in as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    try:
-                        metadata = future.result()
-                        cache[ticker] = metadata
-                        result[ticker] = metadata.copy()
-                    except Exception as e:
-                        print(f"Warning: Failed to fetch metadata for {ticker}: {e}")
-                        # Create empty entry
-                        empty_entry = {field: None for field in cls.ALL_FIELDS}
-                        empty_entry["last_updated"] = datetime.now().isoformat()
-                        cache[ticker] = empty_entry
-                        result[ticker] = empty_entry.copy()
+            total_to_fetch = len(tickers_to_fetch)
+            print(f"[Metadata] Fetching {total_to_fetch} tickers from Yahoo Finance...")
+            completed = 0
+            chunk_size = 100  # Process in chunks of 100
 
-            cls._save_cache()
+            # Process in chunks with delays between them
+            for chunk_start in range(0, total_to_fetch, chunk_size):
+                chunk = tickers_to_fetch[chunk_start:chunk_start + chunk_size]
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_ticker = {
+                        executor.submit(cls._fetch_from_yfinance, t): t
+                        for t in chunk
+                    }
+
+                    for future in as_completed(future_to_ticker):
+                        ticker = future_to_ticker[future]
+                        try:
+                            metadata = future.result()
+                            cache[ticker] = metadata
+                            result[ticker] = metadata.copy()
+                        except Exception as e:
+                            print(f"Warning: Failed to fetch metadata for {ticker}: {e}")
+                            # Create empty entry
+                            empty_entry = {field: None for field in cls.ALL_FIELDS}
+                            empty_entry["last_updated"] = datetime.now().isoformat()
+                            cache[ticker] = empty_entry
+                            result[ticker] = empty_entry.copy()
+
+                        completed += 1
+
+                # Progress update and save after each chunk
+                print(f"[Metadata] Progress: {completed}/{total_to_fetch}")
+                cls._save_cache()  # Save after each chunk in case of interruption
+
+                # Brief delay between chunks to avoid rate limiting
+                if chunk_start + chunk_size < total_to_fetch:
+                    time.sleep(1)
+
+            print(f"[Metadata] Fetch complete, cache saved")
 
         return result
 
@@ -369,6 +402,22 @@ class TickerMetadataService:
         """
         cache = cls._load_cache()
         return list(cache.keys())
+
+    @classmethod
+    def get_unique_industries(cls) -> List[str]:
+        """
+        Get unique industry values from cache (sorted alphabetically).
+
+        Returns:
+            List of unique industry names (excluding None and "Not Classified")
+        """
+        cache = cls._load_cache()
+        industries = set()
+        for ticker_data in cache.values():
+            industry = ticker_data.get("industry")
+            if industry and industry.strip() and industry != "Not Classified":
+                industries.add(industry)
+        return sorted(industries)
 
     @classmethod
     def clear_cache(cls) -> None:

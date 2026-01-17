@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QHeaderView,
     QFrame,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
 
@@ -78,13 +79,17 @@ class RiskSummaryPanel(LazyThemeMixin, QFrame):
         # Factor/Idiosyncratic table (using CTEVTable for consistent row heights)
         self.table = CTEVTable("", ["Label", "Value"])
 
+        # Make table stretch to fill full width
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         # Customize column widths for Risk Summary layout
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 100)  # Label column (fits "Idiosyncratic")
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         self.table.setColumnWidth(1, 55)  # Value column
-        # Column 2 (bar) remains stretch from CTEVTable defaults
+        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Bar column stretches
 
         layout.addWidget(self.table)
 

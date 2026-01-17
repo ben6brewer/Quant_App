@@ -29,7 +29,7 @@ class RiskAnalyticsService:
     - CTEV contributions based on actual factor exposures
     """
 
-    FACTOR_GROUPS = ["Market", "Sector", "Style", "Country"]
+    FACTOR_GROUPS = ["Market", "Style", "Sector", "Industry", "Country"]
 
     @staticmethod
     def calculate_total_active_risk(
@@ -190,6 +190,7 @@ class RiskAnalyticsService:
         weights: Dict[str, float],
         benchmark_weights: Optional[Dict[str, float]] = None,
         ticker_price_data: Optional[Dict[str, "pd.DataFrame"]] = None,
+        benchmark_holdings: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run complete risk analysis using factor model.
@@ -202,6 +203,7 @@ class RiskAnalyticsService:
             weights: Dict mapping ticker to portfolio weight (decimal)
             benchmark_weights: Dict mapping ticker to benchmark weight (decimal)
             ticker_price_data: Dict mapping ticker to price DataFrame (for constructed factors)
+            benchmark_holdings: Dict mapping ticker to ETFHolding (for currency/country data)
 
         Returns:
             Dict with all analysis results
@@ -294,6 +296,7 @@ class RiskAnalyticsService:
                 weights,
                 benchmark_weights,
                 summary["total_active_risk"],
+                ctev_by_factor,  # Pass for consistent CTEV values with factor group panel
             )
 
             # Calculate per-security risks
@@ -329,6 +332,47 @@ class RiskAnalyticsService:
             for warning in warnings:
                 print(f"[RiskAnalytics] Validation warning: {warning}")
 
+        # Step 10: Calculate industry, currency, and country factor contributions
+        industry_contributions = FactorRiskService.calculate_industry_contributions(
+            regression_results,
+            weights,
+            benchmark_weights,
+            benchmark_holdings,
+        )
+        print(f"[RiskAnalytics] Calculated industry contributions: {len(industry_contributions)} industries")
+
+        # Step 10b: Calculate hierarchical sector → industry contributions (for "Industry" display)
+        sector_industry_contributions = FactorRiskService.calculate_sector_industry_contributions(
+            weights,
+            benchmark_weights,
+            summary["total_active_risk"],
+            regression_results,
+        )
+        print(f"[RiskAnalytics] Calculated sector→industry hierarchy: {len(sector_industry_contributions)} sectors")
+
+        # Step 10c: Calculate flat sector contributions (for "Sector" display)
+        sector_contributions = FactorRiskService.calculate_sector_contributions(
+            weights,
+            benchmark_weights,
+            summary["total_active_risk"],
+            regression_results,
+        )
+        print(f"[RiskAnalytics] Calculated flat sector contributions: {len(sector_contributions)} sectors")
+
+        currency_contributions = FactorRiskService.calculate_currency_contributions(
+            weights,
+            benchmark_weights,
+            benchmark_holdings,
+        )
+        print(f"[RiskAnalytics] Calculated currency contributions: USD vs Non-USD")
+
+        country_contributions = FactorRiskService.calculate_country_contributions(
+            weights,
+            benchmark_weights,
+            benchmark_holdings,
+        )
+        print(f"[RiskAnalytics] Calculated country contributions: US vs Non-US")
+
         return {
             "summary": summary,
             "factor_exposures": {},  # Not needed with new model
@@ -338,12 +382,17 @@ class RiskAnalyticsService:
             "top_securities": top_securities,
             "regression_results": regression_results,  # Include for debugging
             "factor_contributions": factor_contributions,  # Per-factor breakdown with top securities
+            "industry_contributions": industry_contributions,  # Industry factor breakdown (flat)
+            "sector_industry_contributions": sector_industry_contributions,  # Hierarchical sector→industry (for "Industry" display)
+            "sector_contributions": sector_contributions,  # Flat sector contributions (for "Sector" display)
+            "currency_contributions": currency_contributions,  # USD vs Non-USD breakdown
+            "country_contributions": country_contributions,  # US vs Non-US breakdown
         }
 
     @staticmethod
     def _calculate_ctev_by_sector(
         security_risks: Dict[str, Dict[str, float]],
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Dict[str, float]]:
         """
         Calculate CTEV by sector classification.
 
@@ -351,17 +400,22 @@ class RiskAnalyticsService:
             security_risks: Output from calculate_all_security_risks
 
         Returns:
-            Dict mapping sector to total CTEV contribution
+            Dict mapping sector to {"ctev": float, "active_weight": float}
         """
-        sector_ctev: Dict[str, float] = {}
+        sector_data: Dict[str, Dict[str, float]] = {}
 
         for ticker, risks in security_risks.items():
             sector = SectorOverrideService.get_effective_sector(ticker)
             ctev = risks.get("idio_ctev", 0.0)
-            sector_ctev[sector] = sector_ctev.get(sector, 0.0) + ctev
+            active_wt = risks.get("active_weight", 0.0)
+
+            if sector not in sector_data:
+                sector_data[sector] = {"ctev": 0.0, "active_weight": 0.0}
+            sector_data[sector]["ctev"] += ctev
+            sector_data[sector]["active_weight"] += active_wt
 
         # Sort by CTEV descending
-        return dict(sorted(sector_ctev.items(), key=lambda x: x[1], reverse=True))
+        return dict(sorted(sector_data.items(), key=lambda x: x[1]["ctev"], reverse=True))
 
     @staticmethod
     def _get_fallback_analysis(
@@ -387,13 +441,14 @@ class RiskAnalyticsService:
             portfolio_returns, benchmark_returns, tickers, weights
         )
 
-        # Simple CTEV by factor (heuristic)
+        # Simple CTEV by factor (heuristic) - with active_weight placeholder
         total_active_risk = summary["total_active_risk"]
         ctev_by_factor = {
-            "Market": round(total_active_risk * 0.35, 2),
-            "Sector": round(total_active_risk * 0.25, 2),
-            "Style": round(total_active_risk * 0.25, 2),
-            "Country": round(total_active_risk * 0.15, 2),
+            "Market": {"ctev": round(total_active_risk * 0.35, 2), "active_weight": 0.0},
+            "Style": {"ctev": round(total_active_risk * 0.25, 2), "active_weight": 0.0},
+            "Sector": {"ctev": round(total_active_risk * 0.15, 2), "active_weight": 0.0},
+            "Industry": {"ctev": round(total_active_risk * 0.15, 2), "active_weight": 0.0},
+            "Country": {"ctev": round(total_active_risk * 0.10, 2), "active_weight": 0.0},
         }
 
         # Security-level risks (simplified)

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QApplication,
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QThread
 
 from app.core.theme_manager import ThemeManager
 from app.services.portfolio_data_service import PortfolioDataService
@@ -32,6 +32,49 @@ from .widgets.risk_analytics_settings_dialog import RiskAnalyticsSettingsDialog
 
 if TYPE_CHECKING:
     import pandas as pd
+
+
+class MetadataPreFetchWorker(QThread):
+    """Background worker to fetch Yahoo Finance metadata for benchmark tickers.
+
+    Pre-fetches industry/sector metadata for ~3000 benchmark constituents
+    to ensure hierarchical sector groupings work correctly.
+    """
+    progress = Signal(int, int)  # (current, total)
+    finished_with_result = Signal(dict)  # metadata dict
+    error = Signal(str)
+
+    def __init__(self, tickers: List[str], parent=None):
+        super().__init__(parent)
+        self.tickers = tickers
+        self._cancelled = False
+
+    def run(self):
+        """Fetch metadata in batches with progress updates."""
+        try:
+            from app.services.ticker_metadata_service import TickerMetadataService
+
+            batch_size = 100  # Larger batches for efficiency
+            total = len(self.tickers)
+
+            for i in range(0, total, batch_size):
+                if self._cancelled:
+                    return
+
+                batch = self.tickers[i:i + batch_size]
+                TickerMetadataService.get_metadata_batch(batch)
+
+                current = min(i + batch_size, total)
+                self.progress.emit(current, total)
+
+            self.finished_with_result.emit({})
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def cancel(self):
+        """Cancel the worker."""
+        self._cancelled = True
 
 
 class RiskAnalyticsModule(LazyThemeMixin, QWidget):
@@ -70,6 +113,10 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         # Loading overlay
         self._loading_overlay: Optional[LoadingOverlay] = None
+
+        # Metadata pre-fetch worker
+        self._metadata_worker: Optional[MetadataPreFetchWorker] = None
+        self._pending_analysis_data: Optional[Dict[str, Any]] = None
 
         self._setup_ui()
         self._connect_signals()
@@ -240,6 +287,33 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
         # Auto-reanalyze if we have already run analysis
         if self._current_portfolio:
             self._update_risk_analysis()
+
+    def _prefetch_benchmark_metadata(self, tickers: List[str]) -> None:
+        """
+        Pre-fetch Yahoo Finance metadata for benchmark tickers.
+
+        This ensures industry data is available for hierarchical sector→industry display.
+        Shows progress in the loading overlay.
+
+        Args:
+            tickers: List of benchmark ticker symbols
+        """
+        if not tickers:
+            return
+
+        batch_size = 100
+        total = len(tickers)
+
+        for i in range(0, total, batch_size):
+            batch = tickers[i:i + batch_size]
+            TickerMetadataService.get_metadata_batch(batch)
+
+            current = min(i + batch_size, total)
+            if self._loading_overlay:
+                self._loading_overlay.set_progress(
+                    current, total, "Loading metadata"
+                )
+            QApplication.processEvents()
 
     def _update_risk_analysis(self):
         """Run risk analysis and update all displays."""
@@ -436,6 +510,14 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
             common_dates = portfolio_returns.index.intersection(benchmark_returns.index)
             print(f"[DEBUG] Common dates: {len(common_dates)}")
 
+            # Pre-fetch Yahoo Finance metadata for all benchmark tickers
+            # This ensures industry data is available for hierarchical sector→industry display
+            if self._benchmark_holdings:
+                benchmark_tickers = list(self._benchmark_holdings.keys())
+                print(f"[RiskAnalysis] Pre-fetching metadata for {len(benchmark_tickers)} benchmark tickers...")
+                self._prefetch_benchmark_metadata(benchmark_tickers)
+                self._show_loading_overlay("Running factor analysis...")
+
             # Get individual ticker returns for CTEV calculation
             ticker_returns = self._get_ticker_returns(
                 tickers, lookback_days, custom_start_date, custom_end_date
@@ -529,7 +611,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 elif ticker_upper in batch_data and batch_data[ticker_upper] is not None:
                     ticker_price_data[ticker_upper] = batch_data[ticker_upper]
 
-            # Run full analysis (pass benchmark weights and price data for factor model)
+            # Run full analysis (pass benchmark weights, price data, and holdings for factor model)
             analysis = RiskAnalyticsService.get_full_analysis(
                 portfolio_returns,
                 benchmark_returns,
@@ -538,6 +620,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 weights,
                 benchmark_weights,
                 ticker_price_data,
+                self._benchmark_holdings,  # Pass holdings for currency/country factors
             )
 
             # Update displays (pass benchmark weights to table)
@@ -619,13 +702,22 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         print(f"[Benchmark] Got {len(holdings)} constituents")
 
+        # DEBUG: Count holdings with 0 weight in raw ETF data
+        zero_weight_count = sum(1 for h in holdings.values() if h.weight <= 0)
+        nonzero_weight_count = len(holdings) - zero_weight_count
+        total_raw_weight = sum(h.weight for h in holdings.values())
+        print(f"[Benchmark] DEBUG: Raw holdings - {nonzero_weight_count} non-zero, {zero_weight_count} zero weight")
+        print(f"[Benchmark] DEBUG: Raw holdings total weight sum = {total_raw_weight:.4f}")
+
         # Cache metadata from ETF holdings (sector, name, etc.)
         TickerMetadataService.cache_from_etf_holdings(holdings)
 
         # Apply benchmark universe sector filter if set
         benchmark_universe_sectors = self.settings_manager.get_setting("benchmark_universe_sectors")
+        print(f"[Benchmark] DEBUG: benchmark_universe_sectors setting = {benchmark_universe_sectors}")
         if benchmark_universe_sectors:
             sector_set = set(benchmark_universe_sectors)
+            print(f"[Benchmark] DEBUG: Filtering to sectors: {sector_set}")
             filtered_holdings = {
                 ticker: holding
                 for ticker, holding in holdings.items()
@@ -636,6 +728,8 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
                 return None
             print(f"[Benchmark] Filtered to {len(filtered_holdings)} constituents in selected sectors")
             holdings = filtered_holdings
+        else:
+            print(f"[Benchmark] DEBUG: No sector filter applied, keeping all {len(holdings)} constituents")
 
         # Store holdings for later use (filtered if applicable)
         self._benchmark_holdings = holdings
@@ -649,6 +743,7 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
             }
         else:
             self._benchmark_weights_normalized = {}
+        print(f"[Benchmark] DEBUG: _benchmark_weights_normalized has {len(self._benchmark_weights_normalized)} tickers")
 
         # Get all constituent tickers
         constituent_tickers = list(holdings.keys())
@@ -797,14 +892,30 @@ class RiskAnalyticsModule(LazyThemeMixin, QWidget):
 
         self.decomposition_panel.update_factor_ctev(ctev_by_factor)
         self.decomposition_panel.update_sector_ctev(analysis.get("ctev_by_sector"))
-        self.decomposition_panel.update_security_ctev(analysis.get("top_securities"))
 
-        # Security table (pass benchmark weights, regression results, and factor contributions)
+        # Transform top_securities to new format: {ticker: {"ctev": X, "active_weight": Y}}
+        top_securities = analysis.get("top_securities", {})
+        security_ctev_data = {
+            ticker: {
+                "ctev": metrics.get("idio_ctev", 0),
+                "active_weight": metrics.get("active_weight", 0)
+            }
+            for ticker, metrics in top_securities.items()
+        }
+        self.decomposition_panel.update_security_ctev(security_ctev_data)
+
+        # Security table (pass benchmark weights, regression results, and all factor contributions)
         self.security_table.set_data(
             analysis.get("security_risks", {}),
             benchmark_weights,
             analysis.get("regression_results"),
             analysis.get("factor_contributions"),
+            analysis.get("industry_contributions"),
+            analysis.get("currency_contributions"),
+            analysis.get("country_contributions"),
+            analysis.get("sector_industry_contributions"),  # Hierarchical sector→industry (for "Industry" display)
+            analysis.get("sector_contributions"),  # Flat sector (for "Sector" display)
+            ctev_by_factor,  # Pass ctev_by_factor for consistent top-level headers
         )
 
     def _clear_displays(self):

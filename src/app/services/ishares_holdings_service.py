@@ -197,7 +197,8 @@ class ISharesHoldingsService:
             if cls._is_cache_current():
                 cached = cls._load_from_cache()
                 if cached:
-                    print(f"[ISharesHoldingsService] Using cached IWV holdings ({len(cached)} tickers)")
+                    zero_wt = sum(1 for h in cached.values() if h.weight <= 0)
+                    print(f"[ISharesHoldingsService] Using cached IWV holdings ({len(cached)} tickers, {zero_wt} with 0 weight)")
                     return cached
 
         # Fetch fresh data from iShares
@@ -211,7 +212,8 @@ class ISharesHoldingsService:
         if not holdings and etf_upper == "IWV":
             cached = cls._load_from_cache()
             if cached:
-                print(f"[ISharesHoldingsService] Using stale cache ({len(cached)} tickers)")
+                zero_wt = sum(1 for h in cached.values() if h.weight <= 0)
+                print(f"[ISharesHoldingsService] Using stale cache ({len(cached)} tickers, {zero_wt} with 0 weight)")
                 return cached
 
         return holdings
@@ -274,16 +276,42 @@ class ISharesHoldingsService:
         csv_data = "\n".join(lines[header_idx:])
         reader = csv.DictReader(StringIO(csv_data))
 
+        zero_weight_tickers = []
         for row in reader:
             try:
                 holding = cls._parse_row(row)
                 if holding:
                     holdings[holding.ticker] = holding
+                    if holding.weight <= 0:
+                        zero_weight_tickers.append(holding.ticker)
             except Exception as e:
                 # Skip malformed rows
                 ticker = row.get("Ticker", "unknown")
                 print(f"[ISharesHoldingsService] Skipping row {ticker}: {e}")
                 continue
+
+        # Fix zero-weight holdings: iShares reports weights with 2 decimal precision,
+        # so holdings < 0.005% get rounded to 0.00%. Redistribute the "missing" weight.
+        if zero_weight_tickers:
+            total_weight = sum(h.weight for h in holdings.values())
+            missing_weight = max(0, 1.0 - total_weight)  # What's left to distribute
+
+            if missing_weight > 0 and len(zero_weight_tickers) > 0:
+                # Distribute missing weight equally among zero-weight holdings
+                weight_per_holding = missing_weight / len(zero_weight_tickers)
+                for ticker in zero_weight_tickers:
+                    holdings[ticker] = ETFHolding(
+                        ticker=holdings[ticker].ticker,
+                        name=holdings[ticker].name,
+                        sector=holdings[ticker].sector,
+                        weight=weight_per_holding,
+                        currency=holdings[ticker].currency,
+                        asset_class=holdings[ticker].asset_class,
+                        location=holdings[ticker].location,
+                    )
+                print(f"[ISharesHoldingsService] Redistributed {missing_weight*100:.4f}% to {len(zero_weight_tickers)} zero-weight holdings ({weight_per_holding*100:.6f}% each)")
+            else:
+                print(f"[ISharesHoldingsService] WARNING: {len(zero_weight_tickers)} holdings have 0 weight, no missing weight to redistribute")
 
         return holdings
 
